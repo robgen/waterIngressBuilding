@@ -25,7 +25,7 @@ import streamlit as st
 from PIL import Image
 
 # Import authoritative logic from main.py
-from main import Building, Simulation, parse_external_text, parse_ingress_file, parse_external_file
+from main import Building, Simulation, parse_external_text, parse_ingress_file, parse_external_file, parse_ingress_text
 
 import viz
 
@@ -57,6 +57,10 @@ with st.sidebar:
     time_unit = st.selectbox('Time units for hydrograph and timestep', options=['seconds', 'minutes', 'hours'], index=1)
     timestep = st.number_input('Simulation timestep (in selected time units)', value=1.0 if time_unit != 'seconds' else 60.0, min_value=0.0, step=1.0)
     make_anim = st.checkbox('Generate animation (may be slow)', value=False)
+    st.markdown('---')
+    st.subheader('Manual input (optional)')
+    manual_external = st.checkbox('Provide external levels manually (table)')
+    manual_ingress = st.checkbox('Provide ingress entries manually (table)')
     run_button = st.button('Run simulation')
 
 col1, col2 = st.columns(2)
@@ -64,7 +68,22 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader('External levels (preview)')
     external_text = None
-    if uploaded_external is not None:
+    ingress_text = None
+    # prefer manual table if provided
+    external_table = None
+    if manual_external:
+        # provide a small example table for the user to edit
+        example_ext = [{'time': 0.0, 'level': 0.0}, {'time': 1.0, 'level': 0.2}]
+        if hasattr(st, 'experimental_data_editor'):
+            external_table = st.experimental_data_editor(example_ext, num_rows='dynamic')
+        elif hasattr(st, 'data_editor'):
+            external_table = st.data_editor(example_ext, num_rows='dynamic')
+        else:
+            external_text_area = st.text_area('Paste CSV (time,level) lines here', value='0,0.0\n1,0.2')
+            external_table = None
+            external_text = external_text_area
+
+    if not manual_external and uploaded_external is not None:
         try:
             external_text = read_uploaded_text(uploaded_external)
             # attempt to parse and show preview
@@ -80,7 +99,19 @@ with col1:
 
 with col2:
     st.subheader('Ingress definitions (preview)')
-    if uploaded_ingress is not None:
+    ingress_table = None
+    if manual_ingress:
+        example_ing = [{'height': 0.0, 'area': 0.01, 'coeff': 0.6, 'name': 'wall_crack'}]
+        if hasattr(st, 'experimental_data_editor'):
+            ingress_table = st.experimental_data_editor(example_ing, num_rows='dynamic')
+        elif hasattr(st, 'data_editor'):
+            ingress_table = st.data_editor(example_ing, num_rows='dynamic')
+        else:
+            ingress_text_area = st.text_area('Paste ingress lines (height,area,coeff[,name])', value='0.0,0.01,0.6,wall_crack')
+            ingress_table = None
+            ingress_text = ingress_text_area
+
+    if not manual_ingress and uploaded_ingress is not None:
         # save to temp file and call authoritative parser
         try:
             tmp_ing_path = save_temp_file_from_bytes(uploaded_ingress.getvalue(), suffix='.txt')
@@ -100,18 +131,73 @@ with col2:
 
 if run_button:
     # Sanity checks
-    if uploaded_external is None or uploaded_ingress is None:
-        st.error('Please upload both external levels and ingress files before running the simulation.')
+    # Accept either uploaded files or manual table input
+    if not (uploaded_external or manual_external) or not (uploaded_ingress or manual_ingress):
+        st.error('Please provide both external levels and ingress definitions (either upload files or use the manual tables).')
     else:
         try:
             st.sidebar.info('Preparing inputs...')
-            ext_text = read_uploaded_text(uploaded_external)
-            times, levels = parse_external_text(ext_text)
+            # Determine external source (manual table takes precedence)
+            if manual_external and external_table is not None:
+                # convert table to CSV-like text
+                def table_to_text(table, cols):
+                    lines = []
+                    # pandas DataFrame
+                    if hasattr(table, 'to_dict'):
+                        records = table.to_dict(orient='records')
+                    else:
+                        records = list(table)
+                    for r in records:
+                        try:
+                            t = r.get('time') if 'time' in r else r.get('Time') if 'Time' in r else list(r.values())[0]
+                            h = r.get('level') if 'level' in r else r.get('Level') if 'Level' in r else list(r.values())[1]
+                            lines.append(f"{t},{h}")
+                        except Exception:
+                            continue
+                    return '\n'.join(lines)
+
+                ext_text = table_to_text(external_table, ['time', 'level'])
+                times, levels = parse_external_text(ext_text)
+            elif not manual_external and uploaded_external is not None:
+                ext_text = read_uploaded_text(uploaded_external)
+                times, levels = parse_external_text(ext_text)
+            else:
+                # manual_external checked but text-area fallback
+                times, levels = parse_external_text(external_text)
             # keep original units for preview
             orig_times = list(times)
 
-            tmp_ing_path = save_temp_file_from_bytes(uploaded_ingress.getvalue(), suffix='.txt')
-            ingress_list = parse_ingress_file(tmp_ing_path)
+            # Determine ingress source (manual table takes precedence)
+            if manual_ingress and ingress_table is not None:
+                # convert ingress table to text lines
+                def ingress_table_to_text(table):
+                    lines = []
+                    if hasattr(table, 'to_dict'):
+                        records = table.to_dict(orient='records')
+                    else:
+                        records = list(table)
+                    for r in records:
+                        try:
+                            h = r.get('height') if 'height' in r else list(r.values())[0]
+                            area = r.get('area') if 'area' in r else list(r.values())[1]
+                            coeff = r.get('coeff') if 'coeff' in r else list(r.values())[2]
+                            name = r.get('name') if 'name' in r else (list(r.values())[3] if len(list(r.values())) > 3 else '')
+                            if name:
+                                lines.append(f"{h},{area},{coeff},{name}")
+                            else:
+                                lines.append(f"{h},{area},{coeff}")
+                        except Exception:
+                            continue
+                    return '\n'.join(lines)
+
+                ingress_text = ingress_table_to_text(ingress_table)
+                ingress_list = parse_ingress_text(ingress_text)
+            elif not manual_ingress and uploaded_ingress is not None:
+                tmp_ing_path = save_temp_file_from_bytes(uploaded_ingress.getvalue(), suffix='.txt')
+                ingress_list = parse_ingress_file(tmp_ing_path)
+            else:
+                # manual_ingress with text-area fallback
+                ingress_list = parse_ingress_text(ingress_text)
 
             building = Building(floor_area)
             # compute unit multiplier and convert times/dt to seconds for simulation

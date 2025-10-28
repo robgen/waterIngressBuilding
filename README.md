@@ -1,11 +1,13 @@
 # waterIngressBuilding
 ![CI](https://github.com/robgen/waterIngressBuilding/actions/workflows/ci.yml/badge.svg)
 Models the ingress of flood water in a building with a simplified hydraulic strategy.
+
 Quick links
 - Docs: ./docs/
 	- Inputs reference: ./docs/README_INPUTS.md
 	- Technical description: ./docs/TECHNICAL.md
-- Changelog: ./CHANGELOG.md
+    - Changelog: ./CHANGELOG.md
+
 Getting started
 1. Create and activate a virtual environment:
 
@@ -51,5 +53,6 @@ Notes
 - The authoritative simulation and parsers are in `main.py`.
 - Headless plotting/animation helpers are in `viz.py` and use the Agg backend.
 - The legacy Tk GUI has been retired in favor of `streamlit_app.py`.
+
 # waterIngressBuilding
 Models the ingress of flood water in a building with a simplified hydraulic strategy

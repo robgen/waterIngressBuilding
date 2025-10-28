@@ -19,13 +19,13 @@ Ingress discharge
 Each ingress pathway is treated as an orifice-like opening. If both exterior and interior water levels are below the opening sill, there is no flow. Otherwise the instantaneous volumetric flow rate through opening $i$ is computed as:
 
 $$
-Q_i(t) = C_i A_i \sqrt{2 g |\Delta h_i(t)|} \;\mathrm{sign}(\Delta h_i(t)),
+Q_i(t) = \mathrm{sign}(\Delta h(t)) C_i A_i \sqrt{2 g |\Delta h(t)|}
 $$
 
 where
 
 $$
-\Delta h_i(t) = h_{out}(t) - h_{in}(t).
+\Delta h(t) = h_{out}(t) - h_{in}(t).
 $$
 
 The sign indicates flow direction: positive when water flows from outside to inside (i.e. $h_{out} > h_{in}$).

@@ -32,22 +32,43 @@ class Building:
             self.h_in = 0.0
 
 class IngressPathway:
-    def __init__(self, height, area, coeff, name="Opening"):
-        self.height = height
-        self.area = area
-        self.coeff = coeff
+    def __init__(self, height, area, coeff, name="Opening", always_open=False):
+        """An ingress pathway (orifice/opening).
+
+        Arguments:
+            height: elevation of the orifice (same units as water levels)
+            area: opening area (m^2)
+            coeff: discharge coefficient
+            name: optional name
+            always_open: if True, allow flow based solely on head difference
+                         even when both sides are below the orifice height.
+                         Default False preserves the previous behaviour.
+        """
+        self.height = float(height)
+        self.area = float(area)
+        self.coeff = float(coeff)
         self.name = name
+        self.always_open = bool(always_open)
 
     def compute_flow(self, h_out, h_in):
-        if h_out < self.height and h_in < self.height:
+        """Compute volumetric flow rate (m^3 / time-unit) from outside->inside.
+
+        By default, flow is zero when both sides are below the orifice height
+        (the opening is above the water on both sides). If `always_open` is
+        True the orifice behaves like a through-connection and flow is driven
+        solely by head difference.
+        """
+        # if the opening is above the water on both sides and it's not forced-open,
+        # there is no flow.
+        if (not self.always_open) and h_out < self.height and h_in < self.height:
             return 0.0
-        delta_h = h_out - h_in
-        if delta_h == 0:
+
+        delta_h = float(h_out) - float(h_in)
+        if delta_h == 0.0:
             return 0.0
-        flow_rate = self.coeff * self.area * math.sqrt(2 * 9.81 * abs(delta_h))
-        if delta_h < 0:
-            flow_rate = -flow_rate
-        return flow_rate
+
+        flow_rate = self.coeff * self.area * math.sqrt(2.0 * 9.81 * abs(delta_h))
+        return flow_rate if delta_h > 0.0 else -flow_rate
 
 class Simulation:
     def __init__(self, building, ingress_list, external_times, external_levels, dt=60.0):
