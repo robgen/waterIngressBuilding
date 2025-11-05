@@ -21,18 +21,54 @@ Usage:
 class Building:
     def __init__(self, floor_area):
         self.floor_area = floor_area
+        # ground-floor interior depth above ground-floor datum
         self.h_in = 0.0
+        # optional basement compartment
+        self.basement_area = 0.0
+        # basement depth above basement floor
+        self.h_basement = 0.0
+        # basement floor elevation relative to ground-floor datum (m).
+        # negative values place the basement below the ground-floor datum.
+        self.z_basement = 0.0
+        # basement ceiling elevation on the same datum (default: ground-floor datum = 0.0)
+        # water in the basement cannot rise above this elevation; the maximum
+        # basement depth is (basement_ceiling_elevation - z_basement)
+        self.basement_ceiling_elevation = 0.0
 
-    def update_water_level(self, volume_change):
-        if self.floor_area <= 0:
-            return
-        delta_h = volume_change / self.floor_area
-        self.h_in += delta_h
-        if self.h_in < 0:
-            self.h_in = 0.0
+    def update_water_level(self, volume_change, zone='ground'):
+        """Apply a volume change (m^3) to a zone: 'ground' or 'basement'."""
+        if zone == 'ground':
+            if self.floor_area <= 0:
+                return
+            delta_h = volume_change / self.floor_area
+            self.h_in += delta_h
+            if self.h_in < 0:
+                self.h_in = 0.0
+            # no overflow concept for ground in this simple model
+            return 0.0
+        elif zone == 'basement':
+            if self.basement_area <= 0:
+                return 0.0
+            delta_h = volume_change / self.basement_area
+            self.h_basement += delta_h
+            if self.h_basement < 0:
+                self.h_basement = 0.0
+                return 0.0
+            # enforce a maximum basement depth implied by the ceiling elevation
+            max_depth = max(0.0, self.basement_ceiling_elevation - self.z_basement)
+            if self.h_basement > max_depth:
+                # compute overflow volume that cannot be stored in basement
+                overflow_h = self.h_basement - max_depth
+                overflow_vol = overflow_h * self.basement_area
+                # clamp basement to max depth
+                self.h_basement = max_depth
+                return overflow_vol
+            return 0.0
+        else:
+            raise ValueError(f'Unknown zone: {zone}')
 
 class IngressPathway:
-    def __init__(self, height, area, coeff, name="Opening", always_open=False):
+    def __init__(self, height, area, coeff, name="Opening", always_open=False, source='outside', target='ground'):
         """An ingress pathway (orifice/opening).
 
         Arguments:
@@ -49,26 +85,30 @@ class IngressPathway:
         self.coeff = float(coeff)
         self.name = name
         self.always_open = bool(always_open)
+        # semantic endpoints: 'outside'|'ground'|'basement'
+        self.source = source
+        self.target = target
 
-    def compute_flow(self, h_out, h_in):
-        """Compute volumetric flow rate (m^3 / time-unit) from outside->inside.
+    def compute_flow(self, H_source, H_target):
+        """Compute volumetric flow (m^3 / time-unit) using absolute surface heads.
 
-        By default, flow is zero when both sides are below the orifice height
-        (the opening is above the water on both sides). If `always_open` is
-        True the orifice behaves like a through-connection and flow is driven
-        solely by head difference.
+        H_source and H_target are absolute water surface elevations (m) on the
+        source and target sides measured on a common datum. The pathway sill is
+        `self.height` on the same datum. If both sides are below the sill and
+        `always_open` is False then Q=0. Otherwise the orifice-like law is
+        evaluated with the head difference \Delta H = H_source - H_target.
         """
         # if the opening is above the water on both sides and it's not forced-open,
         # there is no flow.
-        if (not self.always_open) and h_out < self.height and h_in < self.height:
+        if (not self.always_open) and H_source < self.height and H_target < self.height:
             return 0.0
 
-        delta_h = float(h_out) - float(h_in)
-        if delta_h == 0.0:
+        delta_H = float(H_source) - float(H_target)
+        if delta_H == 0.0:
             return 0.0
 
-        flow_rate = self.coeff * self.area * math.sqrt(2.0 * 9.81 * abs(delta_h))
-        return flow_rate if delta_h > 0.0 else -flow_rate
+        flow_rate = self.coeff * self.area * math.sqrt(2.0 * 9.81 * abs(delta_H))
+        return flow_rate if delta_H > 0.0 else -flow_rate
 
 class Simulation:
     def __init__(self, building, ingress_list, external_times, external_levels, dt=60.0):
@@ -91,7 +131,9 @@ class Simulation:
     def run(self, progress_callback=None, verbose=False):
         indoor_levels = []
         times = []
+        basement_levels = []
         current_h_in = self.building.h_in
+        current_h_basement = self.building.h_basement
         start_time = self.t_ext[0] if len(self.t_ext) > 0 else 0.0
         end_time = self.t_ext[-1] if len(self.t_ext) > 0 else 0.0
         # Use a fixed-step loop to avoid depending on external hydrograph spacing.
@@ -126,17 +168,54 @@ class Simulation:
             else:
                 h_out = self.h_ext[-1] if len(self.h_ext) > 0 else 0.0
 
-            total_flow = 0.0
-            for ingress in self.ingress_list:
-                Q = ingress.compute_flow(h_out, current_h_in)
-                total_flow += Q
+            # compute absolute surfaces for use in orifice evaluation
+            H_out = h_out
+            H_in = current_h_in
+            H_basement = self.building.z_basement + current_h_basement
 
-            # volume change during this fixed timestep
-            volume_change = total_flow * self.dt
-            self.building.update_water_level(volume_change)
+            # flows: outside->ground (flow_og), outside->basement (flow_ob),
+            # ground->basement (flow_gb; positive if ground->basement)
+            flow_og = 0.0
+            flow_ob = 0.0
+            flow_gb = 0.0
+
+            for ingress in self.ingress_list:
+                src = getattr(ingress, 'source', 'outside')
+                tgt = getattr(ingress, 'target', 'ground')
+                if src == 'outside' and tgt == 'ground':
+                    Q = ingress.compute_flow(H_out, H_in)
+                    flow_og += Q
+                elif src == 'outside' and tgt == 'basement':
+                    Q = ingress.compute_flow(H_out, H_basement)
+                    flow_ob += Q
+                elif src == 'ground' and tgt == 'basement':
+                    Q = ingress.compute_flow(H_in, H_basement)
+                    flow_gb += Q
+                elif src == 'basement' and tgt == 'ground':
+                    Q = ingress.compute_flow(H_basement, H_in)
+                    # subtract because flow_gb is defined positive ground->basement
+                    flow_gb -= Q
+                else:
+                    # unsupported or unknown pairing; ignore
+                    pass
+
+            # apply volume changes to zones
+            vol_ground = (flow_og - flow_gb) * self.dt
+            # apply to ground; update_water_level returns overflow (unused for ground)
+            _ = self.building.update_water_level(vol_ground, zone='ground')
             current_h_in = self.building.h_in
+
+            vol_basement = (flow_ob + flow_gb) * self.dt
+            # apply to basement; if basement overflows, spill to ground
+            overflow = self.building.update_water_level(vol_basement, zone='basement')
+            if overflow and overflow > 0.0:
+                # add overflow to ground
+                _ = self.building.update_water_level(overflow, zone='ground')
+            current_h_basement = self.building.h_basement
+
             times.append(t)
             indoor_levels.append(current_h_in)
+            basement_levels.append(current_h_basement)
 
             # report progress (callable)
             if progress_callback and total_steps > 0:
@@ -147,7 +226,7 @@ class Simulation:
             if verbose and (step + 1) % 1000 == 0:
                 print(f"Progress: {min(100, int(100*(step+1)/(total_steps+1)))}%")
 
-        return times, indoor_levels
+        return times, indoor_levels, basement_levels
 
 def parse_external_file(filepath):
     times = []
@@ -243,6 +322,10 @@ def main(argv=None):
     parser.add_argument('--animate', action='store_true', help='Create an animation (GIF) of the simulation')
     parser.add_argument('--anim-out', default='simulation_animation.gif', help='Animation output filename (GIF)')
     parser.add_argument('--verbose', '-v', action='store_true')
+    parser.add_argument('--basement-area', type=float, default=0.0, help='Basement floor area (m^2). If >0, a basement zone is created')
+    parser.add_argument('--basement-floor-elevation', type=float, default=None, help='Basement floor elevation relative to ground-floor datum (m). Use negative for below ground')
+    parser.add_argument('--basement-connection-height', type=float, default=None, help='Height of opening between ground and basement (if omitted no connection is created)')
+    parser.add_argument('--basement-connection-area', type=float, default=0.0, help='Area of connection between ground and basement')
     args = parser.parse_args(argv)
 
     outdir = args.outdir
@@ -286,6 +369,11 @@ def main(argv=None):
     print(f"Reading ingress data from: {args.ingress}")
     ingress_list = parse_ingress_file(args.ingress)
     print(f"Found {len(ingress_list)} ingress paths")
+    # optionally add a connection between ground and basement if requested
+    if getattr(args, 'basement_connection_height', None) is not None and getattr(args, 'basement_connection_area', 0.0) and args.basement_connection_area > 0.0:
+        conn_name = 'ground-basement-conn'
+        print(f"Adding ground<->basement connection: h={args.basement_connection_height}, A={args.basement_connection_area}")
+        ingress_list.append(IngressPathway(height=args.basement_connection_height, area=args.basement_connection_area, coeff=1.0, name=conn_name, source='ground', target='basement'))
     ingress_preview_path = os.path.join(outdir, 'ingress_preview.png')
     viz.save_ingress_preview(ingress_list, ingress_preview_path)
     print(f"Saved ingress preview to {ingress_preview_path}")
@@ -298,6 +386,13 @@ def main(argv=None):
         print(f"Failed to save ingress locations plot: {e}")
 
     building = Building(floor_area=args.floor)
+    # optional basement
+    if getattr(args, 'basement_area', None) and args.basement_area > 0.0:
+        building.basement_area = float(args.basement_area)
+        building.h_basement = 0.0
+        if getattr(args, 'basement_floor_elevation', None) is not None:
+            building.z_basement = float(args.basement_floor_elevation)
+
     sim = Simulation(building, ingress_list, times, levels, dt=dt_seconds)
 
     print('Running simulation...')
@@ -305,7 +400,7 @@ def main(argv=None):
         if args.verbose:
             print(f'Progress: {int(p*100)}%')
 
-    sim_times, sim_levels = sim.run(progress_callback=progress, verbose=args.verbose)
+    sim_times, sim_levels, sim_basement = sim.run(progress_callback=progress, verbose=args.verbose)
 
     # interpolate external hydrograph to simulation times so plots/animation have matching lengths
     def sample_external(sim_times, t_ext, h_ext):
@@ -334,7 +429,10 @@ def main(argv=None):
     sim_times_display = [t / mul for t in sim_times]
 
     sim_out_path = os.path.join(outdir, 'simulation_result.png')
-    viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path, time_unit=units)
+    try:
+        viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path, time_unit=units, basement_levels=sim_basement)
+    except TypeError:
+        viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path, time_unit=units)
     print(f"Saved simulation result to {sim_out_path}")
 
     if args.animate:
@@ -344,7 +442,16 @@ def main(argv=None):
             # pass times in original units for animation display
             sampled_for_anim = sampled_external
             sim_times_display = [t / mul for t in sim_times]
-            viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim, ingress_list, anim_path, time_unit=units)
+            try:
+                # compute absolute basement surface elevations for animation use
+                try:
+                    sim_basement_abs = [building.z_basement + hb for hb in sim_basement]
+                except Exception:
+                    sim_basement_abs = None
+                viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim, ingress_list, anim_path, time_unit=units, basement_levels=sim_basement, basement_abs_levels=sim_basement_abs)
+            except TypeError:
+                # Fall back if viz.generate_animation doesn't accept the new arg (backwards compatibility)
+                viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim, ingress_list, anim_path, time_unit=units)
             print(f'Animation saved to: {anim_path}')
         except Exception as e:
             print(f'Failed to generate animation: {e}')
