@@ -23,4 +23,34 @@ if __name__ == '__main__':
     # run from example directory so default relative filenames resolve
     os.chdir(str(this_dir))
     # Call main with explicit args pointing to local files and output to '.'
-    main.main(['--external', 'example_external_levels.csv', '--ingress', 'example_ingress_paths.txt', '--outdir', '.'])
+    # Two example argument sets are shown below. The first (active) runs
+    # the simulation without a basement. The second (commented) shows the
+    # same parameters but with a basement compartment — uncomment to run it.
+
+    # --- Example A: no basement (active) ---
+    args = [
+        '--external', 'example_external_levels.csv',
+        '--ingress', 'example_ingress_paths.txt',
+        '--outdir', '.',
+        '--floor', '50',
+        '--animate',
+        '--anim-out', 'simulation_animation.gif'
+    ]
+
+    # --- Example B: with basement (commented) ---
+    # To run the basement example replace the `args` above or uncomment the
+    # block below.
+    # args = [
+    #     '--external', 'example_external_levels.csv',
+    #     '--ingress', 'example_ingress_paths.txt',
+    #     '--outdir', '.',
+    #     '--floor', '50',
+    #     '--basement-area', '50',
+    #     '--basement-floor-elevation', '-2.5',
+    #     '--basement-connection-height', '0.0',
+    #     '--basement-connection-area', '0.01',
+    #     '--animate',
+    #     '--anim-out', 'simulation_animation_basement.gif'
+    # ]
+
+    main.main(args)

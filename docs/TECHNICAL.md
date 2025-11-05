@@ -78,3 +78,81 @@ Suggested improvements (future work)
 - Add a semi-implicit integration scheme to improve stability with larger timesteps.
 - Model multiple compartments and internal routing/path losses.
 - Calibrate discharge coefficients $C_i$ to experimental data or CFD results for more accurate predictions.
+
+## Basement positioning and elevation-aware modelling
+
+This short technical note explains how to represent basements (cellars, low-lying compartments) in the flood ingress model using absolute elevations so that the orifice law works naturally — i.e. a basement can retain water when external levels fall below connection sills without any artificial clamping of flows.
+
+Reference datum and symbols
+
+- $z_{ref}$ — reference datum (m). By default the model uses the interior ground-floor level as the datum ($z_{ref} = 0$). All sill/entry elevations and compartment floor elevations are expressed relative to this datum.
+
+- $z_b$ — basement floor elevation (m) relative to $z_{ref}$ (typically negative if the basement floor lies below the ground-floor datum).
+
+- $h_b(t)$ — basement water depth measured above the basement floor (m).
+
+- $S_b$ — basement plan area (m^2).
+
+- $H_x(t)$ — absolute water surface elevation for compartment or external node x (m). For the basement: $H_b(t) = z_b + h_b(t). For the ground-floor interior, when $z_{ref} = 0$, $H_{in}(t) = h_{in}(t)$.
+
+### Elevation-aware orifice condition
+
+Every opening $i$ has a sill elevation $z_i$ (m, relative to $z_{ref}$). Let $H_{src}(t)$ and $H_{tgt}(t)$ be the absolute water surface elevations on the source and target sides of opening $i$. Define the head difference
+
+$$
+\Delta H_i(t) = H_{src}(t) - H_{tgt}(t).
+$$
+
+Flow through opening $i$ is permitted only when at least one side of the opening is at or above the sill elevation (i.e. when the opening is submerged):
+
+$$
+\max(H_{src}(t), H_{tgt}(t)) \ge z_i.
+$$
+
+If submerged, the instantaneous volumetric flow rate is evaluated with the orifice-like law used elsewhere in the simulator:
+
+$$
+Q_i(t) = \mathrm{sign}(\Delta H_i(t)) \; C_i \; A_i \; \sqrt{2 g |\Delta H_i(t)|}.
+$$
+
+Note: the sign convention used in the simulator makes $Q$ positive in the ``source->target`` sense. The formula therefore supports reverse flow when the head reverses, but reverse flow will not occur if the opening is not submerged (because the submerged condition is false).
+
+### Mass balances and updating
+
+Write a separate mass balance for each compartment (ground-floor interior and basement). For example, if $I_{in}$ is the set of openings connected to the interior and $I_b$ the set connected to the basement:
+
+$$
+\frac{dV}{dt} = \sum_{i \in I_{in}} Q_i(t), \\
+\frac{dV_b}{dt} = \sum_{i \in I_b} Q_i(t),
+$$
+
+and convert volumes to depths by dividing by the compartment plan areas $S$ and $S_b$:
+
+$$
+h_{in}(t) = \frac{V(t)}{S}, \qquad h_b(t) = \frac{V_b(t)}{S_b}.
+$$
+
+### Numerical implementation (recipe)
+
+1. Choose a reference datum $z_{ref}$ (ground-floor interior level is convenient).
+2. Express sill elevations $z_i$ and any compartment floor elevations ($z_b$) relative to $z_{ref}$.
+3. At each timestep compute absolute surfaces $H$ for every compartment ($H = z_{comp} + h_{comp}$).
+4. For each opening check the submerged condition ($\max(H_{src},H_{tgt}) \ge z_i$). If submerged evaluate $Q_i$ using the elevation-aware orifice law.
+5. Update compartment volumes by summing signed $Q_i$ over their incident openings and applying the explicit Euler step; convert volumes back to depths.
+
+### Why this models retention naturally
+
+Because the submerged test uses absolute sill elevations, a basement that lies below the ground-floor datum can (and will) retain water when both the external level and the interior ground-floor surface fall below the connection sill: then $\max(H_{src},H_{tgt}) < z_i$ and no flow is computed. This behaviour requires no artificial suppression of negative flows — the orifice law simply becomes inactive when the opening is unsubmerged.
+
+### Practical advice
+
+- Use negative $z_b$ values to represent basement floors below the ground-floor datum (for instance $z_b = -2.5\,$m to indicate a basement floor 2.5 m below the interior ground-floor level).
+
+- Express all sill elevations $z_i$ on the same datum. For example a ground-> basement connection at the ground-floor level has $z_i = 0$; a hole in the basement ceiling 1.5 m below ground would have $z_i = -1.5$.
+
+- If you need devices or behaviours not captured by the elevation-aware orifice law (one-way check valves, pumps, trapped-air hysteresis), model them explicitly as additional pathway/device terms in the mass balances.
+
+Notes
+
+This is a documentation-level modelling recommendation. Implementing it exactly requires that the simulator compute absolute elevations for compartments and use the submerged test above when evaluating $Q_i$. The current code already contains the building/basement compartments and a sill height for ingress pathways; the elevation-aware interpretation clarifies how to choose heights so that basements behave physically (i.e. retain water) without ad-hoc flow clamping.
+
