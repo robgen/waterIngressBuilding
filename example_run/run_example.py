@@ -27,17 +27,17 @@ if __name__ == '__main__':
     # the simulation without a basement. The second (commented) shows the
     # same parameters but with a basement compartment — uncomment to run it.
 
-    # --- Example A: no basement (active) ---
-    args = [
-        '--external', 'example_external_levels.csv',
-        '--ingress', 'example_ingress_paths.txt',
-        '--outdir', '.',
-        '--floor', '50',
-        '--animate',
-        '--anim-out', 'simulation_animation.gif'
-    ]
+    # --- Example A: no basement ---
+    # args = [
+    #     '--external', 'example_external_levels.csv',
+    #     '--ingress', 'example_ingress_paths.txt',
+    #     '--outdir', '.',
+    #     '--floor', '50',
+    #     '--animate',
+    #     '--anim-out', 'simulation_animation.gif'
+    # ]
 
-    # --- Example B: with basement (commented) ---
+    # --- Example B: with basement ---
     # To run the basement example replace the `args` above or uncomment the
     # block below.
     # args = [
@@ -52,5 +52,18 @@ if __name__ == '__main__':
     #     '--animate',
     #     '--anim-out', 'simulation_animation_basement.gif'
     # ]
+
+    # --- Example C: include external velocity hydrograph ---
+    # This example demonstrates the new external velocity input and will
+    # produce `velocity_preview.png` in the output directory.
+    args = [
+        '--external', 'example_external_levels.csv',
+        '--ingress', 'example_ingress_paths.txt',
+        '--outdir', '.',
+        '--floor', '50',
+        '--animate',
+        '--anim-out', 'simulation_animation_with_velocity.gif',
+        '--external-velocity', 'example_external_velocities.csv'
+    ]
 
     main.main(args)

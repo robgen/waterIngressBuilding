@@ -6,7 +6,7 @@ Quick links
 - Docs: ./docs/
 	- Inputs reference: ./docs/README_INPUTS.md
 	- Technical description: ./docs/TECHNICAL.md
-    - Changelog: ./CHANGELOG.md
+	- Changelog: ./CHANGELOG.md
 
 Getting started
 1. Create and activate a virtual environment:
@@ -28,7 +28,7 @@ pip install -r requirements.txt
 python3 main.py --external example_run/example_external_levels.csv --ingress example_run/example_ingress_paths.txt --outdir example_run --animate
 ```
 
-Note: the project default time unit is now minutes. Use `--time-units` to override (choices: seconds, minutes, hours). If you want a temporary run that doesn't leave files behind, use `--temp-output` to write outputs to a temporary directory that is removed when the run completes.
+Note: the project default time unit is minutes. Use `--time-units` to override (choices: seconds, minutes, hours). If you want a temporary run that doesn't leave files behind, use `--temp-output` to write outputs to a temporary directory that is removed when the run completes.
 
 4. Run the web UI (Streamlit):
 
@@ -53,6 +53,3 @@ Notes
 - The authoritative simulation and parsers are in `main.py`.
 - Headless plotting/animation helpers are in `viz.py` and use the Agg backend.
 - The legacy Tk GUI has been retired in favor of `streamlit_app.py`.
-
-# waterIngressBuilding
-Models the ingress of flood water in a building with a simplified hydraulic strategy

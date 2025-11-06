@@ -26,6 +26,31 @@ def save_external_preview(times, levels, outpath, time_unit=None):
     plt.close(fig)
 
 
+def save_velocity_preview(times, velocities, outpath, time_unit=None, orig_point_times=None, orig_point_vals=None):
+    """Save a small preview plot of the external velocity hydrograph.
+
+    If times is empty this function will raise ValueError.
+    """
+    if not times:
+        raise ValueError('No velocity times provided')
+    fig, ax = plt.subplots(figsize=(6, 3))
+    # plot the (possibly sampled) series as a line
+    ax.plot(times, velocities, marker='o', color='tab:green', label='Velocity (sampled/padded)')
+    # if original sparse points provided, overplot them as distinct markers
+    if orig_point_times is not None and orig_point_vals is not None:
+        ax.scatter(orig_point_times, orig_point_vals, color='black', marker='x', label='Original samples')
+    ax.set_title('External velocity (preview)')
+    xlabel = 'Time'
+    if time_unit:
+        xlabel = f'Time ({time_unit})'
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel('Velocity (m/s)')
+    fig.tight_layout()
+    ax.legend()
+    fig.savefig(outpath)
+    plt.close(fig)
+
+
 def save_ingress_preview(ingress_list, outpath):
     names = [i.name if getattr(i, 'name', None) else str(i.height) for i in ingress_list]
     areas = [i.area for i in ingress_list]
@@ -103,10 +128,15 @@ def save_ingress_locations(ingress_list, outpath, building_width=1.0):
     plt.close(fig)
 
 
-def save_simulation_result(sim_times, sim_levels, external_levels, outpath, time_unit=None, basement_levels=None):
+def save_simulation_result(sim_times, sim_levels, external_levels, outpath, time_unit=None, basement_levels=None, velocity_series=None):
+    """Save a combined plot of external/indoor (and optional basement) levels.
+
+    If `velocity_series` is provided (same length as `sim_times`) it will be
+    plotted on a secondary y-axis on the right in m/s.
+    """
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(sim_times, external_levels, label='External Level (h_out)')
-    ax.plot(sim_times, sim_levels, label='Indoor Level (h_in)')
+    ax.plot(sim_times, external_levels, label='External Level (h_out)', color='tab:blue')
+    ax.plot(sim_times, sim_levels, label='Indoor Level (h_in)', color='tab:orange')
     if basement_levels is not None:
         ax.plot(sim_times, basement_levels, label='Basement Level (h_b)', linestyle='--', color='#2ca02c')
     xlabel = 'Time'
@@ -115,13 +145,25 @@ def save_simulation_result(sim_times, sim_levels, external_levels, outpath, time
     ax.set_xlabel(xlabel)
     ax.set_ylabel('Water Level (m)')
     ax.set_title('Flood Ingress Simulation')
-    ax.legend()
+
+    # add secondary axis for velocity if provided
+    if velocity_series is not None:
+        ax2 = ax.twinx()
+        ax2.plot(sim_times, velocity_series, label='Velocity (m/s)', color='tab:green', linestyle=':')
+        ax2.set_ylabel('Velocity (m/s)')
+        # combine legends from both axes
+        lines, labels = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines + lines2, labels + labels2, loc='upper left')
+    else:
+        ax.legend()
+
     fig.tight_layout()
     fig.savefig(outpath)
     plt.close(fig)
 
 
-def generate_animation(sim_times, sim_levels, external_levels, ingress_list, outpath, fps=10, max_frames=200, time_unit=None, basement_levels=None, basement_abs_levels=None):
+def generate_animation(sim_times, sim_levels, external_levels, ingress_list, outpath, fps=10, max_frames=200, time_unit=None, basement_levels=None, basement_abs_levels=None, velocity_series=None):
     # Prepare frames (downsample if too many)
     n_frames = len(sim_times)
     if n_frames <= 0:
@@ -232,6 +274,8 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
     # Time label
     unit_label = 's' if (time_unit is None or time_unit == 'seconds') else ('min' if time_unit.startswith('min') else ('h' if time_unit.startswith('hour') else time_unit))
     time_text = ax_top.text(bx, building_height * 0.96, '', fontsize=10)
+    # velocity display text near the external water label (will be updated each frame)
+    vel_text = ax_top.text(ex_x + ex_width / 2.0, building_height * 0.90, '', ha='center', va='center', fontsize=9, color='black')
 
     # Container for dynamic ingress arrows
     ingress_arrows = []
@@ -256,10 +300,15 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
         interior_patch.set_height(0.0)
         ext_rect.set_height(0.0)
         time_text.set_text('')
+        if velocity_series is not None:
+            vel_text.set_text('')
         if basement_levels is not None:
             base_patch.set_height(0.0)
             return [interior_patch, ext_rect, time_text, base_patch]
-        return [interior_patch, ext_rect, time_text]
+        artists = [interior_patch, ext_rect, time_text]
+        if velocity_series is not None:
+            artists.append(vel_text)
+        return artists
 
     def update(frame_i):
         # remove previous dynamic arrows
@@ -277,6 +326,17 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
         # update water heights
         interior_patch.set_height(h_in)
         ext_rect.set_height(h_out)
+
+        # update velocity text if available
+        if velocity_series is not None:
+            try:
+                v_now = velocity_series[i]
+            except Exception:
+                v_now = None
+            if v_now is not None:
+                vel_text.set_text(f'v = {v_now:.2f} m/s')
+            else:
+                vel_text.set_text('')
 
         # update basement panel if present
         if basement_levels is not None:
@@ -363,6 +423,8 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
             ax_q_marker.set_data([sim_times[i]], [Qgb_series[i]])
         # ensure artists include bottom panel elements when present
         artists = [interior_patch, ext_rect, time_text] + ingress_arrows
+        if velocity_series is not None:
+            artists.append(vel_text)
         if basement_levels is not None:
             artists = [base_patch] + artists
         if ax_q is not None and ax_q_marker is not None:
