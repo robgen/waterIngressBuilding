@@ -1,0 +1,8 @@
+# time,velocity (velocity in m/s). Times use the same units as example_external_levels.csv (minutes by default).
+0,0.2
+100,1.2
+200,1.7
+300,2.25
+400,1.5
+500,1.15
+# If this file covers less time than the simulation, velocities beyond the last timestamp will be treated as 0.0 m/s.

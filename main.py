@@ -89,7 +89,7 @@ class IngressPathway:
         self.source = source
         self.target = target
 
-    def compute_flow(self, H_source, H_target):
+    def compute_flow(self, H_source, H_target, v_source=0.0):
         """Compute volumetric flow (m^3 / time-unit) using absolute surface heads.
 
         H_source and H_target are absolute water surface elevations (m) on the
@@ -103,15 +103,20 @@ class IngressPathway:
         if (not self.always_open) and H_source < self.height and H_target < self.height:
             return 0.0
 
-        delta_H = float(H_source) - float(H_target)
-        if delta_H == 0.0:
+        # The submerged/open test above intentionally uses the raw surface
+        # elevations (no dynamic head). However, when computing the driving
+        # head for the orifice we optionally include a hydrodynamic correction
+        # from an external velocity at the source side:  v^2/(2g).
+        g = 9.81
+        delta_H_eff = float(H_source) + (float(v_source) ** 2) / (2.0 * g) - float(H_target)
+        if delta_H_eff == 0.0:
             return 0.0
 
-        flow_rate = self.coeff * self.area * math.sqrt(2.0 * 9.81 * abs(delta_H))
-        return flow_rate if delta_H > 0.0 else -flow_rate
+        flow_rate = self.coeff * self.area * math.sqrt(2.0 * g * abs(delta_H_eff))
+        return flow_rate if delta_H_eff > 0.0 else -flow_rate
 
 class Simulation:
-    def __init__(self, building, ingress_list, external_times, external_levels, dt=60.0):
+    def __init__(self, building, ingress_list, external_times, external_levels, dt=60.0, external_vel_times=None, external_velocities=None):
         """Create a simulation.
 
         Args:
@@ -125,6 +130,9 @@ class Simulation:
         self.ingress_list = ingress_list
         self.t_ext = external_times
         self.h_ext = external_levels
+        # optional external velocity hydrograph (separate timebase allowed)
+        self.v_t = external_vel_times if external_vel_times is not None else []
+        self.v_vals = external_velocities if external_velocities is not None else []
         # simulation timestep (seconds or same units as t_ext). Default is 60.
         self.dt = float(dt) if dt is not None else 60.0
 
@@ -173,6 +181,31 @@ class Simulation:
             H_in = current_h_in
             H_basement = self.building.z_basement + current_h_basement
 
+            # interpolate external velocity to current time (if provided).
+            # Short velocity series are treated as padded with zeros beyond
+            # their last timestamp (explicitly requested behavior).
+            v_out = 0.0
+            if self.v_t and len(self.v_t) > 0 and len(self.v_vals) > 0:
+                # maintain a velocity segment index to avoid re-scanning
+                j_v = getattr(self, '_vel_index', 0)
+                while j_v < len(self.v_t) - 1 and t >= self.v_t[j_v + 1]:
+                    j_v += 1
+                self._vel_index = j_v
+                if j_v < len(self.v_t) - 1:
+                    vt1, vv1 = self.v_t[j_v], self.v_vals[j_v]
+                    vt2, vv2 = self.v_t[j_v+1], self.v_vals[j_v+1]
+                    if vt2 != vt1:
+                        frac = (t - vt1) / (vt2 - vt1)
+                        v_out = vv1 + frac * (vv2 - vv1)
+                    else:
+                        v_out = vv1
+                else:
+                    # beyond last velocity timestamp -> pad with zero
+                    if t > self.v_t[-1]:
+                        v_out = 0.0
+                    else:
+                        v_out = self.v_vals[-1] if self.v_vals else 0.0
+
             # flows: outside->ground (flow_og), outside->basement (flow_ob),
             # ground->basement (flow_gb; positive if ground->basement)
             flow_og = 0.0
@@ -183,10 +216,10 @@ class Simulation:
                 src = getattr(ingress, 'source', 'outside')
                 tgt = getattr(ingress, 'target', 'ground')
                 if src == 'outside' and tgt == 'ground':
-                    Q = ingress.compute_flow(H_out, H_in)
+                    Q = ingress.compute_flow(H_out, H_in, v_source=v_out)
                     flow_og += Q
                 elif src == 'outside' and tgt == 'basement':
-                    Q = ingress.compute_flow(H_out, H_basement)
+                    Q = ingress.compute_flow(H_out, H_basement, v_source=v_out)
                     flow_ob += Q
                 elif src == 'ground' and tgt == 'basement':
                     Q = ingress.compute_flow(H_in, H_basement)
@@ -226,7 +259,13 @@ class Simulation:
             if verbose and (step + 1) % 1000 == 0:
                 print(f"Progress: {min(100, int(100*(step+1)/(total_steps+1)))}%")
 
-        return times, indoor_levels, basement_levels
+        # Backwards-compatible return: if no basement zone is configured,
+        # return the original (times, indoor_levels) tuple. If a basement
+        # exists, return (times, indoor_levels, basement_levels).
+        if getattr(self.building, 'basement_area', 0.0) and self.building.basement_area > 0.0:
+            return times, indoor_levels, basement_levels
+        else:
+            return times, indoor_levels
 
 def parse_external_file(filepath):
     times = []
@@ -249,6 +288,64 @@ def parse_external_file(filepath):
     if not times:
         raise ValueError(f"No data found in external file: {filepath}")
     return times, levels
+
+
+def sample_with_zero_padding(target_times, src_times, src_vals):
+    """Interpolate src_vals defined at src_times onto target_times.
+
+    For t beyond the last src_time, pad with zero (explicit zero-padding).
+    This is factored out so tests can import and validate sampling behaviour.
+    """
+    sampled = []
+    if not src_times or not src_vals:
+        return [0.0 for _ in target_times]
+    j = 0
+    for t in target_times:
+        while j < len(src_times) - 1 and t >= src_times[j+1]:
+            j += 1
+        if j < len(src_times) - 1:
+            t1, v1 = src_times[j], src_vals[j]
+            t2, v2 = src_times[j+1], src_vals[j+1]
+            if t2 != t1:
+                frac = (t - t1) / (t2 - t1)
+                sampled.append(v1 + frac * (v2 - v1))
+            else:
+                sampled.append(v1)
+        else:
+            # beyond last src timestamp -> pad with zero
+            if t > src_times[-1]:
+                sampled.append(0.0)
+            else:
+                sampled.append(src_vals[-1])
+    return sampled
+
+
+def parse_velocity_file(filepath):
+    """Parse external velocity file (time,velocity) into two lists.
+
+    Short files are allowed; when interpolating later any times beyond the
+    last velocity timestamp will be treated as zero velocity (padded with zeros).
+    """
+    times = []
+    vals = []
+    with open(filepath, 'r') as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith('#'):
+                continue
+            parts = s.split(',')
+            if len(parts) < 2:
+                continue
+            try:
+                t_val = float(parts[0])
+                v_val = float(parts[1])
+            except ValueError:
+                continue
+            times.append(t_val)
+            vals.append(v_val)
+    if not times:
+        raise ValueError(f"No data found in velocity file: {filepath}")
+    return times, vals
 
 
 def parse_ingress_file(filepath):
@@ -322,6 +419,8 @@ def main(argv=None):
     parser.add_argument('--animate', action='store_true', help='Create an animation (GIF) of the simulation')
     parser.add_argument('--anim-out', default='simulation_animation.gif', help='Animation output filename (GIF)')
     parser.add_argument('--verbose', '-v', action='store_true')
+    parser.add_argument('--external-velocity', default=None, help='Optional external velocity CSV (time,velocity). If omitted a constant velocity is used from --external-velocity-default')
+    parser.add_argument('--external-velocity-default', type=float, default=0.2, help='Default external velocity (m/s) used when no velocity file is supplied')
     parser.add_argument('--basement-area', type=float, default=0.0, help='Basement floor area (m^2). If >0, a basement zone is created')
     parser.add_argument('--basement-floor-elevation', type=float, default=None, help='Basement floor elevation relative to ground-floor datum (m). Use negative for below ground')
     parser.add_argument('--basement-connection-height', type=float, default=None, help='Height of opening between ground and basement (if omitted no connection is created)')
@@ -393,14 +492,45 @@ def main(argv=None):
         if getattr(args, 'basement_floor_elevation', None) is not None:
             building.z_basement = float(args.basement_floor_elevation)
 
-    sim = Simulation(building, ingress_list, times, levels, dt=dt_seconds)
+    # parse optional external velocity hydrograph (time,velocity)
+    v_times = None
+    v_vals = None
+    if getattr(args, 'external_velocity', None):
+        try:
+            print(f"Reading external velocity from: {args.external_velocity}")
+            v_times_raw, v_vals_raw = parse_velocity_file(args.external_velocity)
+            # keep original velocity times for preview (in original units)
+            orig_v_times = list(v_times_raw)
+            # convert velocity times to internal seconds using same multiplier
+            v_times = [t * mul for t in v_times_raw]
+            v_vals = list(v_vals_raw)
+        except Exception as e:
+            print(f"Failed to read velocity file: {e}")
+            print("Falling back to default velocity value")
+            v_times = list(times)
+            v_vals = [float(args.external_velocity_default) for _ in times]
+    else:
+        # use a constant default velocity sampled at the external hydrograph times
+        v_times = list(times)
+        v_vals = [float(args.external_velocity_default) for _ in times]
+
+    sim = Simulation(building, ingress_list, times, levels, dt=dt_seconds, external_vel_times=v_times, external_velocities=v_vals)
+
+    # (velocity preview will be saved after the simulation so it uses the
+    # same interpolation/padding as the plotted/animated velocity)
 
     print('Running simulation...')
     def progress(p):
         if args.verbose:
             print(f'Progress: {int(p*100)}%')
 
-    sim_times, sim_levels, sim_basement = sim.run(progress_callback=progress, verbose=args.verbose)
+    sim_ret = sim.run(progress_callback=progress, verbose=args.verbose)
+    # support both old (times, levels) and new (times, levels, basement_levels) return signatures
+    if isinstance(sim_ret, tuple) and len(sim_ret) == 3:
+        sim_times, sim_levels, sim_basement = sim_ret
+    else:
+        sim_times, sim_levels = sim_ret
+        sim_basement = None
 
     # interpolate external hydrograph to simulation times so plots/animation have matching lengths
     def sample_external(sim_times, t_ext, h_ext):
@@ -425,12 +555,38 @@ def main(argv=None):
     # sample external using the original hydrograph times (converted to seconds)
     sampled_external = sample_external(sim_times, times, levels)
 
+    # use the canonical zero-padding sampler defined at module scope
+    # (sample_with_zero_padding is imported from the module scope above)
+
+    # sample external velocity (if available) to simulation times for plotting
+    sampled_velocity_plot = None
+    if 'v_times' in locals() and v_times and v_vals:
+        try:
+            sampled_velocity_plot = sample_with_zero_padding(sim_times, v_times, v_vals)
+        except Exception:
+            sampled_velocity_plot = None
+
     # Convert simulation times back to the original units for plotting/display
     sim_times_display = [t / mul for t in sim_times]
 
+    # Save velocity preview using the same sampled/padded velocity used in
+    # the simulation_result (this ensures the preview and plot match).
+    try:
+        velocity_preview_path = os.path.join(outdir, 'velocity_preview.png')
+        if sampled_velocity_plot is not None:
+            # sampled_velocity_plot corresponds to sim_times (seconds); use
+            # sim_times_display (original units) for x-axis in preview
+            viz.save_velocity_preview(sim_times_display, sampled_velocity_plot, velocity_preview_path, time_unit=units, orig_point_times=locals().get('orig_v_times', None), orig_point_vals=locals().get('v_vals_raw', None))
+        else:
+            # fallback: show constant/default velocity on the original hydrograph times
+            viz.save_velocity_preview(sim_times_display, [float(args.external_velocity_default) for _ in sim_times_display], velocity_preview_path, time_unit=units)
+        print(f"Saved velocity preview to {velocity_preview_path}")
+    except Exception as e:
+        print(f"Failed to save velocity preview: {e}")
+
     sim_out_path = os.path.join(outdir, 'simulation_result.png')
     try:
-        viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path, time_unit=units, basement_levels=sim_basement)
+        viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path, time_unit=units, basement_levels=sim_basement, velocity_series=sampled_velocity_plot)
     except TypeError:
         viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path, time_unit=units)
     print(f"Saved simulation result to {sim_out_path}")
@@ -448,7 +604,12 @@ def main(argv=None):
                     sim_basement_abs = [building.z_basement + hb for hb in sim_basement]
                 except Exception:
                     sim_basement_abs = None
-                viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim, ingress_list, anim_path, time_unit=units, basement_levels=sim_basement, basement_abs_levels=sim_basement_abs)
+                # sample velocities to simulation times for animation display (use seconds-based sim_times)
+                try:
+                    sampled_velocity_for_anim = sample_with_zero_padding(sim_times, v_times, v_vals) if (v_times and v_vals) else None
+                except Exception:
+                    sampled_velocity_for_anim = None
+                viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim, ingress_list, anim_path, time_unit=units, basement_levels=sim_basement, basement_abs_levels=sim_basement_abs, velocity_series=sampled_velocity_for_anim)
             except TypeError:
                 # Fall back if viz.generate_animation doesn't accept the new arg (backwards compatibility)
                 viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim, ingress_list, anim_path, time_unit=units)

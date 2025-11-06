@@ -79,6 +79,57 @@ Suggested improvements (future work)
 - Model multiple compartments and internal routing/path losses.
 - Calibrate discharge coefficients $C_i$ to experimental data or CFD results for more accurate predictions.
 
+Including external flow velocity (hydrodynamic correction)
+
+Useful reference: https://nhess.copernicus.org/articles/9/1679/2009/nhess-9-1679-2009.pdf
+
+This section describes a conservative, lightweight extension to account for external water velocity (flood flow) that influences infiltration through openings. The goal is to capture two coupled effects with a simple correction:
+
+- dynamic (stagnation) pressure that increases the effective head on the flow-facing side; and
+- velocity-driven forcing that can push water into small gaps even when the hydrostatic depth is small.
+
+Model additions and conventions
+
+- External velocity: a time series (hydrograph) v_out(t) in m/s, given at the same timestamps style as the external level hydrograph. If not provided, the model will assume a conservative default constant velocity v0 = 0.2 m/s.
+- Units: velocity in m/s, heights in m, time units follow the CLI `--time-units` convention. The gravitational constant g = 9.81 m/s^2 is used as before.
+- Conservative placement: for simplicity we assume all ingress paths are on the flow-facing facade and thus are affected by the external velocity. This is conservative for risk assessment; if you have site-specific exposure (e.g., openings on a sheltered face) extend the ingress definitions to include orientation.
+
+Effective head for velocity-augmented flow
+
+We approximate the additional effect of kinetic energy (dynamic pressure) as an equivalent head term. The effective head difference used in the orifice formula becomes
+
+$$
+\Delta h_{\mathrm{eff}}(t) = h_{\mathrm{out}}(t) + \frac{v_{\mathrm{out}}(t)^2}{2g} - h_{\mathrm{in}}(t).
+$$
+
+This expression adds the dynamic head $v^2/(2g)$ to the external water level before computing the orifice flow. The orifice/discharge equation is otherwise unchanged, i.e.
+
+$$
+Q_i(t) = \operatorname{sign}(\Delta h_{\mathrm{eff}})\; C_i A_i \sqrt{2 g |\Delta h_{\mathrm{eff}}|}.
+$$
+
+Submerged test and sign
+
+- To preserve the conservative 'sill' behaviour used elsewhere in the model we retain the existing submerged test: if both sides are below the opening sill height $z_i$ (i.e. $h_{\mathrm{out}} < z_i$ and $h_{\mathrm{in}} < z_i$), then $Q_i=0$. Note that the submerged test uses raw levels (not the dynamic-head-augmented level). The rationale is that the opening must be physically submerged to allow free flow; the velocity correction increases the local driving head once the opening is submerged on at least one side.
+- The sign of $Q_i$ follows $\operatorname{sign}(h_{\mathrm{source}} + v^2/(2g) - h_{\mathrm{target}})$; when a connection is ground→basement we use the analogous expression with source/target roles.
+
+Implementation notes (numerical)
+
+- Interpolation: v_out(t) should be interpolated to the simulation time grid the same way the external level is interpolated. When no velocity hydrograph is supplied use the constant default v0.
+- Units and dt: since the dynamic term contains v^2 and g, ensure v is in m/s and g in m/s^2; dt remains in the user-selected time units (converted to seconds internally as before). The product Q*dt yields volume as before.
+
+Limitations and caveats
+
+- This is a first-order correction that approximates dynamic pressure as an equivalent head; it does not replace a full hydrodynamic CFD treatment of flow around structures, wave impact, or transient pressure spikes.
+- Using the dynamic head term is conservative for flow-driven infiltration but does not model additional effects such as boundary-layer pumping or turbulence-enhanced infiltration through porous materials.
+- If continuous leakage below the sill is desired (small seepage even when both sides below the sill), model that with an additional small-area connection at a low sill or use a small explicit leakage pathway.
+
+Suggested tests
+
+- Compare two runs with identical hydrographs but with v_out(t)=0 (hydrostatic only) and v_out(t)=0.2 m/s to observe sensitivity of infiltration timing and volume.
+- Unit test: for a single orifice with fixed h_out, h_in and v_out check analytical change in Q predicted by the formula above.
+
+
 ## Basement positioning and elevation-aware modelling
 
 This short technical note explains how to represent basements (cellars, low-lying compartments) in the flood ingress model using absolute elevations so that the orifice law works naturally — i.e. a basement can retain water when external levels fall below connection sills without any artificial clamping of flows.
