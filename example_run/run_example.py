@@ -56,13 +56,29 @@ if __name__ == '__main__':
     # --- Example C: include external velocity hydrograph ---
     # This example demonstrates the new external velocity input and will
     # produce `velocity_preview.png` in the output directory.
+    # args = [
+    #     '--external', 'example_external_levels.csv',
+    #     '--ingress', 'example_ingress_paths.txt',
+    #     '--outdir', '.',
+    #     '--floor', '50',
+    #     '--animate',
+    #     '--anim-out', 'simulation_animation_with_velocity.gif',
+    #     '--external-velocity', 'example_external_velocities.csv'
+    # ]
+
+    # --- Example D: compute forces and plot results ---
+    # This runs the same hydrograph but requests per-timestep forces and a plot.
     args = [
         '--external', 'example_external_levels.csv',
         '--ingress', 'example_ingress_paths.txt',
         '--outdir', '.',
         '--floor', '50',
+        '--compute-forces',
+        '--building-width', '12.0',
+        '--drag-coeff', '1.0',
+        '--rho', '1000.0',
         '--animate',
-        '--anim-out', 'simulation_animation_with_velocity.gif',
+        '--anim-out', 'simulation_animation_forces.gif',
         '--external-velocity', 'example_external_velocities.csv'
     ]
 

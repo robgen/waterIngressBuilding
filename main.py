@@ -3,6 +3,9 @@ import math
 import argparse
 import os
 import sys
+import csv
+
+import forces
 
 """Headless runner for Flood Ingress Simulation
 
@@ -421,6 +424,10 @@ def main(argv=None):
     parser.add_argument('--verbose', '-v', action='store_true')
     parser.add_argument('--external-velocity', default=None, help='Optional external velocity CSV (time,velocity). If omitted a constant velocity is used from --external-velocity-default')
     parser.add_argument('--external-velocity-default', type=float, default=0.2, help='Default external velocity (m/s) used when no velocity file is supplied')
+    parser.add_argument('--compute-forces', action='store_true', help='Compute hydrostatic and hydrodynamic lateral forces (CSV output)')
+    parser.add_argument('--building-width', type=float, default=10.0, help='Building width (m) for force calculations (horizontal extent of flow-facing facade)')
+    parser.add_argument('--drag-coeff', type=float, default=1.0, help='Drag coefficient C_D (dimensionless)')
+    parser.add_argument('--rho', type=float, default=1000.0, help='Fluid density (kg/m^3)')
     parser.add_argument('--basement-area', type=float, default=0.0, help='Basement floor area (m^2). If >0, a basement zone is created')
     parser.add_argument('--basement-floor-elevation', type=float, default=None, help='Basement floor elevation relative to ground-floor datum (m). Use negative for below ground')
     parser.add_argument('--basement-connection-height', type=float, default=None, help='Height of opening between ground and basement (if omitted no connection is created)')
@@ -590,6 +597,53 @@ def main(argv=None):
     except TypeError:
         viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path, time_unit=units)
     print(f"Saved simulation result to {sim_out_path}")
+
+    # Compute analytical forces time series if requested
+    if getattr(args, 'compute_forces', False):
+        try:
+            forces_out = []
+            # ensure we have a velocity list matching sim_times
+            if sampled_velocity_plot is None:
+                vel_list = [float(args.external_velocity_default) for _ in sim_times]
+            else:
+                vel_list = list(sampled_velocity_plot)
+
+            for i, t in enumerate(sim_times):
+                h_out_i = sampled_external[i]
+                h_in_i = sim_levels[i]
+                v_i = vel_list[i] if i < len(vel_list) else float(args.external_velocity_default)
+
+                # net hydrostatic depth opposed by interior water
+                H_net = max(0.0, float(h_out_i) - float(h_in_i))
+                # external wetted height for drag is the external water depth above datum
+                H_wet = max(0.0, float(h_out_i))
+
+                res = forces.compute_combined_forces(H_net, H_wet, v_i, float(args.building_width), C_D=float(args.drag_coeff), rho=float(args.rho))
+                forces_out.append((t, res['F_hydro'], res['F_drag'], res['F_total'], res['M_overturn'], H_net, H_wet, v_i, res['lever_hydro'], res['lever_drag']))
+
+            forces_csv = os.path.join(outdir, 'forces.csv')
+            with open(forces_csv, 'w', newline='') as cf:
+                writer = csv.writer(cf)
+                writer.writerow(['time', 'F_hydro_N', 'F_drag_N', 'F_total_N', 'M_overturn_Nm', 'H_net_m', 'H_wet_m', 'v_m_per_s', 'lever_hydro_m', 'lever_drag_m'])
+                for row in forces_out:
+                    writer.writerow(row)
+
+            # simple peak summary printout
+            peak_F_total = max((r[3] for r in forces_out), default=0.0)
+            peak_idx = next((i for i, r in enumerate(forces_out) if r[3] == peak_F_total), None)
+            peak_time = forces_out[peak_idx][0] / mul if peak_idx is not None else None
+            print(f"Saved forces time series to: {forces_csv}")
+            if peak_time is not None:
+                print(f"Peak total lateral force = {peak_F_total:.2f} N at time={peak_time} {units}")
+            # create a simple forces_result.png plot
+            try:
+                forces_png = os.path.join(outdir, 'forces_result.png')
+                viz.save_forces_result(sim_times_display, forces_out, forces_png, time_unit=units)
+                print(f"Saved forces plot to: {forces_png}")
+            except Exception as _e:
+                print(f"Failed to save forces plot: {_e}")
+        except Exception as e:
+            print(f"Failed to compute or save forces: {e}")
 
     if args.animate:
         anim_path = os.path.join(outdir, args.anim_out)
