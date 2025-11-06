@@ -163,6 +163,48 @@ def save_simulation_result(sim_times, sim_levels, external_levels, outpath, time
     plt.close(fig)
 
 
+def save_forces_result(sim_times, forces_rows, outpath, time_unit=None):
+    """Plot forces and overturning moment over time.
+
+    Args:
+        sim_times: list of times (in display units)
+        forces_rows: iterable of rows as produced by main forces_out: tuples
+            (t, F_hydro, F_drag, F_total, M_overturn, H_net, H_wet, v, lever_h, lever_d)
+        outpath: output PNG path
+        time_unit: optional label for x-axis
+    """
+    if not sim_times:
+        raise ValueError('No simulation times provided')
+    # unpack columns
+    times = list(sim_times)
+    F_h = [r[1] for r in forces_rows]
+    F_d = [r[2] for r in forces_rows]
+    F_t = [r[3] for r in forces_rows]
+    M_o = [r[4] for r in forces_rows]
+
+    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(8, 6), sharex=True, gridspec_kw={'height_ratios': [2, 1]})
+    ax1.plot(times, F_h, label='Hydrostatic (N)', color='tab:blue')
+    ax1.plot(times, F_d, label='Drag (N)', color='tab:green')
+    ax1.plot(times, F_t, label='Total (N)', color='tab:red', linewidth=1.5)
+    ax1.set_ylabel('Force (N)')
+    ax1.legend(loc='upper left')
+    # annotate peaks
+    try:
+        peak_idx = max(range(len(F_t)), key=lambda i: F_t[i])
+        ax1.annotate(f'Peak {F_t[peak_idx]:.1f} N', xy=(times[peak_idx], F_t[peak_idx]), xytext=(10, 10), textcoords='offset points', fontsize=8, arrowprops=dict(arrowstyle='->'))
+    except Exception:
+        pass
+
+    ax2.plot(times, M_o, label='Overturning moment (Nm)', color='tab:purple')
+    ax2.set_ylabel('Moment (Nm)')
+    ax2.set_xlabel('Time' if not time_unit else f'Time ({time_unit})')
+    ax2.legend(loc='upper left')
+
+    fig.tight_layout()
+    fig.savefig(outpath)
+    plt.close(fig)
+
+
 def generate_animation(sim_times, sim_levels, external_levels, ingress_list, outpath, fps=10, max_frames=200, time_unit=None, basement_levels=None, basement_abs_levels=None, velocity_series=None):
     # Prepare frames (downsample if too many)
     n_frames = len(sim_times)

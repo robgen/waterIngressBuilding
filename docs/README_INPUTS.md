@@ -63,3 +63,26 @@ python3 main.py --external example_run/example_external_levels.csv \
   --basement-connection-height 0.0 --basement-connection-area 0.001
 ```
 
+## External velocity and force-related inputs
+
+The simulator accepts an optional external velocity hydrograph to account for hydrodynamic effects on ingress and to support time-series estimates of lateral forces on the flow-facing façade.
+
+- `--external-velocity PATH` — CSV file containing `time,velocity` rows (velocity in m/s). Times use the same time units as the external level hydrograph. If omitted a conservative default velocity is used (see `--external-velocity-default`).
+- `--external-velocity-default FLOAT` — default constant velocity (m/s) used when no velocity hydrograph is provided. The project default is 0.2 (m/s).
+
+Units and conventions
+
+- Velocity: metres per second (m/s). The external velocity is assumed orthogonal to the flow-facing building wall for the purpose of drag calculations.
+- When a velocity hydrograph is supplied it is linearly interpolated to the simulation time grid and padded with zeros beyond its last timestamp by default (short hydrographs behave as if velocity falls to zero after the last sample).
+
+Building width and force calculation inputs
+
+- `--building-width FLOAT` — building width (m). This is the horizontal extent of the flow-facing façade used when computing analytical lateral forces (see `docs/TECHNICAL.md`). The term used is "building width" (not "wall width").
+- `--drag-coeff FLOAT` — optional drag coefficient C_D (dimensionless). Default conservative value is 1.0.
+- `--rho FLOAT` — fluid density in kg/m^3 (default 1000).
+
+Notes on impulsive/wave impacts
+
+This simulator provides steady hydrostatic and steady drag (hydrodynamic) estimates. It does not model impulsive or wave slam loads. For impulsive/wave impact design and assessment consult the FEMA guideline you provided earlier; impulsive loads require specialized, guideline-driven treatment beyond the steady formulas documented here.
+
+
