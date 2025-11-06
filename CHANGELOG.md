@@ -17,3 +17,12 @@ All notable changes to this project are documented in this file.
 - Added `--temp-output` CLI flag to write outputs to a temporary directory that is removed on exit (useful for tests and smoke runs).
 - Streamlit UI: ingress locations plot is shown in the uploader preview (better visual feedback); the app no longer uses deprecated Streamlit parameters and displays animated GIFs inline.
 - Streamlit run output now shows only the final simulation result PNG (and optionally the animation) after executing the simulation, reducing UI clutter.
+
+## [2025-11-06]
+
+- Added analytical hydrostatic and hydrodynamic lateral force calculations and overturning moment outputs (closed-form formulas only). Implemented in `forces.py`.
+- Added CLI flags: `--compute-forces`, `--building-width`, `--drag-coeff`, and `--rho` to enable force time-series computation and adjust parameters.
+- Added plotting helper `viz.save_forces_result` and `forces.csv`/`forces_result.png` outputs when `--compute-forces` is used.
+- Velocity handling: external velocity hydrograph remains supported; forces use sampled/padded velocity series (assumed orthogonal to flow-facing façade).
+- Added unit tests for force formulas (`tests/test_forces.py`) and example runner that demonstrates force outputs.
+
