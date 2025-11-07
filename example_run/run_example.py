@@ -23,9 +23,6 @@ if __name__ == '__main__':
     # run from example directory so default relative filenames resolve
     os.chdir(str(this_dir))
     # Call main with explicit args pointing to local files and output to '.'
-    # Two example argument sets are shown below. The first (active) runs
-    # the simulation without a basement. The second (commented) shows the
-    # same parameters but with a basement compartment — uncomment to run it.
 
     # --- Example A: no basement ---
     # args = [
