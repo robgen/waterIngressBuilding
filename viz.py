@@ -5,11 +5,19 @@ This module sets the Agg backend on import so it is safe to import only
 from CLI (not from GUI). Callers that need GUI-backed plotting should not
 import this module.
 """
+import os
+import tempfile
+
+_mpl_config_dir = os.path.join(tempfile.gettempdir(), 'water_ingress_matplotlib')
+os.makedirs(_mpl_config_dir, exist_ok=True)
+os.environ.setdefault('MPLCONFIGDIR', _mpl_config_dir)
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib import patches
+from matplotlib.ticker import FuncFormatter
 
 
 def save_external_preview(times, levels, outpath, time_unit=None):
@@ -629,6 +637,38 @@ def save_batch_scatter(h_peak_ext, h_peak_int, outpath):
     ax.legend(fontsize=8)
     ax.set_aspect('equal')
     ax.grid(True, lw=0.4, color='#ddd', zorder=1)
+
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=130)
+    plt.close(fig)
+
+
+def save_loss_scatter(h_peak_ext, aggregate_losses, outpath):
+    """Scatter plot of peak exterior water depth against aggregate loss."""
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+
+    ax.scatter(h_peak_ext, aggregate_losses, s=22, alpha=0.75,
+               color='#1f77b4', edgecolors='white', linewidths=0.4, zorder=3)
+
+    avg_loss = (sum(aggregate_losses) / len(aggregate_losses)) if aggregate_losses else 0.0
+    ax.axhline(avg_loss, color='#c0392b', lw=1.3, ls='--', zorder=2,
+               label=f'Average loss = GBP {avg_loss:,.0f}')
+
+    ax.set_xlabel('Peak exterior depth  $h_{ext}^{max}$ (m)')
+    ax.set_ylabel('Aggregate loss (GBP)')
+    ax.set_title(f'Peak exterior water vs aggregate loss ({len(h_peak_ext)} cases)')
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{x:,.0f}'))
+    ax.grid(True, lw=0.4, color='#ddd', zorder=1)
+    ax.legend(fontsize=8, loc='upper left')
+
+    ax.text(
+        0.98, 0.03,
+        f'Average loss: GBP {avg_loss:,.0f}',
+        transform=ax.transAxes,
+        ha='right', va='bottom',
+        fontsize=8.5,
+        bbox=dict(boxstyle='round,pad=0.28', fc='white', ec='#c0392b', alpha=0.9),
+    )
 
     fig.tight_layout()
     fig.savefig(outpath, dpi=130)

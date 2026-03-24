@@ -1,5 +1,8 @@
 import math
+import os
+import tempfile
 
+from damage import VulnerabilityCurve, load_vulnerability_curve
 from main import Building, IngressPathway, Simulation
 
 
@@ -47,3 +50,34 @@ def test_dt_convergence():
     diff_coarse_med = abs(final_coarse - final_med)
 
     assert diff_med_fine <= diff_coarse_med + 1e-8
+
+
+def test_vulnerability_curve_interpolation_and_clamping():
+    curve = VulnerabilityCurve(
+        heights_m=[0.0, 0.5, 1.0],
+        losses=[1000.0, 2000.0, 5000.0],
+    )
+
+    assert curve.interpolate_loss(-0.1) == 1000.0
+    assert curve.interpolate_loss(1.2) == 5000.0
+    assert abs(curve.interpolate_loss(0.25) - 1500.0) < 1e-9
+    assert abs(curve.interpolate_loss(0.75) - 3500.0) < 1e-9
+
+
+def test_load_vulnerability_curve_averages_duplicate_heights():
+    fd, path = tempfile.mkstemp(suffix='.csv')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write('height_m,mean_repair_loss_GBP\n')
+            f.write('0.0,1000\n')
+            f.write('0.5,2000\n')
+            f.write('0.5,3000\n')
+            f.write('1.0,6000\n')
+
+        curve = load_vulnerability_curve(path)
+
+        assert curve.heights_m == [0.0, 0.5, 1.0]
+        assert curve.losses == [1000.0, 2500.0, 6000.0]
+        assert abs(curve.interpolate_loss(0.75) - 4250.0) < 1e-9
+    finally:
+        os.remove(path)

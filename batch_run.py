@@ -43,6 +43,7 @@ Usage
       --depth-dir    "water time series/depth"      \\
       --velocity-dir "water time series/velocity"   \\
       --ingress      example_run/example_ingress_paths.txt \\
+      --contents-vulnerability example_run/uk_contents_vulnerability.csv \\
       --floor        50                              \\
       --time-units   minutes                         \\
       --dt           1                               \\
@@ -53,10 +54,12 @@ Usage
 import argparse
 import copy
 import csv
+import importlib
 import math
 import os
 import sys
 
+from damage import load_vulnerability_curve
 from main import (
     Building,
     IngressPathway,
@@ -213,19 +216,24 @@ def _write_summary(results, time_units, outdir):
     tu = time_units[:3]
     dur_cols = [c for c in results[0].keys() if c.startswith('dur_h') and c.endswith(tu)]
     key_cols = ['h_peak_ext', 'h_peak_int'] + dur_cols
+    if 'aggregate_loss_GBP' in results[0]:
+        key_cols.append('aggregate_loss_GBP')
+
+    def _summary_round(col, value):
+        return round(value, 2 if col.endswith('_GBP') else 4)
 
     rows = []
     for col in key_cols:
         vals = sorted(r[col] for r in results)
         rows.append({
             'metric': col,
-            'min':    round(_percentile(vals, 0),   4),
-            'p10':    round(_percentile(vals, 10),  4),
-            'p25':    round(_percentile(vals, 25),  4),
-            'median': round(_percentile(vals, 50),  4),
-            'p75':    round(_percentile(vals, 75),  4),
-            'p90':    round(_percentile(vals, 90),  4),
-            'max':    round(_percentile(vals, 100), 4),
+            'min':    _summary_round(col, _percentile(vals, 0)),
+            'p10':    _summary_round(col, _percentile(vals, 10)),
+            'p25':    _summary_round(col, _percentile(vals, 25)),
+            'median': _summary_round(col, _percentile(vals, 50)),
+            'p75':    _summary_round(col, _percentile(vals, 75)),
+            'p90':    _summary_round(col, _percentile(vals, 90)),
+            'max':    _summary_round(col, _percentile(vals, 100)),
         })
 
     summary_path = os.path.join(outdir, 'batch_summary.csv')
@@ -243,6 +251,7 @@ _DEFAULT_THRESHOLDS = [round(0.10 * i, 2) for i in range(1, 16)]  # 0.10 … 1.5
 
 def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
               time_units, dt, thresholds, default_velocity,
+              vulnerability_curve,
               outdir, verbose=True):
     """
     Run the full batch ensemble and write results.
@@ -262,6 +271,7 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
     thresholds      : list of absolute interior depth thresholds (m) at which
                       exceedance duration is reported (e.g. [0.10, 0.30, 1.00])
     default_velocity: fallback velocity (m/s) when no velocity data available
+    vulnerability_curve: optional VulnerabilityCurve for mapping h_peak_int to loss
     outdir          : directory for output CSVs
     verbose         : print progress to stdout
 
@@ -307,6 +317,10 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
                 'h_peak_ext':    round(h_peak_ext, 4),
                 'h_peak_int':    round(h_peak_int, 4),
             }
+            if vulnerability_curve is not None:
+                row['aggregate_loss_GBP'] = round(
+                    vulnerability_curve.interpolate_loss(h_peak_int), 2
+                )
             for col, dur in zip(dur_cols, durations):
                 row[col] = dur
             results.append(row)
@@ -324,6 +338,8 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
         print('No results produced.', file=sys.stderr)
         return results
 
+    viz = importlib.import_module('viz')
+
     # ── write batch_results.csv ───────────────────────────────────────────────
     results_path = os.path.join(outdir, 'batch_results.csv')
     with open(results_path, 'w', newline='') as f:
@@ -334,10 +350,33 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
     # ── write batch_summary.csv ───────────────────────────────────────────────
     summary_path = _write_summary(results, time_units, outdir)
 
+    # ── write batch figures ───────────────────────────────────────────────────
+    ingress_plot_path = os.path.join(outdir, 'ingress_paths.png')
+    viz.save_ingress_locations(ingress_list, ingress_plot_path)
+
+    peak_scatter_path = os.path.join(outdir, 'peak_exterior_vs_peak_interior.png')
+    viz.save_batch_scatter(
+        [r['h_peak_ext'] for r in results],
+        [r['h_peak_int'] for r in results],
+        peak_scatter_path,
+    )
+
     if verbose:
         print(f'  Results  → {results_path}')
         print(f'  Summary  → {summary_path}')
+        print(f'  Ingress  → {ingress_plot_path}')
+        print(f'  Peaks    → {peak_scatter_path}')
         _print_summary_table(results, time_units)
+
+    if vulnerability_curve is not None:
+        loss_plot_path = os.path.join(outdir, 'peak_exterior_vs_aggregate_loss.png')
+        viz.save_loss_scatter(
+            [r['h_peak_ext'] for r in results],
+            [r['aggregate_loss_GBP'] for r in results],
+            loss_plot_path,
+        )
+        if verbose:
+            print(f'  Loss plot → {loss_plot_path}')
 
     return results
 
@@ -366,6 +405,10 @@ def _print_summary_table(results, time_units):
     ]:
         mn, md, mx = _stats(vals)
         print(f"  {label:<30s}  {mn:8.3f}  {md:8.3f}  {mx:8.3f}")
+    if 'aggregate_loss_GBP' in results[0]:
+        loss_vals = [r['aggregate_loss_GBP'] for r in results]
+        mn, md, mx = _stats(loss_vals)
+        print(f"  {'aggregate_loss_GBP':<30s}  {mn:8.2f}  {md:8.2f}  {mx:8.2f}")
     print()
 
 
@@ -400,6 +443,12 @@ def _parse_args(argv=None):
                         'Default: 0.10 0.20 … 1.50 m.')
     p.add_argument('--default-velocity', type=float, default=0.2,
                    help='Fallback velocity (m/s) when no velocity data are available.')
+    p.add_argument('--contents-vulnerability', default=None,
+                   help='Optional CSV vulnerability curve used to map peak '
+                        'interior depth to aggregate loss. Requires columns '
+                        '"height_m" and "mean_repair_loss_GBP" by default.')
+    p.add_argument('--contents-loss-column', default='mean_repair_loss_GBP',
+                   help='Loss column to interpolate from the vulnerability CSV.')
     p.add_argument('--outdir',       default='batch_results',
                    help='Output directory for batch_results.csv and batch_summary.csv.')
     return p.parse_args(argv)
@@ -408,6 +457,12 @@ def _parse_args(argv=None):
 def main(argv=None):
     args = _parse_args(argv)
     ingress_list = parse_ingress_file(args.ingress)
+    vulnerability_curve = None
+    if args.contents_vulnerability:
+        vulnerability_curve = load_vulnerability_curve(
+            args.contents_vulnerability,
+            loss_column=args.contents_loss_column,
+        )
     run_batch(
         depth_dir        = args.depth_dir,
         velocity_dir     = args.velocity_dir,
@@ -417,6 +472,7 @@ def main(argv=None):
         dt               = args.dt,
         thresholds       = args.thresholds,
         default_velocity = args.default_velocity,
+        vulnerability_curve = vulnerability_curve,
         outdir           = args.outdir,
         verbose          = True,
     )

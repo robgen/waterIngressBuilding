@@ -83,6 +83,28 @@ This simulator provides steady hydrostatic and steady drag (hydrodynamic) estima
 - `--drag-coeff FLOAT` — optional drag coefficient C_D (dimensionless). Default conservative value is 1.0.
 - `--rho FLOAT` — fluid density in kg/m^3 (default 1000).
 
+## Contents vulnerability inputs
+
+The batch runner can optionally convert each simulated peak interior water depth into a simple aggregate loss estimate by interpolating a vulnerability curve.
+
+- `--contents-vulnerability PATH` — CSV file containing at least `height_m` and a loss column. The default loss column used by `batch_run.py` is `mean_repair_loss_GBP`.
+- `--contents-loss-column NAME` — optional column name to interpolate instead of `mean_repair_loss_GBP`.
+
+Behaviour
+
+- The batch run uses the simulated `h_peak_int` for each case, linearly interpolates the vulnerability curve, and writes the result to `aggregate_loss_GBP` in `batch_results.csv`.
+- When a vulnerability curve is supplied, the batch runner also writes `peak_exterior_vs_aggregate_loss.png` to the batch output directory.
+
+Example CLI
+
+```bash
+python3 batch_run.py \
+  --depth-dir "water time series/depth" \
+  --velocity-dir "water time series/velocity" \
+  --ingress example_run/uk_terraced_house_ingress_paths.txt \
+  --contents-vulnerability example_run/uk_contents_vulnerability.csv \
+  --outdir batch_results/uk_terraced_house_unprotected_loss
+```
 
 
 
