@@ -16,6 +16,7 @@ Notes:
    animation generation may require `ffmpeg` on the system if PillowWriter
    cannot write GIFs.
 """
+import csv
 import io
 import os
 import tempfile
@@ -25,7 +26,7 @@ import streamlit as st
 from PIL import Image
 
 # Import authoritative logic from main.py
-from main import Building, Simulation, parse_external_text, parse_ingress_file, parse_external_file, parse_ingress_text
+from main import Building, IngressPathway, Simulation, parse_external_text, parse_ingress_file, parse_external_file, parse_ingress_text, parse_velocity_text, sample_with_zero_padding
 
 import viz
 
@@ -58,12 +59,41 @@ with st.sidebar:
     timestep = st.number_input('Simulation timestep (in selected time units)', value=1.0 if time_unit != 'seconds' else 60.0, min_value=0.0, step=1.0)
     make_anim = st.checkbox('Generate animation (may be slow)', value=False)
     st.markdown('---')
+    st.subheader('External velocity (optional)')
+    uploaded_velocity = st.file_uploader('Upload velocity CSV (time, velocity m/s)', type=['csv', 'txt'])
+    default_velocity = st.number_input('Default velocity (m/s) if not uploading', value=0.2, min_value=0.0, step=0.05)
+    manual_velocity = st.checkbox('Provide velocity manually (table)')
+    st.markdown('---')
+    st.subheader('Basement (optional)')
+    enable_basement = st.checkbox('Enable basement compartment', value=False)
+    if enable_basement:
+        basement_area = st.number_input('Basement floor area (m²)', value=30.0, min_value=0.1)
+        basement_floor_elev = st.number_input(
+            'Basement floor elevation (m, negative = below ground-floor datum)',
+            value=-2.5, step=0.1)
+        basement_ceiling_elev = st.number_input(
+            'Basement ceiling elevation (m, relative to ground-floor datum)',
+            value=0.0, step=0.1)
+        basement_conn_height = st.number_input(
+            'Ground↔basement connection sill height (m)',
+            value=0.0, step=0.05,
+            help='Height of the opening between ground floor and basement, measured from the ground-floor datum.')
+        basement_conn_area = st.number_input(
+            'Ground↔basement connection area (m²)',
+            value=0.01, min_value=0.0, step=0.001, format='%.4f')
+    else:
+        basement_area = 0.0
+        basement_floor_elev = -2.5
+        basement_ceiling_elev = 0.0
+        basement_conn_height = 0.0
+        basement_conn_area = 0.0
+    st.markdown('---')
     st.subheader('Manual input (optional)')
     manual_external = st.checkbox('Provide external levels manually (table)')
     manual_ingress = st.checkbox('Provide ingress entries manually (table)')
     run_button = st.button('Run simulation')
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     st.subheader('External levels (preview)')
@@ -127,6 +157,32 @@ with col2:
             st.error(f'Failed to parse ingress data: {e}')
     else:
         st.info('Upload an ingress file to preview areas and locations.')
+
+with col3:
+    st.subheader('External velocity (preview)')
+    velocity_table = None
+    velocity_text = None
+    if manual_velocity:
+        example_vel = [{'time': 0.0, 'velocity': 0.2}, {'time': 60.0, 'velocity': 0.5}]
+        if hasattr(st, 'data_editor'):
+            velocity_table = st.data_editor(example_vel, num_rows='dynamic')
+        elif hasattr(st, 'experimental_data_editor'):
+            velocity_table = st.experimental_data_editor(example_vel, num_rows='dynamic')
+        else:
+            velocity_text_area = st.text_area('Paste CSV (time,velocity) lines here', value='0,0.2\n60,0.5')
+            velocity_text = velocity_text_area
+
+    if not manual_velocity and uploaded_velocity is not None:
+        try:
+            vel_text_raw = read_uploaded_text(uploaded_velocity)
+            v_times_prev, v_vals_prev = parse_velocity_text(vel_text_raw)
+            preview_path = os.path.join(tempfile.gettempdir(), 'streamlit_velocity_preview.png')
+            viz.save_velocity_preview(v_times_prev, v_vals_prev, preview_path, time_unit=time_unit)
+            st.image(preview_path, width='stretch')
+        except Exception as e:
+            st.error(f'Failed to parse velocity data: {e}')
+    elif not manual_velocity:
+        st.info('Upload a velocity CSV or use manual input to preview. If none provided, a constant default velocity will be used.')
 
 
 if run_button:
@@ -199,6 +255,37 @@ if run_button:
                 # manual_ingress with text-area fallback
                 ingress_list = parse_ingress_text(ingress_text)
 
+            # Determine velocity source
+            v_times_raw = None
+            v_vals_raw = None
+            if manual_velocity and velocity_table is not None:
+                def vel_table_to_text(table):
+                    lines = []
+                    records = table.to_dict(orient='records') if hasattr(table, 'to_dict') else list(table)
+                    for r in records:
+                        try:
+                            t = r.get('time', list(r.values())[0])
+                            v = r.get('velocity', list(r.values())[1])
+                            lines.append(f"{t},{v}")
+                        except Exception:
+                            continue
+                    return '\n'.join(lines)
+                try:
+                    v_times_raw, v_vals_raw = parse_velocity_text(vel_table_to_text(velocity_table))
+                except Exception:
+                    v_times_raw = v_vals_raw = None
+            elif manual_velocity and velocity_text is not None:
+                try:
+                    v_times_raw, v_vals_raw = parse_velocity_text(velocity_text)
+                except Exception:
+                    v_times_raw = v_vals_raw = None
+            elif not manual_velocity and uploaded_velocity is not None:
+                try:
+                    vel_text_raw = read_uploaded_text(uploaded_velocity)
+                    v_times_raw, v_vals_raw = parse_velocity_text(vel_text_raw)
+                except Exception:
+                    v_times_raw = v_vals_raw = None
+
             building = Building(floor_area)
             # compute unit multiplier and convert times/dt to seconds for simulation
             mul = 1.0
@@ -208,8 +295,33 @@ if run_button:
                 mul = 3600.0
             times_seconds = [t * mul for t in times]
             dt_seconds = float(timestep) * mul
-            # pass user-controlled timestep (converted to seconds) into the Simulation
-            sim = Simulation(building, ingress_list, times_seconds, levels, dt=dt_seconds)
+
+            # Configure basement if enabled
+            if enable_basement and basement_area > 0:
+                building.basement_area = float(basement_area)
+                building.h_basement = 0.0
+                building.z_basement = float(basement_floor_elev)
+                building.basement_ceiling_elevation = float(basement_ceiling_elev)
+                if basement_conn_area > 0:
+                    ingress_list.append(IngressPathway(
+                        height=float(basement_conn_height),
+                        area=float(basement_conn_area),
+                        coeff=1.0,
+                        name='ground-basement-conn',
+                        source='ground',
+                        target='basement',
+                    ))
+
+            # Convert velocity times to seconds; fall back to constant default
+            if v_times_raw is not None and v_vals_raw is not None:
+                v_times_seconds = [t * mul for t in v_times_raw]
+                v_vals = list(v_vals_raw)
+            else:
+                v_times_seconds = list(times_seconds)
+                v_vals = [float(default_velocity)] * len(times_seconds)
+
+            sim = Simulation(building, ingress_list, times_seconds, levels, dt=dt_seconds,
+                             external_vel_times=v_times_seconds, external_velocities=v_vals)
 
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -221,7 +333,12 @@ if run_button:
                     pass
 
             status_text.text('Running simulation...')
-            sim_times, sim_levels = sim.run(progress_callback=progress_cb, verbose=False)
+            sim_ret = sim.run(progress_callback=progress_cb, verbose=False)
+            if len(sim_ret) == 3:
+                sim_times, sim_levels, sim_basement = sim_ret
+            else:
+                sim_times, sim_levels = sim_ret
+                sim_basement = None
             status_text.text('Simulation complete')
 
             # helper: sample external hydrograph (times_seconds/h_levels) to sim_times
@@ -243,13 +360,22 @@ if run_button:
                         sampled.append(h_ext_local[-1] if h_ext_local else 0.0)
                 return sampled
 
+            # Sample velocity to sim_times for plotting/animation
+            sampled_velocity = None
+            try:
+                sampled_velocity = sample_with_zero_padding(sim_times, v_times_seconds, v_vals)
+            except Exception:
+                sampled_velocity = None
+
             # Only produce the simulation result (and optionally the animation).
             outdir = tempfile.mkdtemp(prefix='streamlit_sim_')
             sim_out = os.path.join(outdir, 'simulation_result.png')
             # prepare display times (convert seconds back to selected units) and sampled external
             sim_times_display = [t / mul for t in sim_times]
             sampled_external = sample_external(sim_times, times_seconds, levels)
-            viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out, time_unit=time_unit)
+            viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out,
+                                       time_unit=time_unit, basement_levels=sim_basement,
+                                       velocity_series=sampled_velocity)
             st.image(sim_out, caption='Simulation result', width='stretch')
 
             # Download button for the simulation PNG
@@ -261,9 +387,15 @@ if run_button:
                 anim_path = os.path.join(outdir, 'simulation_animation.gif')
                 status_text.text('Generating animation (this can take a while)...')
                 try:
-                    sampled_external = sample_external(sim_times, times_seconds, levels)
-                    sim_times_display = [t / mul for t in sim_times]
-                    viz.generate_animation(sim_times_display, sim_levels, sampled_external, ingress_list, anim_path, time_unit=time_unit)
+                    sim_basement_abs = (
+                        [building.z_basement + hb for hb in sim_basement]
+                        if sim_basement is not None else None
+                    )
+                    viz.generate_animation(sim_times_display, sim_levels, sampled_external,
+                                           ingress_list, anim_path, time_unit=time_unit,
+                                           basement_levels=sim_basement,
+                                           basement_abs_levels=sim_basement_abs,
+                                           velocity_series=sampled_velocity)
                     with open(anim_path, 'rb') as f:
                         anim_bytes = f.read()
                     # Display animated GIF inline (more reliable across browsers)
@@ -278,3 +410,35 @@ if run_button:
 
         except Exception as exc:
             st.exception(exc)
+
+
+# ── Batch run results ─────────────────────────────────────────────────────────
+
+st.markdown('---')
+st.header('Batch run results')
+
+uploaded_batch = st.file_uploader(
+    'Upload batch_results.csv',
+    type=['csv'],
+    help='Output of batch_run.py — must contain columns h_peak_ext and h_peak_int.',
+)
+
+if uploaded_batch is not None:
+    try:
+        text = uploaded_batch.getvalue().decode('utf-8').splitlines()
+        reader = csv.DictReader(text)
+        rows = list(reader)
+        h_ext = [float(r['h_peak_ext']) for r in rows]
+        h_int = [float(r['h_peak_int']) for r in rows]
+
+        scatter_path = os.path.join(tempfile.gettempdir(), 'batch_scatter.png')
+        viz.save_batch_scatter(h_ext, h_int, scatter_path)
+
+        col_sc, _ = st.columns([1, 1])
+        with col_sc:
+            st.image(scatter_path, width='stretch')
+            with open(scatter_path, 'rb') as f:
+                st.download_button('Download scatter plot', data=f.read(),
+                                   file_name='batch_scatter.png')
+    except Exception as exc:
+        st.error(f'Failed to load batch results: {exc}')

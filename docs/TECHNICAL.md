@@ -124,45 +124,59 @@ Limitations and caveats
 - Using the dynamic head term is conservative for flow-driven infiltration but does not model additional effects such as boundary-layer pumping or turbulence-enhanced infiltration through porous materials.
 - If continuous leakage below the sill is desired (small seepage even when both sides below the sill), model that with an additional small-area connection at a low sill or use a small explicit leakage pathway.
 
+Suggested tests
+
+- Compare two runs with identical hydrographs but with v_out(t)=0 (hydrostatic only) and v_out(t)=0.2 m/s to observe sensitivity of infiltration timing and volume.
+- Unit test: for a single orifice with fixed h_out, h_in and v_out check analytical change in Q predicted by the formula above.
+
+
 ## Hydrostatic and hydrodynamic forces (engineering outputs)
 
 This section documents the analytical, closed-form expressions used to estimate lateral forces and overturning moments on flow-facing building façades. The project uses only analytical formulas (closed-form expressions) for these quantities — no numerical integration approaches are used or referenced here.
 
 Assumptions and conventions
 
-- Forces are computed only for flow-facing façades (conservative assumption unless facade orientation is specified). The external velocity used in hydrodynamic calculations is assumed to be orthogonal to the flow-facing building wall.
-- Building width: the horizontal extent of the flow-facing façade exposed to the flood. The term "building width" is used throughout (not "wall width").
-- Fluid density: use ρ = 1000 kg/m^3 unless overridden.
-- Gravity: g = 9.81 m/s^2.
-- Drag coefficient: a default conservative value C_D = 1.0 is recommended; this may be adjusted with site-specific data.
-- Wetted height H is the vertical depth of water against the façade measured from the base reference used for moment calculations. For a uniformly wetted vertical face, the closed-form expressions below apply directly.
-- Basement compartments are excluded from facade lateral force calculations (they are handled in mass-balance and storage calculations only).
+- The external velocity used in hydrodynamic calculations is assumed orthogonal to the flow-facing wall.
+- Building width: the horizontal extent of the flow-facing façade exposed to the flood (denoted $W$).
+- Fluid density: use $\rho = 1000\ \mathrm{kg\,m^{-3}}$ unless overridden.
+- Gravity: $g = 9.81\ \mathrm{m\,s^{-2}}$.
+- Drag coefficient: default conservative value $C_D = 1.0$ (site-specific values may be used).
+- Wetted height $H$ is the vertical depth of water against the façade measured from the base reference used for moment calculations.
+- Basement compartments are excluded from façade lateral force calculations.
 
 Hydrostatic lateral force (analytical expression)
 
-For a vertical, planar, flow-facing façade with uniform wetted depth H (m) and building width W (m), the resultant hydrostatic force acting horizontally on that façade is the closed-form expression:
+For a vertical, planar, flow-facing façade with uniform wetted depth $H$ (m) and building width $W$ (m), the resultant hydrostatic force is
 
-F_hydro = 0.5 * ρ * g * H^2 * W
+$$
+F_{\mathrm{hydro}} \;=\; \tfrac{1}{2}\,\rho\,g\,H^{2}\,W.
+$$
 
-This is the standard resultant for a hydrostatic pressure distribution on a vertical face. The line of action (resultant centroid) is located at H/3 above the base (i.e., one-third of the wetted height measured from the base).
+The hydrostatic resultant acts at a centroid located at $H/3$ above the base.
 
 Hydrodynamic (drag) force (analytical expression)
 
-For steady flow with external velocity v (m/s) impinging orthogonally on the façade, the steady-state drag force on the wetted facade area A = W * H (m^2) is given by the usual steady drag formula:
+For steady flow with external velocity $v$ (m/s) impinging orthogonally on the façade, with wetted area $A = W H$, the drag force is
 
-F_drag = 0.5 * ρ * C_D * v^2 * A = 0.5 * ρ * C_D * v^2 * W * H
+$$
+F_{\mathrm{drag}} \;=\; \tfrac{1}{2}\,\rho\,C_{D}\,v^{2}\,A \;=\; \tfrac{1}{2}\,\rho\,C_{D}\,v^{2}\,W\,H.
+$$
 
-The drag force scales with v^2 and acts over the wetted area. For a uniformly distributed drag over the wetted height, the centroid of the drag force is at H/2 above the base (i.e., the overturning moment contribution uses lever arm H/2).
+The drag force centroid for a uniformly distributed drag is at $H/2$ above the base.
 
 Combined lateral force and overturning moment (closed-form)
 
-Compute the total lateral force on the flow-facing façade as the sum of the hydrostatic and drag components (both using the wetted height H at the timestep of interest):
+The total lateral force is the sum of hydrostatic and drag components:
 
-F_total = F_hydro + F_drag
+$$
+F_{\mathrm{total}} \;=\; F_{\mathrm{hydro}} + F_{\mathrm{drag}}.
+$$
 
-The overturning moment about the base of the façade (perpendicular to the plane of the building) is approximated by the sum of the moments produced by each component using their analytical centroids:
+The overturning moment about the base is approximated by the sum of moments using the analytical centroids:
 
-M_overturn = F_hydro * (H/3) + F_drag * (H/2)
+$$
+M_{\mathrm{overturn}} \;=\; F_{\mathrm{hydro}}\left(\frac{H}{3}\right) \;+\; F_{\mathrm{drag}}\left(\frac{H}{2}\right).
+$$
 
 Notes and limitations
 
@@ -179,12 +193,6 @@ Suggested validation checks
 
 - Verify that F_drag scales with v^2 by running two identical hydrographs with different constant velocities and checking the ratio of resulting drag forces.
 - Check that when v=0 the drag term vanishes and the computed lateral force reduces to the hydrostatic expression above.
-
-Suggested tests
-
-- Compare two runs with identical hydrographs but with v_out(t)=0 (hydrostatic only) and v_out(t)=0.2 m/s to observe sensitivity of infiltration timing and volume.
-- Unit test: for a single orifice with fixed h_out, h_in and v_out check analytical change in Q predicted by the formula above.
-
 
 ## Basement positioning and elevation-aware modelling
 

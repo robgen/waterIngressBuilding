@@ -393,6 +393,27 @@ def parse_external_text(text):
     return times, levels
 
 
+def parse_velocity_text(text):
+    """Parse external velocity data from a text block (time,velocity lines)."""
+    times = []
+    vals = []
+    for raw in text.splitlines():
+        line = raw.split('#', 1)[0].strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(',') if p.strip()]
+        if len(parts) < 2:
+            continue
+        try:
+            times.append(float(parts[0]))
+            vals.append(float(parts[1]))
+        except ValueError:
+            continue
+    if not times:
+        raise ValueError('No velocity data provided')
+    return times, vals
+
+
 def parse_ingress_text(text):
     """Parse ingress definitions from a text block (h,area,coeff lines)."""
     ingress = []

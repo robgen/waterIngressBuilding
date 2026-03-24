@@ -1,0 +1,21 @@
+# The table below lists typical residual water ingress pathways during floods 
+# for a UK terraced house fitted with flood resistance / impermeabilisation measures
+# up to 0.30 m above internal floor level.
+# Assumption: low-level openings such as airbricks, door thresholds and slab joints
+# are sealed or protected up to 30 cm, but a small residual leakage may remain at
+# barrier interfaces and through imperfect construction details.
+
+# Sources and rationale
+# Base format adapted from example_ingress_paths.txt
+# Environment Agency / UK flood resilience guidance
+# CIRIA C623 & C688: Standards for the repair of buildings following flooding
+# DEFRA / CLG flood resilience guidance and HR Wallingford technical notes
+# The Flood Hub property flood resilience guidance
+
+# height above interior floor level (m), area (m^2), discharge coefficient, name
+0.10, 0.0002, 0.3, Residual seepage through protected brickwork / mortar joints
+0.02, 0.0002, 0.2, Residual leakage at protected front door barrier
+0.02, 0.0002, 0.2, Residual leakage at protected rear door barrier
+0.10, 0.0001, 0.3, Residual seepage at protected service penetration
+0.80, 0.0010, 0.5, Ground-floor window perimeter leak
+0.40, 0.0070, 0.4, Toilet backflow (from sewer above protection level)
