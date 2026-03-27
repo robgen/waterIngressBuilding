@@ -420,7 +420,8 @@ st.header('Batch run results')
 uploaded_batch = st.file_uploader(
     'Upload batch_results.csv',
     type=['csv'],
-    help='Output of batch_run.py — must contain columns h_peak_ext and h_peak_int.',
+    help='Output of batch_run.py — must contain h_peak_ext and h_peak_int. '
+         'If aggregate_loss_GBP is present, a loss plot is also shown.',
 )
 
 if uploaded_batch is not None:
@@ -430,15 +431,33 @@ if uploaded_batch is not None:
         rows = list(reader)
         h_ext = [float(r['h_peak_ext']) for r in rows]
         h_int = [float(r['h_peak_int']) for r in rows]
+        has_loss = bool(rows) and 'aggregate_loss_GBP' in rows[0]
+        losses = [float(r['aggregate_loss_GBP']) for r in rows] if has_loss else None
 
         scatter_path = os.path.join(tempfile.gettempdir(), 'batch_scatter.png')
         viz.save_batch_scatter(h_ext, h_int, scatter_path)
 
-        col_sc, _ = st.columns([1, 1])
+        if has_loss:
+            loss_scatter_path = os.path.join(tempfile.gettempdir(), 'batch_loss_scatter.png')
+            viz.save_loss_scatter(h_ext, losses, loss_scatter_path)
+            col_sc, col_loss = st.columns(2)
+        else:
+            col_sc, _ = st.columns([1, 1])
+            col_loss = None
+
         with col_sc:
             st.image(scatter_path, width='stretch')
             with open(scatter_path, 'rb') as f:
                 st.download_button('Download scatter plot', data=f.read(),
                                    file_name='batch_scatter.png')
+
+        if has_loss and col_loss is not None:
+            with col_loss:
+                st.image(loss_scatter_path, width='stretch')
+                with open(loss_scatter_path, 'rb') as f:
+                    st.download_button('Download loss plot', data=f.read(),
+                                       file_name='batch_loss_scatter.png')
+        elif rows:
+            st.info('No aggregate loss column found in the uploaded batch results, so the loss plot is not shown.')
     except Exception as exc:
         st.error(f'Failed to load batch results: {exc}')
