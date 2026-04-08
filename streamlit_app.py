@@ -28,6 +28,8 @@ from PIL import Image
 # Import authoritative logic from main.py
 from main import Building, IngressPathway, Simulation, parse_external_text, parse_ingress_file, parse_external_file, parse_ingress_text, parse_velocity_text, sample_with_zero_padding
 from damage import load_vulnerability_curve
+from pump import SumpPump
+from diagnostics import run_diagnostics, diagnostics_to_csv_rows, generate_narrative
 
 import viz
 
@@ -75,19 +77,73 @@ with st.sidebar:
         basement_ceiling_elev = st.number_input(
             'Basement ceiling elevation (m, relative to ground-floor datum)',
             value=0.0, step=0.1)
+        st.markdown('**Lumped exterior perimeter opening** (feeds basement or sump)')
+        basement_ingress_height = st.number_input(
+            'Perimeter opening sill height (m)', value=0.0, step=0.05,
+            help='Sill elevation of the lumped exterior perimeter opening (spec §16.8).')
+        basement_ingress_area = st.number_input(
+            'Perimeter opening area (m²)', value=0.0035, min_value=0.0,
+            step=0.0005, format='%.4f')
+        basement_ingress_coeff = st.number_input(
+            'Perimeter opening Cd', value=0.5, min_value=0.0, step=0.05, format='%.2f')
+        st.markdown('**Ground↔basement bypass connection**')
         basement_conn_height = st.number_input(
-            'Ground↔basement connection sill height (m)',
-            value=0.0, step=0.05,
-            help='Height of the opening between ground floor and basement, measured from the ground-floor datum.')
+            'Bypass connection sill height (m)', value=0.0, step=0.05,
+            help='Height of the opening between ground floor and basement.')
         basement_conn_area = st.number_input(
-            'Ground↔basement connection area (m²)',
-            value=0.01, min_value=0.0, step=0.001, format='%.4f')
+            'Bypass connection area (m²)', value=0.001, min_value=0.0,
+            step=0.0005, format='%.4f')
     else:
         basement_area = 0.0
         basement_floor_elev = -2.5
         basement_ceiling_elev = 0.0
+        basement_ingress_height = 0.0
+        basement_ingress_area = 0.0
+        basement_ingress_coeff = 0.5
         basement_conn_height = 0.0
         basement_conn_area = 0.0
+    st.markdown('---')
+    st.subheader('Sump & pump (optional)')
+    enable_sump = st.checkbox('Enable sump and pump system', value=False,
+                              disabled=(not enable_basement),
+                              help='Requires basement to be enabled. Redirects the perimeter opening to the sump.')
+    if enable_sump and enable_basement:
+        sump_area = st.number_input('Sump area A_s (m²)', value=8.0, min_value=0.01, step=0.5)
+        sump_base_elev = st.number_input(
+            'Sump base elevation (m, same datum as basement floor)',
+            value=float(basement_floor_elev), step=0.1,
+            help='Used to derive H_lift(t) = H_out(t) − z_sump_base')
+        sump_overflow_level = st.number_input('Overflow crest above sump base z_ov (m)',
+                                              value=0.8, min_value=0.0, step=0.05)
+        sump_overflow_coeff = st.number_input('Overflow coefficient C_ov', value=1.8,
+                                              min_value=0.0, step=0.1, format='%.2f')
+        sump_overflow_exp = st.number_input('Overflow exponent m_ov (1.5=weir)',
+                                            value=1.5, min_value=0.1, step=0.1, format='%.1f')
+        pump_on_level = st.number_input('Pump ON depth h_on (m)', value=0.5,
+                                        min_value=0.0, step=0.05)
+        pump_off_level = st.number_input('Pump OFF depth h_off (m)', value=0.2,
+                                         min_value=0.0, step=0.05)
+        pump_shutoff_head = st.number_input('Pump shut-off head H_shut (m)', value=3.5,
+                                             min_value=0.0, step=0.1)
+        pump_curve_coeff = st.number_input('Pump-curve coeff k_pump', value=800.0,
+                                            min_value=0.0, step=50.0, format='%.1f')
+        pipe_loss_coeff = st.number_input('Pipe loss coeff k_pipe', value=200.0,
+                                           min_value=0.0, step=10.0, format='%.1f')
+        pump_availability = st.number_input('Pump availability η_p (1=always available)',
+                                             value=1.0, min_value=0.0, max_value=1.0, step=0.05)
+    else:
+        enable_sump = False
+        sump_area = 0.0
+        sump_base_elev = -2.5
+        sump_overflow_level = 0.8
+        sump_overflow_coeff = 1.8
+        sump_overflow_exp = 1.5
+        pump_on_level = 0.5
+        pump_off_level = 0.2
+        pump_shutoff_head = 3.5
+        pump_curve_coeff = 800.0
+        pipe_loss_coeff = 200.0
+        pump_availability = 1.0
     st.markdown('---')
     st.subheader('Loss estimation (optional)')
     uploaded_building_vuln = st.file_uploader(
@@ -315,15 +371,37 @@ if run_button:
                 building.h_basement = 0.0
                 building.z_basement = float(basement_floor_elev)
                 building.basement_ceiling_elevation = float(basement_ceiling_elev)
+                # Lumped exterior perimeter opening (spec §16.8)
+                if basement_ingress_area > 0:
+                    building.basement_ingress = IngressPathway(
+                        height=float(basement_ingress_height),
+                        area=float(basement_ingress_area),
+                        coeff=float(basement_ingress_coeff),
+                        name='ext-basement-perimeter',
+                        source='outside', target='basement')
+                # Ground↔basement bypass connection (goes in ingress_list)
                 if basement_conn_area > 0:
                     ingress_list.append(IngressPathway(
                         height=float(basement_conn_height),
                         area=float(basement_conn_area),
                         coeff=1.0,
                         name='ground-basement-conn',
-                        source='ground',
-                        target='basement',
-                    ))
+                        source='ground', target='basement'))
+                # Sump+pump system
+                if enable_sump and sump_area > 0:
+                    building.sump_pump = SumpPump(
+                        sump_area           = float(sump_area),
+                        sump_base_elevation = float(sump_base_elev),
+                        overflow_level      = float(sump_overflow_level),
+                        overflow_coeff      = float(sump_overflow_coeff),
+                        overflow_exponent   = float(sump_overflow_exp),
+                        pump_on_level       = float(pump_on_level),
+                        pump_off_level      = float(pump_off_level),
+                        pump_shutoff_head   = float(pump_shutoff_head),
+                        pump_curve_coeff    = float(pump_curve_coeff),
+                        pipe_loss_coeff     = float(pipe_loss_coeff),
+                        pump_availability   = float(pump_availability),
+                    )
 
             # Convert velocity times to seconds; fall back to constant default
             if v_times_raw is not None and v_vals_raw is not None:
@@ -347,11 +425,15 @@ if run_button:
 
             status_text.text('Running simulation...')
             sim_ret = sim.run(progress_callback=progress_cb, verbose=False)
-            if len(sim_ret) == 3:
+            if len(sim_ret) == 4:
+                sim_times, sim_levels, sim_basement, sim_sump = sim_ret
+            elif len(sim_ret) == 3:
                 sim_times, sim_levels, sim_basement = sim_ret
+                sim_sump = None
             else:
                 sim_times, sim_levels = sim_ret
                 sim_basement = None
+                sim_sump = None
             status_text.text('Simulation complete')
 
             # helper: sample external hydrograph (times_seconds/h_levels) to sim_times
@@ -388,7 +470,7 @@ if run_button:
             sampled_external = sample_external(sim_times, times_seconds, levels)
             viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out,
                                        time_unit=time_unit, basement_levels=sim_basement,
-                                       velocity_series=sampled_velocity)
+                                       velocity_series=sampled_velocity, sump_levels=sim_sump)
             st.image(sim_out, caption='Simulation result', width='stretch')
 
             # Download button for the simulation PNG
@@ -427,10 +509,71 @@ if run_button:
                     st.metric('Basement contents loss', f'{basement_loss:,.2f}')
                 if building_loss is not None and basement_loss is not None:
                     st.metric('Total aggregate loss', f'{building_loss + basement_loss:,.2f}')
-                st.caption(
-                    f'Peak ground-floor depth: {h_peak_int:.3f} m  |  '
-                    f'Peak basement depth: {h_peak_basement:.3f} m'
-                )
+                caption = (f'Peak ground-floor depth: {h_peak_int:.3f} m  |  '
+                           f'Peak basement depth: {h_peak_basement:.3f} m')
+                if sim_sump is not None:
+                    caption += f'  |  Peak sump depth: {max(sim_sump):.3f} m'
+                st.caption(caption)
+
+            # ── Advanced interpretation dashboard ────────────────────────────
+            st.markdown('---')
+            st.subheader('Advanced interpretation')
+            try:
+                status_text.text('Running diagnostics...')
+                diag = run_diagnostics(
+                    building, ingress_list, times_seconds, levels,
+                    dt=dt_seconds, v_times=v_times_seconds, v_vals=v_vals)
+                status_text.text('Diagnostics complete')
+
+                dashboard_path = os.path.join(outdir, 'interpretation_dashboard.png')
+                viz.save_interpretation_dashboard(
+                    diag, dashboard_path, time_unit=time_unit)
+                st.image(dashboard_path, caption='Interpretation dashboard', width='stretch')
+                with open(dashboard_path, 'rb') as f:
+                    st.download_button('Download dashboard PNG', data=f.read(),
+                                       file_name='interpretation_dashboard.png')
+
+                # Pathway table
+                ev = diag.get('events', {})
+                st.markdown('**Event summary**')
+                t_scale = mul  # seconds per display unit
+                def _t(k):
+                    v = ev.get(k)
+                    return f'{v/t_scale:.2f} {time_unit}' if v is not None else '—'
+                ev_rows = {
+                    'Dominant basement source': ev.get('dominant_basement_source', '—'),
+                    'First ground-floor inundation': _t('t_first_gf_inundation'),
+                    'First basement inundation': _t('t_first_basement_inundation'),
+                    'First pump activation': _t('t_first_pump_on'),
+                    'First sump overflow': _t('t_first_sump_overflow'),
+                    'Pump interception ratio': f'{ev.get("pump_interception_ratio", 0)*100:.0f}%' if ev.get('pump_interception_ratio') is not None else '—',
+                    'Total perimeter inflow (m³)': f'{ev.get("vol_perimeter_total",0):.4f}',
+                    'Total pump discharge (m³)': f'{ev.get("vol_pump_total",0):.4f}',
+                    'Total sump overflow (m³)': f'{ev.get("vol_sump_overflow_total",0):.4f}',
+                }
+                st.table({'Metric': list(ev_rows.keys()), 'Value': list(ev_rows.values())})
+
+                # Narrative
+                bullets = generate_narrative(diag)
+                if bullets:
+                    st.markdown('**Narrative**')
+                    for b in bullets:
+                        st.markdown(f'- {b}')
+
+                # Downloadable CSV
+                import csv as csv_mod
+                import io
+                csv_buf = io.StringIO()
+                writer = csv_mod.writer(csv_buf)
+                for row in diagnostics_to_csv_rows(diag):
+                    writer.writerow(row)
+                st.download_button(
+                    'Download diagnostics CSV',
+                    data=csv_buf.getvalue().encode('utf-8'),
+                    file_name='diagnostics.csv',
+                    mime='text/csv')
+            except Exception as diag_exc:
+                st.warning(f'Advanced diagnostics unavailable: {diag_exc}')
 
             if make_anim:
                 anim_path = os.path.join(outdir, 'simulation_animation.gif')
@@ -444,14 +587,13 @@ if run_button:
                                            ingress_list, anim_path, time_unit=time_unit,
                                            basement_levels=sim_basement,
                                            basement_abs_levels=sim_basement_abs,
-                                           velocity_series=sampled_velocity)
+                                           velocity_series=sampled_velocity,
+                                           sump_levels=sim_sump)
                     with open(anim_path, 'rb') as f:
                         anim_bytes = f.read()
-                    # Display animated GIF inline (more reliable across browsers)
                     try:
                         st.image(anim_bytes, caption='Simulation animation', width='stretch', output_format='GIF')
                     except TypeError:
-                        # older Streamlit versions may not support output_format; fall back to video
                         st.video(anim_path)
                     st.download_button('Download animation', data=anim_bytes, file_name='simulation_animation.gif')
                 except Exception as e:

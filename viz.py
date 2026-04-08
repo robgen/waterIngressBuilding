@@ -220,36 +220,22 @@ def save_ingress_locations(ingress_list, outpath, building_width=1.0):
     plt.close(fig)
 
 
-def save_simulation_result(sim_times, sim_levels, external_levels, outpath, time_unit=None, basement_levels=None, velocity_series=None):
-    """Save a combined plot of external/indoor (and optional basement) levels.
-
-    If `velocity_series` is provided (same length as `sim_times`) it will be
-    plotted on a secondary y-axis on the right in m/s.
-    """
+def save_simulation_result(sim_times, sim_levels, external_levels, outpath,
+                           time_unit=None, basement_levels=None,
+                           velocity_series=None, sump_levels=None):
+    """Save a combined plot of external/indoor (and optional basement/sump) levels."""
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(sim_times, external_levels, label='External Level (h_out)', color='tab:blue')
-    ax.plot(sim_times, sim_levels, label='Indoor Level (h_in)', color='tab:orange')
+    ax.plot(sim_times, external_levels, label='External (h_out)', color='tab:blue')
+    ax.plot(sim_times, sim_levels, label='Indoor (h_in)', color='tab:orange')
     if basement_levels is not None:
-        ax.plot(sim_times, basement_levels, label='Basement Level (h_b)', linestyle='--', color='#2ca02c')
-    xlabel = 'Time'
-    if time_unit:
-        xlabel = f'Time ({time_unit})'
+        ax.plot(sim_times, basement_levels, label='Basement (h_bs)', linestyle='--', color='#2ca02c')
+    if sump_levels is not None:
+        ax.plot(sim_times, sump_levels, label='Sump depth (h_s)', linestyle=':', color='#9467bd')
+    xlabel = f'Time ({time_unit})' if time_unit else 'Time'
     ax.set_xlabel(xlabel)
     ax.set_ylabel('Water Level (m)')
     ax.set_title('Flood Ingress Simulation')
-
-    # add secondary axis for velocity if provided
-    if velocity_series is not None:
-        ax2 = ax.twinx()
-        ax2.plot(sim_times, velocity_series, label='Velocity (m/s)', color='tab:green', linestyle=':')
-        ax2.set_ylabel('Velocity (m/s)')
-        # combine legends from both axes
-        lines, labels = ax.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax.legend(lines + lines2, labels + labels2, loc='upper left')
-    else:
-        ax.legend()
-
+    ax.legend()
     fig.tight_layout()
     fig.savefig(outpath)
     plt.close(fig)
@@ -297,7 +283,9 @@ def save_forces_result(sim_times, forces_rows, outpath, time_unit=None):
     plt.close(fig)
 
 
-def generate_animation(sim_times, sim_levels, external_levels, ingress_list, outpath, fps=10, max_frames=200, time_unit=None, basement_levels=None, basement_abs_levels=None, velocity_series=None):
+def generate_animation(sim_times, sim_levels, external_levels, ingress_list, outpath,
+                       fps=10, max_frames=200, time_unit=None, basement_levels=None,
+                       basement_abs_levels=None, velocity_series=None, sump_levels=None):
     # Prepare frames (downsample if too many)
     n_frames = len(sim_times)
     if n_frames <= 0:
@@ -447,7 +435,10 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
                   label='Indoor (h_in)', linewidth=1.8, alpha=0.85)
     if basement_levels is not None:
         ax_chart.plot(sim_times, basement_levels, color='#27ae60', linestyle='--',
-                      label='Basement (h_b)', linewidth=1.4, alpha=0.80)
+                      label='Basement (h_bs)', linewidth=1.4, alpha=0.80)
+    if sump_levels is not None:
+        ax_chart.plot(sim_times, sump_levels, color='#9467bd', linestyle=':',
+                      label='Sump (h_s)', linewidth=1.4, alpha=0.85)
     ax_chart.legend(fontsize=7, loc='upper left')
 
     xlabel = f'Time ({unit_label})'
@@ -598,6 +589,173 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
         ani.save(outpath.replace('.gif', '.mp4'), writer=writer)
     finally:
         plt.close(fig)
+
+
+def save_interpretation_dashboard(diag, outpath, time_unit='seconds', title_suffix=''):
+    """Save the multi-panel interpretation dashboard from a diagnostics dict.
+
+    Panels:
+        1. Water-surface heads on a common datum
+        2. Instantaneous pathway flows
+        3. Cumulative pathway volumes
+        4. Sump control (depths + thresholds + pump discharge) — only if sump present
+        5. Pathway schematic (mass balance bar) + event summary text
+
+    Parameters
+    ----------
+    diag : dict returned by diagnostics.run_diagnostics()
+    outpath : output PNG path
+    time_unit : display label for the time axis
+    title_suffix : appended to the figure title (e.g. case name)
+    """
+    times    = diag['times']
+    n        = len(times)
+    has_sump = any(q > 0 for q in diag.get('Q_pump', [0]))
+    ev       = diag.get('events', {})
+
+    # Convert times to display units
+    if time_unit == 'minutes':
+        t_disp = [t / 60.0 for t in times]
+        xlabel = 'Time (min)'
+    elif time_unit == 'hours':
+        t_disp = [t / 3600.0 for t in times]
+        xlabel = 'Time (h)'
+    else:
+        t_disp = list(times)
+        xlabel = 'Time (s)'
+
+    n_panels = 5 if has_sump else 4
+    fig_h    = 3.5 * n_panels
+    fig, axes = plt.subplots(n_panels, 1, figsize=(11, fig_h), constrained_layout=True)
+    if n_panels == 1:
+        axes = [axes]
+
+    # ── Panel 1: Water-surface heads ──────────────────────────────────────────
+    ax1 = axes[0]
+    ax1.plot(t_disp, diag['H_out'],      color='#2980b9', lw=1.8, label='External head')
+    ax1.plot(t_disp, diag['h_in'],       color='#e67e22', lw=1.6, label='Ground floor (h_in)')
+    if any(v > 0 for v in diag['h_basement']):
+        ax1.plot(t_disp, diag['h_basement'], color='#27ae60', lw=1.4, ls='--', label='Basement (h_bs)')
+    if has_sump:
+        ax1.plot(t_disp, diag['h_sump'],     color='#9467bd', lw=1.4, ls=':', label='Sump (h_s)')
+        # shade pump-on periods
+        pump_state = diag['pump_state']
+        in_on = False
+        t_on_start = None
+        for k in range(n):
+            if pump_state[k] == 1 and not in_on:
+                t_on_start = t_disp[k]
+                in_on = True
+            elif pump_state[k] == 0 and in_on:
+                ax1.axvspan(t_on_start, t_disp[k], alpha=0.10, color='#9467bd', label='_nolegend_')
+                in_on = False
+        if in_on:
+            ax1.axvspan(t_on_start, t_disp[-1], alpha=0.10, color='#9467bd', label='_nolegend_')
+    ax1.set_xlabel(xlabel)
+    ax1.set_ylabel('Head (m)')
+    ax1.set_title(f'Water-surface heads{" — " + title_suffix if title_suffix else ""}',
+                  fontweight='bold')
+    ax1.legend(fontsize=8, loc='upper left')
+    ax1.grid(True, alpha=0.25, lw=0.5)
+
+    # ── Panel 2: Instantaneous pathway flows ──────────────────────────────────
+    ax2 = axes[1]
+    ax2.plot(t_disp, diag['Q_ext_b'],         color='#2980b9', lw=1.4,
+             label='Outside → Ground floor')
+    ax2.plot(t_disp, diag['Q_b_bs'],          color='#27ae60', lw=1.4, ls='--',
+             label='Ground floor → Basement')
+    ax2.plot(t_disp, diag['Q_ext_perimeter'], color='#e67e22', lw=1.4,
+             label='Outside → Basement/Sump (perimeter)')
+    if has_sump:
+        ax2.plot(t_disp, diag['Q_pump'],          color='#9467bd', lw=1.4, ls='-.',
+                 label='Pump discharge')
+        ax2.plot(t_disp, diag['Q_sump_overflow'], color='#d62728', lw=1.2, ls=':',
+                 label='Sump → Basement overflow')
+    ax2.set_xlabel(xlabel)
+    ax2.set_ylabel('Flow rate (m³/s)')
+    ax2.set_title('Instantaneous pathway flows', fontweight='bold')
+    ax2.legend(fontsize=8, loc='upper right')
+    ax2.grid(True, alpha=0.25, lw=0.5)
+
+    # ── Panel 3: Cumulative volumes ───────────────────────────────────────────
+    ax3 = axes[2]
+    ax3.plot(t_disp, diag['vol_ext_b_cum'],     color='#2980b9', lw=1.6,
+             label='Outside → Ground floor')
+    ax3.plot(t_disp, diag['vol_b_bs_cum'],      color='#27ae60', lw=1.4, ls='--',
+             label='Ground floor → Basement')
+    ax3.plot(t_disp, diag['vol_perimeter_cum'], color='#e67e22', lw=1.6,
+             label='Perimeter inflow (→ basement or sump)')
+    if has_sump:
+        ax3.plot(t_disp, diag['vol_pump_cum'],          color='#9467bd', lw=1.4, ls='-.',
+                 label='Pump discharge')
+        ax3.plot(t_disp, diag['vol_sump_overflow_cum'], color='#d62728', lw=1.2, ls=':',
+                 label='Sump overflow → Basement')
+    ax3.set_xlabel(xlabel)
+    ax3.set_ylabel('Cumulative volume (m³)')
+    ax3.set_title('Cumulative pathway volumes', fontweight='bold')
+    ax3.legend(fontsize=8, loc='upper left')
+    ax3.grid(True, alpha=0.25, lw=0.5)
+
+    # ── Panel 4 (sump only): Control and thresholds ───────────────────────────
+    if has_sump:
+        ax4 = axes[3]
+        ax4.plot(t_disp, diag['h_sump'], color='#9467bd', lw=1.6, label='Sump depth h_s')
+        ax4.plot(t_disp, diag['Q_pump'], color='#1f77b4', lw=1.2, ls='-.', label='Pump flow (m³/s)')
+        ax4.plot(t_disp, diag['H_lift'], color='#aec7e8', lw=1.0, ls=':', label='Lift head H_lift (m)')
+        # thresholds (constant horizontal lines)
+        # obtain thresholds from diag meta if available, else skip
+        ev_tot = ev.get('vol_sump_overflow_total', 0.0)
+        ax4.set_xlabel(xlabel)
+        ax4.set_ylabel('Depth / flow / head')
+        ax4.set_title('Sump control behaviour', fontweight='bold')
+        ax4.legend(fontsize=8, loc='upper right')
+        ax4.grid(True, alpha=0.25, lw=0.5)
+        panel_idx = 4
+    else:
+        panel_idx = 3
+
+    # ── Final panel: pathway schematic bar + event summary ────────────────────
+    ax5 = axes[panel_idx]
+    ax5.axis('off')
+
+    # Horizontal bar chart of total volumes
+    labels_bar = ['Outside→Ground floor', 'Perimeter inflow', 'Ground→Basement']
+    vals_bar   = [ev.get('vol_ext_b_total', 0.0),
+                  ev.get('vol_perimeter_total', 0.0),
+                  ev.get('vol_b_bs_total', 0.0)]
+    colors_bar = ['#2980b9', '#e67e22', '#27ae60']
+    if has_sump:
+        labels_bar += ['Pump discharge', 'Sump overflow']
+        vals_bar   += [ev.get('vol_pump_total', 0.0),
+                       ev.get('vol_sump_overflow_total', 0.0)]
+        colors_bar += ['#9467bd', '#d62728']
+
+    ax_bar = ax5.inset_axes([0.0, 0.45, 0.45, 0.50])
+    y_pos = range(len(labels_bar))
+    bars = ax_bar.barh(list(y_pos), vals_bar, color=colors_bar, alpha=0.80)
+    ax_bar.set_yticks(list(y_pos))
+    ax_bar.set_yticklabels(labels_bar, fontsize=7.5)
+    ax_bar.set_xlabel('Total volume (m³)', fontsize=8)
+    ax_bar.set_title('Event mass balance', fontsize=9, fontweight='bold')
+    ax_bar.tick_params(axis='x', labelsize=7.5)
+    ax_bar.bar_label(bars, fmt='%.3f', fontsize=7, padding=2)
+    ax_bar.set_xlim(0, max(vals_bar) * 1.25 if max(vals_bar) > 0 else 1.0)
+
+    # Narrative text
+    try:
+        from diagnostics import generate_narrative
+        bullets = generate_narrative(diag)
+    except Exception:
+        bullets = []
+    bullet_text = '\n'.join(f'• {b}' for b in bullets) if bullets else '(no summary available)'
+    ax5.text(0.52, 0.97, 'Interpretation summary', transform=ax5.transAxes,
+             fontsize=9, fontweight='bold', va='top')
+    ax5.text(0.52, 0.88, bullet_text, transform=ax5.transAxes,
+             fontsize=8, va='top', wrap=True,
+             bbox=dict(boxstyle='round,pad=0.5', fc='#f9f9f9', ec='#ccc', alpha=0.9))
+
+    fig.savefig(outpath, dpi=130, bbox_inches='tight')
+    plt.close(fig)
 
 
 def save_batch_scatter(h_peak_ext, h_peak_int, outpath):

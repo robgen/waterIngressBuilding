@@ -6,6 +6,8 @@ import sys
 import csv
 
 import forces
+from pump import (SumpPump, compute_sump_overflow, compute_pump_switch_state,
+                  compute_lift_head, compute_pump_flow)
 
 """Headless runner for Flood Ingress Simulation
 
@@ -37,6 +39,22 @@ class Building:
         # water in the basement cannot rise above this elevation; the maximum
         # basement depth is (basement_ceiling_elevation - z_basement)
         self.basement_ceiling_elevation = 0.0
+
+        # Lumped exterior-perimeter-to-basement opening (IngressPathway or None).
+        # This represents exterior water around the basement perimeter entering the
+        # basement system.  It is kept separate from the user-authored ingress file
+        # (which must contain exterior→building pathways only) to avoid the
+        # double-counting problem described in spec section 16.2.
+        #
+        # Routing rule (spec section 16.3):
+        #   • When no sump is configured: this pathway feeds the basement directly.
+        #   • When a SumpPump is configured: this pathway is redirected to the sump.
+        #   The building-to-basement connection always bypasses the sump.
+        self.basement_ingress = None  # IngressPathway or None
+
+        # Optional sump+pump system (SumpPump instance or None).
+        # When set, the basement_ingress pathway is redirected to the sump chamber.
+        self.sump_pump = None  # SumpPump or None
 
     def update_water_level(self, volume_change, zone='ground'):
         """Apply a volume change (m^3) to a zone: 'ground' or 'basement'."""
@@ -140,56 +158,64 @@ class Simulation:
         self.dt = float(dt) if dt is not None else 60.0
 
     def run(self, progress_callback=None, verbose=False):
+        """Run the simulation and return results.
+
+        Return value (backwards-compatible):
+            (times, indoor_levels)                        — no basement, no sump
+            (times, indoor_levels, basement_levels)       — basement, no sump
+            (times, indoor_levels, basement_levels,
+             sump_levels)                                 — basement + sump
+
+        Routing convention (spec section 16.3):
+            • ingress_list  — exterior→building pathways only (unchanged)
+            • building.basement_ingress — lumped exterior perimeter opening:
+                  if no sump → feeds basement directly (Q_ext_b)
+                  if sump    → redirected to sump (Q_ext_s)
+            • building-to-basement connection (ground↔basement in ingress_list)
+              always bypasses the sump
+        """
         indoor_levels = []
         times = []
         basement_levels = []
+        sump_levels = []
+
         current_h_in = self.building.h_in
         current_h_basement = self.building.h_basement
+
+        sp = self.building.sump_pump          # SumpPump or None
+        bi = self.building.basement_ingress   # IngressPathway or None (lumped perimeter)
+
         start_time = self.t_ext[0] if len(self.t_ext) > 0 else 0.0
         end_time = self.t_ext[-1] if len(self.t_ext) > 0 else 0.0
-        # Use a fixed-step loop to avoid depending on external hydrograph spacing.
-        # Compute number of steps (ceil) to cover the entire period.
-        import math
-        total_steps = max(1, int(math.ceil((end_time - start_time) / max(self.dt, 1e-9))))
-        # current external hydrograph segment index
+        import math as _math
+        total_steps = max(1, int(_math.ceil((end_time - start_time) / max(self.dt, 1e-9))))
         i = 0
 
-        # Step through with a for-loop to avoid floating-point accumulation issues
         for step in range(total_steps + 1):
             t = start_time + step * self.dt
-            # clamp to end_time for the final step
             if t > end_time:
                 t = end_time
 
-            # find the segment in the external hydrograph that contains t
-            # advance index i as needed
+            # interpolate external hydrograph
             if i < len(self.t_ext) - 1:
-                # advance i until t is before the next timestamp
                 while i < len(self.t_ext) - 1 and t >= self.t_ext[i+1]:
                     i += 1
-
             if i < len(self.t_ext) - 1:
                 t1, h1 = self.t_ext[i], self.h_ext[i]
                 t2, h2 = self.t_ext[i+1], self.h_ext[i+1]
-                if t2 != t1:
-                    frac = (t - t1) / (t2 - t1)
-                    h_out = h1 + frac * (h2 - h1)
-                else:
-                    h_out = h1
+                h_out = h1 + (h2 - h1) * (t - t1) / (t2 - t1) if t2 != t1 else h1
             else:
                 h_out = self.h_ext[-1] if len(self.h_ext) > 0 else 0.0
 
-            # compute absolute surfaces for use in orifice evaluation
-            H_out = h_out
-            H_in = current_h_in
+            H_out      = h_out
+            H_in       = current_h_in
             H_basement = self.building.z_basement + current_h_basement
+            # Absolute head at sump water surface (sump base + sump depth)
+            H_sump_abs = (sp.sump_base_elevation + sp.h_sump) if sp is not None else 0.0
 
-            # interpolate external velocity to current time (if provided).
-            # Short velocity series are treated as padded with zeros beyond
-            # their last timestamp (explicitly requested behavior).
+            # interpolate external velocity
             v_out = 0.0
-            if self.v_t and len(self.v_t) > 0 and len(self.v_vals) > 0:
-                # maintain a velocity segment index to avoid re-scanning
+            if self.v_t and self.v_vals:
                 j_v = getattr(self, '_vel_index', 0)
                 while j_v < len(self.v_t) - 1 and t >= self.v_t[j_v + 1]:
                     j_v += 1
@@ -197,63 +223,72 @@ class Simulation:
                 if j_v < len(self.v_t) - 1:
                     vt1, vv1 = self.v_t[j_v], self.v_vals[j_v]
                     vt2, vv2 = self.v_t[j_v+1], self.v_vals[j_v+1]
-                    if vt2 != vt1:
-                        frac = (t - vt1) / (vt2 - vt1)
-                        v_out = vv1 + frac * (vv2 - vv1)
-                    else:
-                        v_out = vv1
+                    v_out = vv1 + (vv2 - vv1) * (t - vt1) / (vt2 - vt1) if vt2 != vt1 else vv1
                 else:
-                    # beyond last velocity timestamp -> pad with zero
-                    if t > self.v_t[-1]:
-                        v_out = 0.0
-                    else:
-                        v_out = self.v_vals[-1] if self.v_vals else 0.0
+                    v_out = 0.0 if t > self.v_t[-1] else (self.v_vals[-1] if self.v_vals else 0.0)
 
-            # flows: outside->ground (flow_og), outside->basement (flow_ob),
-            # ground->basement (flow_gb; positive if ground->basement)
-            flow_og = 0.0
-            flow_ob = 0.0
-            flow_gb = 0.0
+            # ── ingress flows ────────────────────────────────────────────────
+            # ingress_list: exterior→building pathways only
+            flow_og = 0.0   # outside → ground floor
+            flow_gb = 0.0   # ground ↔ basement connection (positive = ground→basement)
 
             for ingress in self.ingress_list:
                 src = getattr(ingress, 'source', 'outside')
                 tgt = getattr(ingress, 'target', 'ground')
                 if src == 'outside' and tgt == 'ground':
-                    Q = ingress.compute_flow(H_out, H_in, v_source=v_out)
-                    flow_og += Q
-                elif src == 'outside' and tgt == 'basement':
-                    Q = ingress.compute_flow(H_out, H_basement, v_source=v_out)
-                    flow_ob += Q
+                    flow_og += ingress.compute_flow(H_out, H_in, v_source=v_out)
                 elif src == 'ground' and tgt == 'basement':
-                    Q = ingress.compute_flow(H_in, H_basement)
-                    flow_gb += Q
+                    flow_gb += ingress.compute_flow(H_in, H_basement)
                 elif src == 'basement' and tgt == 'ground':
-                    Q = ingress.compute_flow(H_basement, H_in)
-                    # subtract because flow_gb is defined positive ground->basement
-                    flow_gb -= Q
-                else:
-                    # unsupported or unknown pairing; ignore
-                    pass
+                    flow_gb -= ingress.compute_flow(H_basement, H_in)
+                # other source/target pairs are ignored (future-proofing)
 
-            # apply volume changes to zones
+            # Lumped exterior perimeter opening — routing depends on sump config
+            flow_ob = 0.0   # outside → basement direct (no sump)
+            flow_os = 0.0   # outside → sump          (sump enabled)
+            if bi is not None:
+                if sp is not None:
+                    flow_os = bi.compute_flow(H_out, H_sump_abs, v_source=v_out)
+                else:
+                    flow_ob = bi.compute_flow(H_out, H_basement, v_source=v_out)
+
+            # ── ground-floor update ──────────────────────────────────────────
             vol_ground = (flow_og - flow_gb) * self.dt
-            # apply to ground; update_water_level returns overflow (unused for ground)
-            _ = self.building.update_water_level(vol_ground, zone='ground')
+            self.building.update_water_level(vol_ground, zone='ground')
             current_h_in = self.building.h_in
 
-            vol_basement = (flow_ob + flow_gb) * self.dt
-            # apply to basement; if basement overflows, spill to ground
+            # ── sump/pump update ─────────────────────────────────────────────
+            current_h_sump = 0.0
+            Q_s_bs = 0.0
+            if sp is not None:
+                H_lift = compute_lift_head(H_out, sp.sump_base_elevation)
+                sp.pump_state = compute_pump_switch_state(
+                    sp.h_sump, sp.pump_on_level, sp.pump_off_level, sp.pump_state)
+                Q_p = compute_pump_flow(
+                    sp.pump_state, sp.pump_availability,
+                    sp.pump_shutoff_head, H_lift,
+                    sp.pump_curve_coeff, sp.pipe_loss_coeff)
+                Q_s_bs = compute_sump_overflow(
+                    sp.h_sump, sp.overflow_level,
+                    sp.overflow_coeff, sp.overflow_exponent)
+                delta_h = (flow_os - Q_p - Q_s_bs) * self.dt / sp.sump_area
+                sp.h_sump = max(0.0, sp.h_sump + delta_h)
+                current_h_sump = sp.h_sump
+
+            # ── basement update ──────────────────────────────────────────────
+            # flow_ob: perimeter inflow when no sump (0 when sump active)
+            # Q_s_bs: sump overflow into basement (0 when no sump)
+            vol_basement = (flow_ob + flow_gb + Q_s_bs) * self.dt
             overflow = self.building.update_water_level(vol_basement, zone='basement')
             if overflow and overflow > 0.0:
-                # add overflow to ground
-                _ = self.building.update_water_level(overflow, zone='ground')
+                self.building.update_water_level(overflow, zone='ground')
             current_h_basement = self.building.h_basement
 
             times.append(t)
             indoor_levels.append(current_h_in)
             basement_levels.append(current_h_basement)
+            sump_levels.append(current_h_sump)
 
-            # report progress (callable)
             if progress_callback and total_steps > 0:
                 try:
                     progress_callback(min(1.0, (step + 1) / (total_steps + 1)))
@@ -262,10 +297,13 @@ class Simulation:
             if verbose and (step + 1) % 1000 == 0:
                 print(f"Progress: {min(100, int(100*(step+1)/(total_steps+1)))}%")
 
-        # Backwards-compatible return: if no basement zone is configured,
-        # return the original (times, indoor_levels) tuple. If a basement
-        # exists, return (times, indoor_levels, basement_levels).
-        if getattr(self.building, 'basement_area', 0.0) and self.building.basement_area > 0.0:
+        # Backwards-compatible return tuple
+        has_basement = bool(getattr(self.building, 'basement_area', 0.0)
+                            and self.building.basement_area > 0.0)
+        has_sump = self.building.sump_pump is not None
+        if has_basement and has_sump:
+            return times, indoor_levels, basement_levels, sump_levels
+        elif has_basement:
             return times, indoor_levels, basement_levels
         else:
             return times, indoor_levels
@@ -449,10 +487,46 @@ def main(argv=None):
     parser.add_argument('--building-width', type=float, default=10.0, help='Building width (m) for force calculations (horizontal extent of flow-facing facade)')
     parser.add_argument('--drag-coeff', type=float, default=1.0, help='Drag coefficient C_D (dimensionless)')
     parser.add_argument('--rho', type=float, default=1000.0, help='Fluid density (kg/m^3)')
-    parser.add_argument('--basement-area', type=float, default=0.0, help='Basement floor area (m^2). If >0, a basement zone is created')
-    parser.add_argument('--basement-floor-elevation', type=float, default=None, help='Basement floor elevation relative to ground-floor datum (m). Use negative for below ground')
-    parser.add_argument('--basement-connection-height', type=float, default=None, help='Height of opening between ground and basement (if omitted no connection is created)')
-    parser.add_argument('--basement-connection-area', type=float, default=0.0, help='Area of connection between ground and basement')
+    # basement geometry
+    parser.add_argument('--basement-area', type=float, default=0.0,
+                        help='Basement floor area (m²). If >0 a basement zone is created.')
+    parser.add_argument('--basement-floor-elevation', type=float, default=None,
+                        help='Basement floor elevation relative to ground-floor datum (m). Negative = below datum.')
+    # lumped exterior-perimeter opening to basement system (new dedicated args, spec §16.8)
+    parser.add_argument('--basement-ingress-height', type=float, default=None,
+                        help='Sill height of the lumped exterior→basement perimeter opening (m).')
+    parser.add_argument('--basement-ingress-area', type=float, default=0.0,
+                        help='Area of the lumped exterior→basement perimeter opening (m²).')
+    parser.add_argument('--basement-ingress-coeff', type=float, default=0.5,
+                        help='Discharge coefficient of the lumped exterior→basement perimeter opening (default 0.5).')
+    # building-to-basement bypass connection
+    parser.add_argument('--basement-connection-height', type=float, default=None,
+                        help='Sill height of the ground↔basement connection (m). If omitted, no bypass.')
+    parser.add_argument('--basement-connection-area', type=float, default=0.0,
+                        help='Area of the ground↔basement connection (m²).')
+    # sump + pump (all optional; sump activated when --sump-area > 0)
+    parser.add_argument('--sump-area', type=float, default=0.0,
+                        help='Sump chamber plan area (m²). If >0 a sump+pump zone is created.')
+    parser.add_argument('--sump-base-elevation', type=float, default=None,
+                        help='Sump base elevation on ground-floor datum (m). Used to derive lift head.')
+    parser.add_argument('--sump-overflow-level', type=float, default=None,
+                        help='Sump overflow crest elevation above sump base (m).')
+    parser.add_argument('--sump-overflow-coeff', type=float, default=1.8,
+                        help='Sump overflow coefficient C_ov (default 1.8).')
+    parser.add_argument('--sump-overflow-exponent', type=float, default=1.5,
+                        help='Sump overflow exponent m_ov: 1.5=weir (default), 0.5=orifice.')
+    parser.add_argument('--pump-on-level', type=float, default=None,
+                        help='Sump depth at which pump activates (m).')
+    parser.add_argument('--pump-off-level', type=float, default=None,
+                        help='Sump depth at which pump deactivates (m).')
+    parser.add_argument('--pump-shutoff-head', type=float, default=None,
+                        help='Pump shut-off head H_shut (m).')
+    parser.add_argument('--pump-curve-coeff', type=float, default=None,
+                        help='Pump-curve coefficient k_pump.')
+    parser.add_argument('--pipe-loss-coeff', type=float, default=0.0,
+                        help='Pipe friction + minor loss coefficient k_pipe (default 0).')
+    parser.add_argument('--pump-availability', type=float, default=1.0,
+                        help='Pump availability factor eta_p (default 1.0).')
     args = parser.parse_args(argv)
 
     outdir = args.outdir
@@ -495,12 +569,18 @@ def main(argv=None):
 
     print(f"Reading ingress data from: {args.ingress}")
     ingress_list = parse_ingress_file(args.ingress)
-    print(f"Found {len(ingress_list)} ingress paths")
-    # optionally add a connection between ground and basement if requested
-    if getattr(args, 'basement_connection_height', None) is not None and getattr(args, 'basement_connection_area', 0.0) and args.basement_connection_area > 0.0:
+    print(f"Found {len(ingress_list)} ingress paths (exterior→building)")
+    # Ground↔basement bypass connection (added to ingress_list, not basement_ingress)
+    if (getattr(args, 'basement_connection_height', None) is not None
+            and getattr(args, 'basement_connection_area', 0.0)
+            and args.basement_connection_area > 0.0):
         conn_name = 'ground-basement-conn'
-        print(f"Adding ground<->basement connection: h={args.basement_connection_height}, A={args.basement_connection_area}")
-        ingress_list.append(IngressPathway(height=args.basement_connection_height, area=args.basement_connection_area, coeff=1.0, name=conn_name, source='ground', target='basement'))
+        print(f"Adding ground↔basement bypass: h={args.basement_connection_height}, A={args.basement_connection_area}")
+        ingress_list.append(IngressPathway(
+            height=args.basement_connection_height,
+            area=args.basement_connection_area,
+            coeff=1.0, name=conn_name,
+            source='ground', target='basement'))
     ingress_preview_path = os.path.join(outdir, 'ingress_preview.png')
     viz.save_ingress_preview(ingress_list, ingress_preview_path)
     print(f"Saved ingress preview to {ingress_preview_path}")
@@ -519,6 +599,44 @@ def main(argv=None):
         building.h_basement = 0.0
         if getattr(args, 'basement_floor_elevation', None) is not None:
             building.z_basement = float(args.basement_floor_elevation)
+
+    # Lumped exterior perimeter opening (separate from ingress file; spec §16.8)
+    if (getattr(args, 'basement_ingress_height', None) is not None
+            and getattr(args, 'basement_ingress_area', 0.0)
+            and args.basement_ingress_area > 0.0):
+        building.basement_ingress = IngressPathway(
+            height=float(args.basement_ingress_height),
+            area=float(args.basement_ingress_area),
+            coeff=float(args.basement_ingress_coeff),
+            name='ext-basement-perimeter',
+            source='outside', target='basement')
+        print(f"Basement perimeter opening: h={args.basement_ingress_height}, "
+              f"A={args.basement_ingress_area}, Cd={args.basement_ingress_coeff}")
+
+    # Sump + pump (activated when --sump-area > 0 and required params present)
+    if getattr(args, 'sump_area', 0.0) and args.sump_area > 0.0:
+        required = ['sump_base_elevation', 'sump_overflow_level',
+                    'pump_on_level', 'pump_off_level',
+                    'pump_shutoff_head', 'pump_curve_coeff']
+        missing = [k for k in required if getattr(args, k, None) is None]
+        if missing:
+            print(f"WARNING: sump enabled but missing params: {missing}. Sump disabled.")
+        else:
+            building.sump_pump = SumpPump(
+                sump_area          = float(args.sump_area),
+                sump_base_elevation= float(args.sump_base_elevation),
+                overflow_level     = float(args.sump_overflow_level),
+                overflow_coeff     = float(args.sump_overflow_coeff),
+                overflow_exponent  = float(args.sump_overflow_exponent),
+                pump_on_level      = float(args.pump_on_level),
+                pump_off_level     = float(args.pump_off_level),
+                pump_shutoff_head  = float(args.pump_shutoff_head),
+                pump_curve_coeff   = float(args.pump_curve_coeff),
+                pipe_loss_coeff    = float(args.pipe_loss_coeff),
+                pump_availability  = float(args.pump_availability),
+            )
+            print(f"Sump+pump enabled: area={args.sump_area} m², base@{args.sump_base_elevation} m, "
+                  f"overflow@{args.sump_overflow_level} m, pump on@{args.pump_on_level} m")
 
     # parse optional external velocity hydrograph (time,velocity)
     v_times = None
@@ -553,12 +671,16 @@ def main(argv=None):
             print(f'Progress: {int(p*100)}%')
 
     sim_ret = sim.run(progress_callback=progress, verbose=args.verbose)
-    # support both old (times, levels) and new (times, levels, basement_levels) return signatures
-    if isinstance(sim_ret, tuple) and len(sim_ret) == 3:
+    # unpack backwards-compatible tuple (2, 3, or 4 elements)
+    if len(sim_ret) == 4:
+        sim_times, sim_levels, sim_basement, sim_sump = sim_ret
+    elif len(sim_ret) == 3:
         sim_times, sim_levels, sim_basement = sim_ret
+        sim_sump = None
     else:
         sim_times, sim_levels = sim_ret
         sim_basement = None
+        sim_sump = None
 
     # interpolate external hydrograph to simulation times so plots/animation have matching lengths
     def sample_external(sim_times, t_ext, h_ext):
@@ -614,9 +736,12 @@ def main(argv=None):
 
     sim_out_path = os.path.join(outdir, 'simulation_result.png')
     try:
-        viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path, time_unit=units, basement_levels=sim_basement, velocity_series=sampled_velocity_plot)
+        viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path,
+                                   time_unit=units, basement_levels=sim_basement,
+                                   velocity_series=sampled_velocity_plot, sump_levels=sim_sump)
     except TypeError:
-        viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path, time_unit=units)
+        viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path,
+                                   time_unit=units)
     print(f"Saved simulation result to {sim_out_path}")
 
     # Compute analytical forces time series if requested
@@ -684,10 +809,15 @@ def main(argv=None):
                     sampled_velocity_for_anim = sample_with_zero_padding(sim_times, v_times, v_vals) if (v_times and v_vals) else None
                 except Exception:
                     sampled_velocity_for_anim = None
-                viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim, ingress_list, anim_path, time_unit=units, basement_levels=sim_basement, basement_abs_levels=sim_basement_abs, velocity_series=sampled_velocity_for_anim)
+                viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim,
+                                       ingress_list, anim_path, time_unit=units,
+                                       basement_levels=sim_basement,
+                                       basement_abs_levels=sim_basement_abs,
+                                       velocity_series=sampled_velocity_for_anim,
+                                       sump_levels=sim_sump)
             except TypeError:
-                # Fall back if viz.generate_animation doesn't accept the new arg (backwards compatibility)
-                viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim, ingress_list, anim_path, time_unit=units)
+                viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim,
+                                       ingress_list, anim_path, time_unit=units)
             print(f'Animation saved to: {anim_path}')
         except Exception as e:
             print(f'Failed to generate animation: {e}')

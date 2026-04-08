@@ -69,6 +69,7 @@ from main import (
     parse_velocity_file,
     sample_with_zero_padding,
 )
+from pump import SumpPump
 
 _MUL = {'seconds': 1.0, 'minutes': 60.0, 'hours': 3600.0}
 
@@ -142,19 +143,23 @@ def _parse_depth_file_maybe_combined(filepath):
 def _run_case(depth_path, vel_path, ingress_list, floor_area,
               dt_s, mul, default_velocity,
               basement_area=0.0, basement_floor_elev=None,
-              basement_ceiling_elev=0.0, basement_conn_height=None,
-              basement_conn_area=0.0):
+              basement_ceiling_elev=0.0,
+              basement_ingress=None,
+              basement_conn_height=None, basement_conn_area=0.0,
+              sump_pump=None):
     """
     Run one simulation and return
-    (sim_times_s, sim_levels, sim_basement, h_peak_ext, h_peak_int, h_peak_basement).
+    (sim_times_s, sim_levels, sim_basement, sim_sump,
+     h_peak_ext, h_peak_int, h_peak_basement, h_peak_sump).
 
     sim_times_s are in seconds (internal units).  h values in metres.
-    sim_basement is None when no basement is configured.
+    sim_basement and sim_sump are None when the respective zones are not active.
+    sump_pump is deep-copied per case so mutable state (h_sump, pump_state)
+    is reset between runs.
     """
     times_raw, depths, inline_vel = _parse_depth_file_maybe_combined(depth_path)
     times_s = [t * mul for t in times_raw]
 
-    # velocity source priority: explicit file > inline third column > default constant
     if vel_path:
         v_times_raw, v_vals = parse_velocity_file(vel_path)
         v_times_s = [t * mul for t in v_times_raw]
@@ -173,7 +178,15 @@ def _run_case(depth_path, vel_path, ingress_list, floor_area,
             building.z_basement = float(basement_floor_elev)
         building.basement_ceiling_elevation = float(basement_ceiling_elev)
 
-    # shallow copy so we can append basement connection without mutating the shared list
+    # Lumped exterior perimeter opening (spec §16.8)
+    if basement_ingress is not None and basement_area > 0.0:
+        building.basement_ingress = basement_ingress  # shared read-only object
+
+    # Sump+pump — deep-copy to reset mutable state (h_sump, pump_state) per case
+    if sump_pump is not None and basement_area > 0.0:
+        building.sump_pump = copy.deepcopy(sump_pump)
+
+    # Ground↔basement bypass connection (goes in ingress list)
     ing = list(ingress_list)
     if basement_area and basement_area > 0.0 and basement_conn_area > 0.0 and basement_conn_height is not None:
         ing.append(IngressPathway(
@@ -185,26 +198,28 @@ def _run_case(depth_path, vel_path, ingress_list, floor_area,
             target='basement',
         ))
 
-    sim = Simulation(
-        building,
-        ing,
-        times_s,
-        depths,
-        dt=dt_s,
-        external_vel_times=v_times_s,
-        external_velocities=v_vals,
-    )
+    sim = Simulation(building, ing, times_s, depths, dt=dt_s,
+                     external_vel_times=v_times_s, external_velocities=v_vals)
     result = sim.run()
-    sim_times = result[0]
-    sim_levels = result[1]
-    sim_basement = result[2] if len(result) == 3 else None
+
+    if len(result) == 4:
+        sim_times, sim_levels, sim_basement, sim_sump = result
+    elif len(result) == 3:
+        sim_times, sim_levels, sim_basement = result
+        sim_sump = None
+    else:
+        sim_times, sim_levels = result
+        sim_basement = None
+        sim_sump = None
 
     sampled_ext = sample_with_zero_padding(sim_times, times_s, depths)
-    h_peak_ext = max(sampled_ext) if sampled_ext else 0.0
-    h_peak_int = max(sim_levels) if sim_levels else 0.0
-    h_peak_basement = max(sim_basement) if sim_basement else 0.0
+    h_peak_ext      = max(sampled_ext)   if sampled_ext   else 0.0
+    h_peak_int      = max(sim_levels)    if sim_levels    else 0.0
+    h_peak_basement = max(sim_basement)  if sim_basement  else 0.0
+    h_peak_sump     = max(sim_sump)      if sim_sump      else 0.0
 
-    return sim_times, sim_levels, sim_basement, h_peak_ext, h_peak_int, h_peak_basement
+    return (sim_times, sim_levels, sim_basement, sim_sump,
+            h_peak_ext, h_peak_int, h_peak_basement, h_peak_sump)
 
 
 # ── duration calculation ──────────────────────────────────────────────────────
@@ -241,7 +256,10 @@ def _write_summary(results, time_units, outdir):
     """Write batch_summary.csv with percentile statistics for key columns."""
     tu = time_units[:3]
     dur_cols = [c for c in results[0].keys() if c.startswith('dur_h') and c.endswith(tu)]
-    key_cols = ['h_peak_ext', 'h_peak_int', 'h_peak_basement'] + dur_cols
+    key_cols = ['h_peak_ext', 'h_peak_int', 'h_peak_basement']
+    if 'h_peak_sump' in results[0]:
+        key_cols.append('h_peak_sump')
+    key_cols += dur_cols
     for loss_col in ('building_content_loss', 'basement_content_loss', 'aggregate_content_loss'):
         if loss_col in results[0]:
             key_cols.append(loss_col)
@@ -282,8 +300,10 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
               outdir, verbose=True,
               basement_content_vulnerability=None,
               basement_area=0.0, basement_floor_elev=None,
-              basement_ceiling_elev=0.0, basement_conn_height=None,
-              basement_conn_area=0.0):
+              basement_ceiling_elev=0.0,
+              basement_ingress=None,
+              basement_conn_height=None, basement_conn_area=0.0,
+              sump_pump=None):
     """
     Run the full batch ensemble and write results.
 
@@ -344,14 +364,17 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
             print(f'  [{idx+1:3d}/{n_total}]  case {case_id:03d}  '
                   f'{os.path.basename(depth_path):<30s}', end='\r', flush=True)
         try:
-            sim_times, sim_levels, sim_basement, h_peak_ext, h_peak_int, h_peak_basement = _run_case(
+            (sim_times, sim_levels, sim_basement, sim_sump,
+             h_peak_ext, h_peak_int, h_peak_basement, h_peak_sump) = _run_case(
                 depth_path, vel_path, ingress_list,
                 floor_area, dt_s, mul, default_velocity,
                 basement_area=basement_area,
                 basement_floor_elev=basement_floor_elev,
                 basement_ceiling_elev=basement_ceiling_elev,
+                basement_ingress=basement_ingress,
                 basement_conn_height=basement_conn_height,
                 basement_conn_area=basement_conn_area,
+                sump_pump=sump_pump,
             )
             durations = _compute_durations(sim_levels, thresholds, dt_s, mul)
             row = {
@@ -362,6 +385,8 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
                 'h_peak_int':      round(h_peak_int, 4),
                 'h_peak_basement': round(h_peak_basement, 4),
             }
+            if sump_pump is not None:
+                row['h_peak_sump'] = round(h_peak_sump, 4)
             building_loss = (
                 round(building_content_vulnerability.interpolate_loss(h_peak_int), 2)
                 if building_content_vulnerability is not None else None
@@ -515,10 +540,31 @@ def _parse_args(argv=None):
                    help='Basement floor elevation relative to ground-floor datum (m).')
     p.add_argument('--basement-ceiling-elevation', type=float, default=0.0,
                    help='Basement ceiling elevation on same datum (m). Default: 0.0.')
+    # Lumped exterior perimeter opening (spec §16.8)
+    p.add_argument('--basement-ingress-height', type=float, default=None,
+                   help='Sill height of the lumped exterior→basement perimeter opening (m).')
+    p.add_argument('--basement-ingress-area', type=float, default=0.0,
+                   help='Area of the lumped exterior→basement perimeter opening (m²).')
+    p.add_argument('--basement-ingress-coeff', type=float, default=0.5,
+                   help='Discharge coefficient of the lumped perimeter opening (default 0.5).')
+    # Ground↔basement bypass
     p.add_argument('--basement-connection-height', type=float, default=None,
                    help='Sill height of ground↔basement connection (m).')
     p.add_argument('--basement-connection-area', type=float, default=0.0,
                    help='Area of ground↔basement connection (m²).')
+    # Sump + pump
+    p.add_argument('--sump-area', type=float, default=0.0,
+                   help='Sump chamber area (m²). If >0 a sump+pump zone is created.')
+    p.add_argument('--sump-base-elevation', type=float, default=None)
+    p.add_argument('--sump-overflow-level', type=float, default=None)
+    p.add_argument('--sump-overflow-coeff', type=float, default=1.8)
+    p.add_argument('--sump-overflow-exponent', type=float, default=1.5)
+    p.add_argument('--pump-on-level', type=float, default=None)
+    p.add_argument('--pump-off-level', type=float, default=None)
+    p.add_argument('--pump-shutoff-head', type=float, default=None)
+    p.add_argument('--pump-curve-coeff', type=float, default=None)
+    p.add_argument('--pipe-loss-coeff', type=float, default=0.0)
+    p.add_argument('--pump-availability', type=float, default=1.0)
     p.add_argument('--outdir',       default='batch_results',
                    help='Output directory for batch_results.csv and batch_summary.csv.')
     return p.parse_args(argv)
@@ -541,6 +587,41 @@ def main(argv=None):
             args.basement_vulnerability, loss_column=loss_col,
         )
 
+    # Lumped exterior perimeter opening
+    basement_ingress = None
+    if (getattr(args, 'basement_ingress_height', None) is not None
+            and getattr(args, 'basement_ingress_area', 0.0) > 0.0):
+        basement_ingress = IngressPathway(
+            height=float(args.basement_ingress_height),
+            area=float(args.basement_ingress_area),
+            coeff=float(args.basement_ingress_coeff),
+            name='ext-basement-perimeter',
+            source='outside', target='basement')
+
+    # Sump+pump
+    sump_pump = None
+    if getattr(args, 'sump_area', 0.0) and args.sump_area > 0.0:
+        required = ['sump_base_elevation', 'sump_overflow_level',
+                    'pump_on_level', 'pump_off_level',
+                    'pump_shutoff_head', 'pump_curve_coeff']
+        missing = [k for k in required if getattr(args, k, None) is None]
+        if missing:
+            print(f'WARNING: sump enabled but missing params: {missing}. Sump disabled.')
+        else:
+            sump_pump = SumpPump(
+                sump_area          = float(args.sump_area),
+                sump_base_elevation= float(args.sump_base_elevation),
+                overflow_level     = float(args.sump_overflow_level),
+                overflow_coeff     = float(args.sump_overflow_coeff),
+                overflow_exponent  = float(args.sump_overflow_exponent),
+                pump_on_level      = float(args.pump_on_level),
+                pump_off_level     = float(args.pump_off_level),
+                pump_shutoff_head  = float(args.pump_shutoff_head),
+                pump_curve_coeff   = float(args.pump_curve_coeff),
+                pipe_loss_coeff    = float(args.pipe_loss_coeff),
+                pump_availability  = float(args.pump_availability),
+            )
+
     run_batch(
         depth_dir                      = args.depth_dir,
         velocity_dir                   = args.velocity_dir,
@@ -555,8 +636,10 @@ def main(argv=None):
         basement_area                  = args.basement_area,
         basement_floor_elev            = args.basement_floor_elevation,
         basement_ceiling_elev          = args.basement_ceiling_elevation,
+        basement_ingress               = basement_ingress,
         basement_conn_height           = args.basement_connection_height,
         basement_conn_area             = args.basement_connection_area,
+        sump_pump                      = sump_pump,
         outdir                         = args.outdir,
         verbose                        = True,
     )
