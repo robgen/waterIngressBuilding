@@ -448,17 +448,7 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
     if basement_levels is not None:
         ax_chart.plot(sim_times, basement_levels, color='#27ae60', linestyle='--',
                       label='Basement (h_b)', linewidth=1.4, alpha=0.80)
-    ax_chart_v = None
-    if velocity_series is not None:
-        ax_chart_v = ax_chart.twinx()
-        ax_chart_v.plot(sim_times, velocity_series, color='#8e44ad',
-                        linestyle=':', linewidth=1.4, label='v (m/s)', alpha=0.75)
-        ax_chart_v.set_ylabel('Velocity (m/s)', fontsize=8)
-        lines1, labs1 = ax_chart.get_legend_handles_labels()
-        lines2, labs2 = ax_chart_v.get_legend_handles_labels()
-        ax_chart.legend(lines1 + lines2, labs1 + labs2, fontsize=7, loc='upper left')
-    else:
-        ax_chart.legend(fontsize=7, loc='upper left')
+    ax_chart.legend(fontsize=7, loc='upper left')
 
     xlabel = f'Time ({unit_label})'
     ax_chart.set_xlabel(xlabel, fontsize=9)

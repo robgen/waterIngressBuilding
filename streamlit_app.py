@@ -27,6 +27,7 @@ from PIL import Image
 
 # Import authoritative logic from main.py
 from main import Building, IngressPathway, Simulation, parse_external_text, parse_ingress_file, parse_external_file, parse_ingress_text, parse_velocity_text, sample_with_zero_padding
+from damage import load_vulnerability_curve
 
 import viz
 
@@ -87,6 +88,18 @@ with st.sidebar:
         basement_ceiling_elev = 0.0
         basement_conn_height = 0.0
         basement_conn_area = 0.0
+    st.markdown('---')
+    st.subheader('Loss estimation (optional)')
+    uploaded_building_vuln = st.file_uploader(
+        'Building contents vulnerability CSV (height_m, mean_repair_loss_GBP)',
+        type=['csv'],
+        key='building_vuln',
+    )
+    uploaded_basement_vuln = st.file_uploader(
+        'Basement contents vulnerability CSV (height_m, mean_repair_loss_GBP)',
+        type=['csv'],
+        key='basement_vuln',
+    )
     st.markdown('---')
     st.subheader('Manual input (optional)')
     manual_external = st.checkbox('Provide external levels manually (table)')
@@ -383,6 +396,42 @@ if run_button:
                 sim_bytes = f.read()
             st.download_button('Download simulation PNG', data=sim_bytes, file_name='simulation_result.png')
 
+            # ── Loss estimation ───────────────────────────────────────────────
+            h_peak_int = max(sim_levels) if sim_levels else 0.0
+            h_peak_basement = max(sim_basement) if sim_basement else 0.0
+
+            building_content_vulnerability = None
+            basement_content_vulnerability = None
+            if uploaded_building_vuln is not None:
+                try:
+                    tmp_bv = save_temp_file_from_bytes(uploaded_building_vuln.getvalue(), suffix='.csv')
+                    building_content_vulnerability = load_vulnerability_curve(tmp_bv)
+                except Exception as e:
+                    st.warning(f'Could not load building vulnerability CSV: {e}')
+            if uploaded_basement_vuln is not None:
+                try:
+                    tmp_sv = save_temp_file_from_bytes(uploaded_basement_vuln.getvalue(), suffix='.csv')
+                    basement_content_vulnerability = load_vulnerability_curve(tmp_sv)
+                except Exception as e:
+                    st.warning(f'Could not load basement vulnerability CSV: {e}')
+
+            if building_content_vulnerability is not None or basement_content_vulnerability is not None:
+                st.subheader('Loss estimates')
+                building_loss = None
+                basement_loss = None
+                if building_content_vulnerability is not None:
+                    building_loss = building_content_vulnerability.interpolate_loss(h_peak_int)
+                    st.metric('Building contents loss', f'{building_loss:,.2f}')
+                if basement_content_vulnerability is not None:
+                    basement_loss = basement_content_vulnerability.interpolate_loss(h_peak_basement)
+                    st.metric('Basement contents loss', f'{basement_loss:,.2f}')
+                if building_loss is not None and basement_loss is not None:
+                    st.metric('Total aggregate loss', f'{building_loss + basement_loss:,.2f}')
+                st.caption(
+                    f'Peak ground-floor depth: {h_peak_int:.3f} m  |  '
+                    f'Peak basement depth: {h_peak_basement:.3f} m'
+                )
+
             if make_anim:
                 anim_path = os.path.join(outdir, 'simulation_animation.gif')
                 status_text.text('Generating animation (this can take a while)...')
@@ -421,7 +470,7 @@ uploaded_batch = st.file_uploader(
     'Upload batch_results.csv',
     type=['csv'],
     help='Output of batch_run.py — must contain h_peak_ext and h_peak_int. '
-         'If aggregate_loss_GBP is present, a loss plot is also shown.',
+         'If aggregate_content_loss is present, a loss plot is also shown.',
 )
 
 if uploaded_batch is not None:
@@ -431,8 +480,8 @@ if uploaded_batch is not None:
         rows = list(reader)
         h_ext = [float(r['h_peak_ext']) for r in rows]
         h_int = [float(r['h_peak_int']) for r in rows]
-        has_loss = bool(rows) and 'aggregate_loss_GBP' in rows[0]
-        losses = [float(r['aggregate_loss_GBP']) for r in rows] if has_loss else None
+        has_loss = bool(rows) and 'aggregate_content_loss' in rows[0]
+        losses = [float(r['aggregate_content_loss']) for r in rows] if has_loss else None
 
         scatter_path = os.path.join(tempfile.gettempdir(), 'batch_scatter.png')
         viz.save_batch_scatter(h_ext, h_int, scatter_path)
@@ -458,6 +507,6 @@ if uploaded_batch is not None:
                     st.download_button('Download loss plot', data=f.read(),
                                        file_name='batch_loss_scatter.png')
         elif rows:
-            st.info('No aggregate loss column found in the uploaded batch results, so the loss plot is not shown.')
+            st.info('No aggregate_content_loss column found in the uploaded batch results, so the loss plot is not shown.')
     except Exception as exc:
         st.error(f'Failed to load batch results: {exc}')

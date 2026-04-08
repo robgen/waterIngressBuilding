@@ -140,11 +140,16 @@ def _parse_depth_file_maybe_combined(filepath):
 # ── single simulation run ─────────────────────────────────────────────────────
 
 def _run_case(depth_path, vel_path, ingress_list, floor_area,
-              dt_s, mul, default_velocity):
+              dt_s, mul, default_velocity,
+              basement_area=0.0, basement_floor_elev=None,
+              basement_ceiling_elev=0.0, basement_conn_height=None,
+              basement_conn_area=0.0):
     """
-    Run one simulation and return (sim_times_s, sim_levels, h_peak_ext, h_peak_int).
+    Run one simulation and return
+    (sim_times_s, sim_levels, sim_basement, h_peak_ext, h_peak_int, h_peak_basement).
 
     sim_times_s are in seconds (internal units).  h values in metres.
+    sim_basement is None when no basement is configured.
     """
     times_raw, depths, inline_vel = _parse_depth_file_maybe_combined(depth_path)
     times_s = [t * mul for t in times_raw]
@@ -161,9 +166,28 @@ def _run_case(depth_path, vel_path, ingress_list, floor_area,
         v_vals = [float(default_velocity)] * len(times_s)
 
     building = Building(floor_area)
+    if basement_area and basement_area > 0.0:
+        building.basement_area = float(basement_area)
+        building.h_basement = 0.0
+        if basement_floor_elev is not None:
+            building.z_basement = float(basement_floor_elev)
+        building.basement_ceiling_elevation = float(basement_ceiling_elev)
+
+    # shallow copy so we can append basement connection without mutating the shared list
+    ing = list(ingress_list)
+    if basement_area and basement_area > 0.0 and basement_conn_area > 0.0 and basement_conn_height is not None:
+        ing.append(IngressPathway(
+            height=float(basement_conn_height),
+            area=float(basement_conn_area),
+            coeff=1.0,
+            name='ground-basement-conn',
+            source='ground',
+            target='basement',
+        ))
+
     sim = Simulation(
         building,
-        ingress_list,          # stateless — safe to share across runs
+        ing,
         times_s,
         depths,
         dt=dt_s,
@@ -173,12 +197,14 @@ def _run_case(depth_path, vel_path, ingress_list, floor_area,
     result = sim.run()
     sim_times = result[0]
     sim_levels = result[1]
+    sim_basement = result[2] if len(result) == 3 else None
 
     sampled_ext = sample_with_zero_padding(sim_times, times_s, depths)
     h_peak_ext = max(sampled_ext) if sampled_ext else 0.0
     h_peak_int = max(sim_levels) if sim_levels else 0.0
+    h_peak_basement = max(sim_basement) if sim_basement else 0.0
 
-    return sim_times, sim_levels, h_peak_ext, h_peak_int
+    return sim_times, sim_levels, sim_basement, h_peak_ext, h_peak_int, h_peak_basement
 
 
 # ── duration calculation ──────────────────────────────────────────────────────
@@ -215,12 +241,13 @@ def _write_summary(results, time_units, outdir):
     """Write batch_summary.csv with percentile statistics for key columns."""
     tu = time_units[:3]
     dur_cols = [c for c in results[0].keys() if c.startswith('dur_h') and c.endswith(tu)]
-    key_cols = ['h_peak_ext', 'h_peak_int'] + dur_cols
-    if 'aggregate_loss_GBP' in results[0]:
-        key_cols.append('aggregate_loss_GBP')
+    key_cols = ['h_peak_ext', 'h_peak_int', 'h_peak_basement'] + dur_cols
+    for loss_col in ('building_content_loss', 'basement_content_loss', 'aggregate_content_loss'):
+        if loss_col in results[0]:
+            key_cols.append(loss_col)
 
     def _summary_round(col, value):
-        return round(value, 2 if col.endswith('_GBP') else 4)
+        return round(value, 2 if col.endswith('_loss') else 4)
 
     rows = []
     for col in key_cols:
@@ -251,8 +278,12 @@ _DEFAULT_THRESHOLDS = [round(0.10 * i, 2) for i in range(1, 16)]  # 0.10 … 1.5
 
 def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
               time_units, dt, thresholds, default_velocity,
-              vulnerability_curve,
-              outdir, verbose=True):
+              building_content_vulnerability,
+              outdir, verbose=True,
+              basement_content_vulnerability=None,
+              basement_area=0.0, basement_floor_elev=None,
+              basement_ceiling_elev=0.0, basement_conn_height=None,
+              basement_conn_area=0.0):
     """
     Run the full batch ensemble and write results.
 
@@ -271,7 +302,15 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
     thresholds      : list of absolute interior depth thresholds (m) at which
                       exceedance duration is reported (e.g. [0.10, 0.30, 1.00])
     default_velocity: fallback velocity (m/s) when no velocity data available
-    vulnerability_curve: optional VulnerabilityCurve for mapping h_peak_int to loss
+    building_content_vulnerability : optional VulnerabilityCurve mapping h_peak_int
+                      (ground-floor peak depth) to building contents loss
+    basement_content_vulnerability : optional VulnerabilityCurve mapping h_peak_basement
+                      to basement contents loss
+    basement_area   : basement floor area (m²); 0 disables basement zone
+    basement_floor_elev : basement floor elevation relative to ground-floor datum (m)
+    basement_ceiling_elev : basement ceiling elevation on same datum (m)
+    basement_conn_height : sill height of ground↔basement connection (m)
+    basement_conn_area   : area of ground↔basement connection (m²)
     outdir          : directory for output CSVs
     verbose         : print progress to stdout
 
@@ -305,21 +344,39 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
             print(f'  [{idx+1:3d}/{n_total}]  case {case_id:03d}  '
                   f'{os.path.basename(depth_path):<30s}', end='\r', flush=True)
         try:
-            sim_times, sim_levels, h_peak_ext, h_peak_int = _run_case(
+            sim_times, sim_levels, sim_basement, h_peak_ext, h_peak_int, h_peak_basement = _run_case(
                 depth_path, vel_path, ingress_list,
                 floor_area, dt_s, mul, default_velocity,
+                basement_area=basement_area,
+                basement_floor_elev=basement_floor_elev,
+                basement_ceiling_elev=basement_ceiling_elev,
+                basement_conn_height=basement_conn_height,
+                basement_conn_area=basement_conn_area,
             )
             durations = _compute_durations(sim_levels, thresholds, dt_s, mul)
             row = {
-                'case_id':       case_id,
-                'depth_file':    os.path.basename(depth_path),
-                'velocity_file': os.path.basename(vel_path) if vel_path else '',
-                'h_peak_ext':    round(h_peak_ext, 4),
-                'h_peak_int':    round(h_peak_int, 4),
+                'case_id':         case_id,
+                'depth_file':      os.path.basename(depth_path),
+                'velocity_file':   os.path.basename(vel_path) if vel_path else '',
+                'h_peak_ext':      round(h_peak_ext, 4),
+                'h_peak_int':      round(h_peak_int, 4),
+                'h_peak_basement': round(h_peak_basement, 4),
             }
-            if vulnerability_curve is not None:
-                row['aggregate_loss_GBP'] = round(
-                    vulnerability_curve.interpolate_loss(h_peak_int), 2
+            building_loss = (
+                round(building_content_vulnerability.interpolate_loss(h_peak_int), 2)
+                if building_content_vulnerability is not None else None
+            )
+            basement_loss = (
+                round(basement_content_vulnerability.interpolate_loss(h_peak_basement), 2)
+                if basement_content_vulnerability is not None else None
+            )
+            if building_loss is not None:
+                row['building_content_loss'] = building_loss
+            if basement_loss is not None:
+                row['basement_content_loss'] = basement_loss
+            if building_loss is not None or basement_loss is not None:
+                row['aggregate_content_loss'] = round(
+                    (building_loss or 0.0) + (basement_loss or 0.0), 2
                 )
             for col, dur in zip(dur_cols, durations):
                 row[col] = dur
@@ -368,11 +425,11 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
         print(f'  Peaks    → {peak_scatter_path}')
         _print_summary_table(results, time_units)
 
-    if vulnerability_curve is not None:
+    if 'aggregate_content_loss' in results[0]:
         loss_plot_path = os.path.join(outdir, 'peak_exterior_vs_aggregate_loss.png')
         viz.save_loss_scatter(
             [r['h_peak_ext'] for r in results],
-            [r['aggregate_loss_GBP'] for r in results],
+            [r['aggregate_content_loss'] for r in results],
             loss_plot_path,
         )
         if verbose:
@@ -405,10 +462,11 @@ def _print_summary_table(results, time_units):
     ]:
         mn, md, mx = _stats(vals)
         print(f"  {label:<30s}  {mn:8.3f}  {md:8.3f}  {mx:8.3f}")
-    if 'aggregate_loss_GBP' in results[0]:
-        loss_vals = [r['aggregate_loss_GBP'] for r in results]
-        mn, md, mx = _stats(loss_vals)
-        print(f"  {'aggregate_loss_GBP':<30s}  {mn:8.2f}  {md:8.2f}  {mx:8.2f}")
+    for loss_col in ('building_content_loss', 'basement_content_loss', 'aggregate_content_loss'):
+        if loss_col in results[0]:
+            loss_vals = [r[loss_col] for r in results]
+            mn, md, mx = _stats(loss_vals)
+            print(f"  {loss_col:<30s}  {mn:8.2f}  {md:8.2f}  {mx:8.2f}")
     print()
 
 
@@ -443,12 +501,24 @@ def _parse_args(argv=None):
                         'Default: 0.10 0.20 … 1.50 m.')
     p.add_argument('--default-velocity', type=float, default=0.2,
                    help='Fallback velocity (m/s) when no velocity data are available.')
-    p.add_argument('--contents-vulnerability', default=None,
-                   help='Optional CSV vulnerability curve used to map peak '
-                        'interior depth to aggregate loss. Requires columns '
-                        '"height_m" and "mean_repair_loss_GBP" by default.')
+    p.add_argument('--building-vulnerability', default=None,
+                   help='CSV vulnerability curve mapping peak ground-floor depth '
+                        'to building contents loss.')
+    p.add_argument('--basement-vulnerability', default=None,
+                   help='CSV vulnerability curve mapping peak basement depth '
+                        'to basement contents loss.')
     p.add_argument('--contents-loss-column', default='mean_repair_loss_GBP',
-                   help='Loss column to interpolate from the vulnerability CSV.')
+                   help='Loss column to read from the vulnerability CSVs.')
+    p.add_argument('--basement-area', type=float, default=0.0,
+                   help='Basement floor area (m²). If >0, a basement zone is created.')
+    p.add_argument('--basement-floor-elevation', type=float, default=None,
+                   help='Basement floor elevation relative to ground-floor datum (m).')
+    p.add_argument('--basement-ceiling-elevation', type=float, default=0.0,
+                   help='Basement ceiling elevation on same datum (m). Default: 0.0.')
+    p.add_argument('--basement-connection-height', type=float, default=None,
+                   help='Sill height of ground↔basement connection (m).')
+    p.add_argument('--basement-connection-area', type=float, default=0.0,
+                   help='Area of ground↔basement connection (m²).')
     p.add_argument('--outdir',       default='batch_results',
                    help='Output directory for batch_results.csv and batch_summary.csv.')
     return p.parse_args(argv)
@@ -457,24 +527,38 @@ def _parse_args(argv=None):
 def main(argv=None):
     args = _parse_args(argv)
     ingress_list = parse_ingress_file(args.ingress)
-    vulnerability_curve = None
-    if args.contents_vulnerability:
-        vulnerability_curve = load_vulnerability_curve(
-            args.contents_vulnerability,
-            loss_column=args.contents_loss_column,
+    loss_col = args.contents_loss_column
+
+    building_content_vulnerability = None
+    if args.building_vulnerability:
+        building_content_vulnerability = load_vulnerability_curve(
+            args.building_vulnerability, loss_column=loss_col,
         )
+
+    basement_content_vulnerability = None
+    if args.basement_vulnerability:
+        basement_content_vulnerability = load_vulnerability_curve(
+            args.basement_vulnerability, loss_column=loss_col,
+        )
+
     run_batch(
-        depth_dir        = args.depth_dir,
-        velocity_dir     = args.velocity_dir,
-        ingress_list     = ingress_list,
-        floor_area       = args.floor,
-        time_units       = args.time_units,
-        dt               = args.dt,
-        thresholds       = args.thresholds,
-        default_velocity = args.default_velocity,
-        vulnerability_curve = vulnerability_curve,
-        outdir           = args.outdir,
-        verbose          = True,
+        depth_dir                      = args.depth_dir,
+        velocity_dir                   = args.velocity_dir,
+        ingress_list                   = ingress_list,
+        floor_area                     = args.floor,
+        time_units                     = args.time_units,
+        dt                             = args.dt,
+        thresholds                     = args.thresholds,
+        default_velocity               = args.default_velocity,
+        building_content_vulnerability = building_content_vulnerability,
+        basement_content_vulnerability = basement_content_vulnerability,
+        basement_area                  = args.basement_area,
+        basement_floor_elev            = args.basement_floor_elevation,
+        basement_ceiling_elev          = args.basement_ceiling_elevation,
+        basement_conn_height           = args.basement_connection_height,
+        basement_conn_area             = args.basement_connection_area,
+        outdir                         = args.outdir,
+        verbose                        = True,
     )
 
 

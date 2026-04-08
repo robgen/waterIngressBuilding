@@ -65,18 +65,52 @@ if __name__ == '__main__':
 
     # --- Example D: compute forces and plot results ---
     # This runs the same hydrograph but requests per-timestep forces and a plot.
-    args = [
-        '--external', 'example_external_levels.csv',
-        '--ingress', 'example_ingress_paths.txt',
-        '--outdir', '.',
-        '--floor', '50',
-        '--compute-forces',
-        '--building-width', '12.0',
-        '--drag-coeff', '1.0',
-        '--rho', '1000.0',
-        '--animate',
-        '--anim-out', 'simulation_animation_forces.gif',
-        '--external-velocity', 'example_external_velocities.csv'
-    ]
+    # args = [
+    #     '--external', 'example_external_levels.csv',
+    #     '--ingress', 'example_ingress_paths.txt',
+    #     '--outdir', '.',
+    #     '--floor', '50',
+    #     '--compute-forces',
+    #     '--building-width', '12.0',
+    #     '--drag-coeff', '1.0',
+    #     '--rho', '1000.0',
+    #     '--animate',
+    #     '--anim-out', 'simulation_animation_forces.gif',
+    #     '--external-velocity', 'example_external_velocities.csv'
+    # ]
 
-    main.main(args)
+    # --- Example E: basement with separate building and basement vulnerability ---
+    # Demonstrates separate loss estimation for ground-floor and basement contents.
+    # Uses uk_buildingContents_vulnerability.csv for the ground floor and
+    # uk_basementContents_vulnerability.csv for the basement.
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    import batch_run
+    from main import parse_ingress_file
+
+    ingress_list = parse_ingress_file('example_ingress_paths.txt')
+    from damage import load_vulnerability_curve
+    building_content_vulnerability = load_vulnerability_curve('uk_buildingContents_vulnerability.csv')
+    basement_content_vulnerability = load_vulnerability_curve('uk_basementContents_vulnerability.csv')
+
+    results = batch_run.run_batch(
+        depth_dir='.',
+        velocity_dir=None,
+        ingress_list=ingress_list,
+        floor_area=50.0,
+        time_units='minutes',
+        dt=1.0,
+        thresholds=[0.10, 0.30, 0.60, 1.00],
+        default_velocity=0.2,
+        building_content_vulnerability=building_content_vulnerability,
+        basement_content_vulnerability=basement_content_vulnerability,
+        basement_area=50.0,
+        basement_floor_elev=-2.5,
+        basement_ceiling_elev=0.0,
+        basement_conn_height=0.0,
+        basement_conn_area=0.01,
+        outdir='.',
+        verbose=True,
+    )
+    print(f"\nExample E complete — {len(results)} result(s) written.")
