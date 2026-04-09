@@ -66,16 +66,25 @@ Stability and timestep selection
 
 The explicit Euler scheme is conditionally stable in the sense that smaller $\Delta t$ reduces numerical integration error. There is no CFL condition here tied to wave propagation; however, choose $\Delta t$ small enough to capture the dynamics of short-lived flows (e.g., sudden step increases in $h_{out}$).
 
+For sump-enabled runs, the same global $\Delta t$ is also used for:
+
+- sump storage updates,
+- pump on/off hysteresis evaluation, and
+- sump-overflow activation.
+
+This release does not add hydraulic substeps for the pump or sump. Smaller user-selected $\Delta t$ values are therefore recommended when the timing of pump switching or overflow onset matters.
+
 Assumptions and limitations
 
 - The model treats each ingress independently and ignores complex hydraulic interactions such as flow through multiple chained compartments, inertia, or entrapped air effects.
 - The discharge formula is a simplified orifice-like approximation and may not be accurate for all opening geometries.
 - Water is assumed to spread uniformly across the floor area S; vertical storage above furnishings, two-level buildings, and internal drainage are not modelled.
-- Evaporation, infiltration into substrates, pumps, and active mitigation are not represented.
+- Evaporation, infiltration into substrates, and active mitigation other than the optional lumped sump-pump module are not represented.
 
 Suggested improvements (future work)
 
 - Add a semi-implicit integration scheme to improve stability with larger timesteps.
+- Add internal hydraulic substeps or adaptive timestepping for sharp sump-overflow and pump-switching thresholds.
 - Model multiple compartments and internal routing/path losses.
 - Calibrate discharge coefficients $C_i$ to experimental data or CFD results for more accurate predictions.
 
@@ -271,3 +280,33 @@ Notes
 
 This is a documentation-level modelling recommendation. Implementing it exactly requires that the simulator compute absolute elevations for compartments and use the submerged test above when evaluating $Q_i$. The current code already contains the building/basement compartments and a sill height for ingress pathways; the elevation-aware interpretation clarifies how to choose heights so that basements behave physically (i.e. retain water) without ad-hoc flow clamping.
 
+## Sump and pump extension
+
+The sump extension adds a third lumped chamber with depth $h_s(t)$ and constant plan area $A_s$.
+
+Reference datum and heads
+
+- `sump_base_elevation` is the shared-datum elevation of the sump base and the pump datum.
+- The sump free-surface elevation is computed as $H_s(t) = z_s + h_s(t)$, where $z_s$ is `sump_base_elevation`.
+- The pump lift head is derived from the external hydraulic head, using
+
+$$
+H_{lift}(t) = H_{out}(t) - z_s.
+$$
+
+This means the effective pump discharge reduces as the outside water level rises.
+
+Routing rule
+
+- User-supplied ingress files define exterior-to-main-building pathways only.
+- Basement perimeter inflow is represented separately as one lumped exterior→basement opening configured through the dedicated basement inputs.
+- When no sump is configured, that lumped exterior→basement opening feeds the basement directly.
+- When a sump is configured, that same lumped exterior→basement opening is intercepted by the sump first and contributes to $Q_{ext,s}$ instead.
+- The ground↔basement connection remains a separate bypass between the main building chamber and the basement chamber.
+
+Scope limits for this release
+
+- Sump overflow is modelled separately as `sump -> basement`; it is not defined through the ingress-pathway file.
+- In the public interface, the sump is treated as part of the basement system rather than as a standalone compartment option.
+- The solver keeps a single global timestep and does not add dedicated pump/sump substeps.
+- If threshold timing is important, reduce the user-selected $\Delta t$; internal hydraulic substeps remain future work.

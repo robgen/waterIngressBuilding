@@ -1,9 +1,10 @@
 import math
 import os
 import tempfile
+import pytest
 
 from damage import VulnerabilityCurve, load_vulnerability_curve
-from main import Building, IngressPathway, Simulation
+from main import Building, IngressPathway, Simulation, parse_ingress_text
 
 
 def test_no_ingress_no_change():
@@ -81,3 +82,8 @@ def test_load_vulnerability_curve_averages_duplicate_heights():
         assert abs(curve.interpolate_loss(0.75) - 4250.0) < 1e-9
     finally:
         os.remove(path)
+
+
+def test_parse_ingress_text_rejects_routing_columns():
+    with pytest.raises(ValueError):
+        parse_ingress_text("0.0, 0.01, 0.6, crack, outside, basement")

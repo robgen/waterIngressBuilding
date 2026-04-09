@@ -1,157 +1,233 @@
 #!/usr/bin/env python3
-"""Generate interpretation dashboard PNG assets for the tutorial.
+"""Generate tutorial dashboard and result-plot assets for the interpretation guide."""
 
-Runs five case studies as described in docs/INTERPRETATION_DASHBOARD_TUTORIAL.md
-and writes dashboard images to docs/assets/interpretation_dashboard/.
+from __future__ import annotations
 
-Usage (from repository root):
-    ./.venv/bin/python example_run/generate_interpretation_tutorial_assets.py
-
-Each case uses example_run/example_external_levels.csv as the hydrograph and
-example_run/example_ingress_paths.txt as the building ingress file.
-"""
-
-import os
+from pathlib import Path
 import sys
 
-# Allow importing from the repository root
-_repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _repo)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from main import Building, IngressPathway, Simulation, parse_external_file, parse_ingress_file
-from pump import SumpPump
-from diagnostics import diagnostics_from_trace
 import viz
-
-# ── paths ─────────────────────────────────────────────────────────────────────
-EXTERNAL_CSV  = os.path.join(_repo, 'example_run', 'example_external_levels.csv')
-INGRESS_TXT   = os.path.join(_repo, 'example_run', 'example_ingress_paths.txt')
-ASSET_DIR     = os.path.join(_repo, 'docs', 'assets', 'interpretation_dashboard')
-os.makedirs(ASSET_DIR, exist_ok=True)
-
-# Shared hydrograph — times in minutes, convert to seconds
-_times_min, _levels = parse_external_file(EXTERNAL_CSV)
-TIMES_S = [t * 60.0 for t in _times_min]
-LEVELS  = _levels
-DT_S    = 6.0   # 6-second timestep (0.1 min) per tutorial commands
-
-# Shared ingress (exterior→building only)
-INGRESS_LIST = parse_ingress_file(INGRESS_TXT)
-
-FLOOR = 50.0
-BASEMENT_AREA  = 50.0
-BASEMENT_ELEV  = -2.5
-BASEMENT_CEIL  = 0.0
-
-# Perimeter opening and bypass from tutorial
-PERI_H    = 0.0
-PERI_A    = 0.0035
-PERI_CD   = 0.5
-BYPASS_H  = 0.0
-BYPASS_A_SMALL = 0.001   # cases 2,3,5
-BYPASS_A_LARGE = 0.010   # case 4
+from diagnostics import run_diagnostics
+from main import Building, IngressPathway, parse_external_file, parse_ingress_file
+from pump import SumpPump
 
 
-def _make_building(with_basement=False, with_peri=False,
-                   bypass_area=0.0, sump_cfg=None):
-    """Construct a Building instance for the given configuration."""
-    building = Building(floor_area=FLOOR)
-    if with_basement:
-        building.basement_area = BASEMENT_AREA
-        building.z_basement    = BASEMENT_ELEV
-        building.basement_ceiling_elevation = BASEMENT_CEIL
-    if with_peri and with_basement:
+EXTERNAL_PATH = REPO_ROOT / 'example_run' / 'example_external_levels.csv'
+INGRESS_PATH = REPO_ROOT / 'example_run' / 'example_ingress_paths.txt'
+ASSET_DIR = REPO_ROOT / 'docs' / 'assets' / 'interpretation_dashboard'
+
+
+CASE_STUDIES = [
+    {
+        'slug': 'case1_ground_only',
+        'title': 'Case Study 1: Ground-Floor Ingress Only',
+        'floor_area': 50.0,
+        'dt_minutes': 0.1,
+    },
+    {
+        'slug': 'case2_basement_no_sump',
+        'title': 'Case Study 2: Basement Without Sump',
+        'floor_area': 50.0,
+        'dt_minutes': 0.1,
+        'basement': {
+            'area': 50.0,
+            'floor_elevation': -2.5,
+            'ceiling_elevation': 0.0,
+            'ingress_height': 0.0,
+            'ingress_area': 0.0035,
+            'ingress_coeff': 0.5,
+            'connection_height': 0.0,
+            'connection_area': 0.001,
+        },
+    },
+    {
+        'slug': 'case3_basement_sump_effective',
+        'title': 'Case Study 3: Basement With Effective Sump Protection',
+        'floor_area': 50.0,
+        'dt_minutes': 0.1,
+        'basement': {
+            'area': 50.0,
+            'floor_elevation': -2.5,
+            'ceiling_elevation': 0.0,
+            'ingress_height': 0.0,
+            'ingress_area': 0.0035,
+            'ingress_coeff': 0.5,
+            'connection_height': 0.0,
+            'connection_area': 0.001,
+        },
+        'sump': {
+            'sump_area': 8.0,
+            'overflow_level': 0.8,
+            'overflow_coeff': 1.8,
+            'overflow_exponent': 1.5,
+            'pump_on_level': 0.5,
+            'pump_off_level': 0.2,
+            'pump_shutoff_head': 3.5,
+            'pump_curve_coeff': 800.0,
+            'pipe_loss_coeff': 200.0,
+            'sump_base_elevation': -2.5,
+            'pump_availability': 1.0,
+        },
+    },
+    {
+        'slug': 'case4_bypass_dominated',
+        'title': 'Case Study 4: Bypass-Dominated Basement Flooding',
+        'floor_area': 50.0,
+        'dt_minutes': 0.1,
+        'basement': {
+            'area': 50.0,
+            'floor_elevation': -2.5,
+            'ceiling_elevation': 0.0,
+            'ingress_height': 0.0,
+            'ingress_area': 0.0035,
+            'ingress_coeff': 0.5,
+            'connection_height': 0.0,
+            'connection_area': 0.010,
+        },
+        'sump': {
+            'sump_area': 8.0,
+            'overflow_level': 0.8,
+            'overflow_coeff': 1.8,
+            'overflow_exponent': 1.5,
+            'pump_on_level': 0.5,
+            'pump_off_level': 0.2,
+            'pump_shutoff_head': 3.5,
+            'pump_curve_coeff': 800.0,
+            'pipe_loss_coeff': 200.0,
+            'sump_base_elevation': -2.5,
+            'pump_availability': 1.0,
+        },
+    },
+    {
+        'slug': 'case5_pump_limited',
+        'title': 'Case Study 5: Pump-Limited Or Near-Failure Sump Behaviour',
+        'floor_area': 50.0,
+        'dt_minutes': 0.1,
+        'basement': {
+            'area': 50.0,
+            'floor_elevation': -2.5,
+            'ceiling_elevation': 0.0,
+            'ingress_height': 0.0,
+            'ingress_area': 0.0035,
+            'ingress_coeff': 0.5,
+            'connection_height': 0.0,
+            'connection_area': 0.001,
+        },
+        'sump': {
+            'sump_area': 4.0,
+            'overflow_level': 0.6,
+            'overflow_coeff': 1.8,
+            'overflow_exponent': 1.5,
+            'pump_on_level': 0.35,
+            'pump_off_level': 0.15,
+            'pump_shutoff_head': 2.8,
+            'pump_curve_coeff': 1400.0,
+            'pipe_loss_coeff': 300.0,
+            'sump_base_elevation': -2.5,
+            'pump_availability': 1.0,
+        },
+    },
+]
+
+
+def build_case(case):
+    """Return a fresh Building and ingress list for one case study."""
+    building = Building(case['floor_area'])
+    ingress = list(parse_ingress_file(str(INGRESS_PATH)))
+
+    basement = case.get('basement')
+    if basement:
+        building.basement_area = float(basement['area'])
+        building.h_basement = 0.0
+        building.z_basement = float(basement['floor_elevation'])
+        building.basement_ceiling_elevation = float(basement['ceiling_elevation'])
         building.basement_ingress = IngressPathway(
-            height=PERI_H, area=PERI_A, coeff=PERI_CD,
-            name='ext-perimeter')
-    if sump_cfg is not None and with_basement:
-        building.sump_pump = SumpPump(**sump_cfg)
-    return building
+            height=float(basement['ingress_height']),
+            area=float(basement['ingress_area']),
+            coeff=float(basement['ingress_coeff']),
+            name='ext-basement-perimeter',
+            source='outside',
+            target='basement',
+        )
+        if float(basement['connection_area']) > 0.0:
+            ingress.append(IngressPathway(
+                height=float(basement['connection_height']),
+                area=float(basement['connection_area']),
+                coeff=1.0,
+                name='ground-basement-conn',
+                source='ground',
+                target='basement',
+            ))
+
+    sump = case.get('sump')
+    if sump:
+        building.sump_pump = SumpPump(
+            sump_area=float(sump['sump_area']),
+            overflow_level=float(sump['overflow_level']),
+            overflow_coeff=float(sump['overflow_coeff']),
+            overflow_exponent=float(sump['overflow_exponent']),
+            pump_on_level=float(sump['pump_on_level']),
+            pump_off_level=float(sump['pump_off_level']),
+            pump_shutoff_head=float(sump['pump_shutoff_head']),
+            pump_curve_coeff=float(sump['pump_curve_coeff']),
+            pipe_loss_coeff=float(sump['pipe_loss_coeff']),
+            sump_base_elevation=float(sump['sump_base_elevation']),
+            pump_availability=float(sump['pump_availability']),
+        )
+
+    return building, ingress
 
 
-def _make_ingress(bypass_area=0.0):
-    """Return ingress list with optional bypass connection appended."""
-    ing = list(INGRESS_LIST)  # exterior→building paths
-    if bypass_area > 0.0:
-        ing.append(IngressPathway(
-            height=BYPASS_H, area=bypass_area, coeff=1.0,
-            name='ground-basement-conn', source='ground', target='basement'))
-    return ing
+def run_case(case):
+    """Run one case and save both dashboard and standard result PNGs."""
+    times_minutes, levels = parse_external_file(str(EXTERNAL_PATH))
+    times_seconds = [t * 60.0 for t in times_minutes]
+    dt_seconds = float(case['dt_minutes']) * 60.0
+    building, ingress = build_case(case)
+
+    diag = run_diagnostics(
+        building,
+        ingress,
+        times_seconds,
+        levels,
+        dt=dt_seconds,
+    )
+
+    dashboard_path = ASSET_DIR / f"{case['slug']}_dashboard.png"
+    result_path = ASSET_DIR / f"{case['slug']}_result.png"
+    times_display = [t / 60.0 for t in diag['times']]
+
+    viz.save_interpretation_dashboard(
+        diag,
+        str(dashboard_path),
+        time_unit='minutes',
+        title_suffix=case['title'],
+    )
+    viz.save_simulation_result(
+        times_display,
+        diag['h_in'],
+        diag['H_out'],
+        str(result_path),
+        time_unit='minutes',
+        basement_levels=diag['h_basement'],
+        sump_levels=diag['h_sump'],
+    )
+    return dashboard_path, result_path
 
 
-def _run(building, ingress, label):
-    """Run simulation and return diagnostics built from the trace."""
-    print(f'  Running {label}...')
-    sim = Simulation(building, ingress, TIMES_S, LEVELS, dt=DT_S)
-    sim.run()
-    return diagnostics_from_trace(sim._last_trace, sim.dt)
+def main():
+    ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    print(f'Writing tutorial assets to {ASSET_DIR}')
+    for case in CASE_STUDIES:
+        dashboard_path, result_path = run_case(case)
+        print(f"- {case['title']}")
+        print(f"  dashboard: {dashboard_path.relative_to(REPO_ROOT)}")
+        print(f"  result:    {result_path.relative_to(REPO_ROOT)}")
 
 
-def _save(diag, name, label):
-    path = os.path.join(ASSET_DIR, f'{name}_dashboard.png')
-    viz.save_interpretation_dashboard(diag, path, time_unit='minutes',
-                                      title_suffix=label)
-    print(f'  Saved → {path}')
-
-
-# ── Case 1: ground-floor ingress only ─────────────────────────────────────────
-print('Case 1: Ground-floor ingress only')
-b1 = _make_building(with_basement=False)
-i1 = _make_ingress(bypass_area=0.0)
-d1 = _run(b1, i1, 'case1_ground_only')
-_save(d1, 'case1_ground_only', 'Case 1 — Ground floor only')
-
-# ── Case 2: basement without sump ─────────────────────────────────────────────
-print('Case 2: Basement without sump')
-b2 = _make_building(with_basement=True, with_peri=True, bypass_area=BYPASS_A_SMALL)
-i2 = _make_ingress(bypass_area=BYPASS_A_SMALL)
-d2 = _run(b2, i2, 'case2_basement_no_sump')
-_save(d2, 'case2_basement_no_sump', 'Case 2 — Basement, no sump')
-
-# ── Case 3: basement with effective sump ──────────────────────────────────────
-print('Case 3: Basement with effective sump')
-sump3 = dict(
-    sump_area          = 8.0,
-    sump_base_elevation= BASEMENT_ELEV,
-    overflow_level     = 0.8,
-    overflow_coeff     = 1.8,
-    overflow_exponent  = 1.5,
-    pump_on_level      = 0.5,
-    pump_off_level     = 0.2,
-    pump_shutoff_head  = 3.5,
-    pump_curve_coeff   = 800.0,
-    pipe_loss_coeff    = 200.0,
-)
-b3 = _make_building(with_basement=True, with_peri=True, sump_cfg=sump3)
-i3 = _make_ingress(bypass_area=BYPASS_A_SMALL)
-d3 = _run(b3, i3, 'case3_basement_sump_effective')
-_save(d3, 'case3_basement_sump_effective', 'Case 3 — Effective sump protection')
-
-# ── Case 4: bypass-dominated basement flooding ────────────────────────────────
-print('Case 4: Bypass-dominated basement flooding')
-b4 = _make_building(with_basement=True, with_peri=True, sump_cfg=sump3)
-i4 = _make_ingress(bypass_area=BYPASS_A_LARGE)
-d4 = _run(b4, i4, 'case4_bypass_dominated')
-_save(d4, 'case4_bypass_dominated', 'Case 4 — Bypass-dominated flooding')
-
-# ── Case 5: pump-limited / near-failure ───────────────────────────────────────
-print('Case 5: Pump-limited / near-failure')
-sump5 = dict(
-    sump_area          = 4.0,
-    sump_base_elevation= BASEMENT_ELEV,
-    overflow_level     = 0.6,
-    overflow_coeff     = 1.8,
-    overflow_exponent  = 1.5,
-    pump_on_level      = 0.35,
-    pump_off_level     = 0.15,
-    pump_shutoff_head  = 2.8,
-    pump_curve_coeff   = 1400.0,
-    pipe_loss_coeff    = 300.0,
-)
-b5 = _make_building(with_basement=True, with_peri=True, sump_cfg=sump5)
-i5 = _make_ingress(bypass_area=BYPASS_A_SMALL)
-d5 = _run(b5, i5, 'case5_pump_limited')
-_save(d5, 'case5_pump_limited', 'Case 5 — Pump-limited sump')
-
-print('\nDone. All dashboard PNGs written to:')
-print(f'  {ASSET_DIR}')
+if __name__ == '__main__':
+    main()

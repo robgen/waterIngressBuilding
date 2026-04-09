@@ -12,18 +12,24 @@ Files (examples in `example_run/`):
   1,0.2
   2,0.5
 
-- `example_ingress_paths.txt` — Ingress pathways. Each line is: `height, area, coeff[,name]` (comma-separated). The optional fourth column is a textual name for the ingress.
+- `example_ingress_paths.txt` — Ingress pathways. Each line is:
+  - `height, area, coeff[,name[,always_open]]`
+
+  These pathways represent exterior-to-main-building ingress only.
+  The optional `always_open` flag accepts `1` for true and `0` for false.
 
   Example lines:
 
   0.0, 0.01, 0.6, wall_crack
   0.3, 0.002, 0.6, airbrick
+  0.0, 0.0005, 0.5, service_penetration, 1
 
 Parsing notes
 
 - Lines starting with `#` or blank lines are ignored.
 - Non-numeric or malformed lines are skipped.
 - For ingress entries, the parser will use a generated name if none is provided.
+- Extra routing columns such as `source,target` are intentionally not supported in the public ingress-file format and will raise an error.
 
 Units and conventions
 
@@ -31,6 +37,7 @@ Units and conventions
 - Areas: square metres (m^2).
 - Heights/levels: metres (m).
 - Coefficient: empirical discharge coefficient (dimensionless).
+- `always_open`: boolean flag (`1` or `0`) that allows a pathway to continue exchanging flow even when neither side is above the sill.
 
 Tips
 
@@ -43,6 +50,9 @@ If you use the basement compartment in the simulator (see CLI flags in `main.py`
 
 - `--basement-area FLOAT` — basement plan area in m^2 (required when enabling a basement). This is used to convert basement volume to depth.
 - `--basement-floor-elevation FLOAT` — elevation of the basement floor relative to the internal ground-floor datum (m). Use negative values for floors below the ground-floor level (e.g. `-2.5`).
+- `--basement-ingress-height FLOAT` — sill elevation (m, same datum) of the lumped exterior-to-basement opening representing perimeter/below-ground ingress.
+- `--basement-ingress-area FLOAT` — area (m^2) of the lumped exterior-to-basement opening.
+- `--basement-ingress-coeff FLOAT` — discharge coefficient of the lumped exterior-to-basement opening.
 - `--basement-connection-height FLOAT` — sill elevation (m, same datum) of the connection between ground-floor and basement (for example `0.0` for a hatch at ground-floor level).
 - `--basement-connection-area FLOAT` — cross-sectional area (m^2) of the vertical/through-connection used to compute flow between ground and basement.
 - `--basement-ceiling-elevation FLOAT` — optional ceiling elevation (m, same datum). This caps the maximum basement water surface elevation; overflow beyond this elevation is spilled back to the ground-floor compartment in the current implementation.
@@ -51,8 +61,11 @@ Notes and conventions for basements
 
 - All basement elevations and sill heights use the same datum as other ingress pathway sill heights and the internal ground-floor level. The simulator converts depths to absolute elevations internally using `H = z + h`.
 - A basement floor below the datum should be given as a negative value (for example `--basement-floor-elevation -2.5`).
+- The ingress file remains reserved for exterior-to-main-building pathways. Basement perimeter ingress is configured separately through the lumped `--basement-ingress-*` inputs.
+- The lumped exterior-to-basement opening represents perimeter/below-ground inflow to the basement system.
 - The submerged test for an opening uses absolute elevations: flow is only computed when the opening is submerged (i.e., when the maximum of the two connected water surfaces exceeds the sill elevation). This means a basement can retain water after external or ground-floor levels fall below the sill height.
 - If you do not provide basement options the simulator will run without a basement compartment.
+- `--basement-connection-*` remains the bypass between the main building and the basement; it does not pass through the sump.
 
 Example CLI (run from project root):
 
@@ -60,6 +73,7 @@ Example CLI (run from project root):
 python3 main.py --external example_run/example_external_levels.csv \
   --ingress example_run/example_ingress_paths.txt \
   --dt 1.0 --basement-area 40.0 --basement-floor-elevation -2.5 \
+  --basement-ingress-height 0.0 --basement-ingress-area 0.003 --basement-ingress-coeff 0.6 \
   --basement-connection-height 0.0 --basement-connection-area 0.001
 ```
 
@@ -74,6 +88,31 @@ Units and conventions
 
 - Velocity: metres per second (m/s). The external velocity is assumed orthogonal to the flow-facing building wall for the purpose of drag calculations.
 - When a velocity hydrograph is supplied it is linearly interpolated to the simulation time grid and padded with zeros beyond its last timestamp by default (short hydrographs behave as if velocity falls to zero after the last sample).
+
+## Sump and pump inputs
+
+The sump extension adds a third chamber with a pump that removes water from the sump only.
+
+- `--sump-area FLOAT` — sump plan area in m^2. If `>0`, the sump+pump model is enabled.
+- `--sump-base-elevation FLOAT` — sump base / pump datum elevation on the shared datum (m).
+- `--sump-overflow-level FLOAT` — overflow crest elevation above the sump base (m).
+- `--sump-overflow-coeff FLOAT` — overflow coefficient `C_ov`.
+- `--sump-overflow-exponent FLOAT` — overflow exponent `m_ov` (default `1.5`).
+- `--pump-on-level FLOAT` — sump depth above the sump base at which the pump switches on.
+- `--pump-off-level FLOAT` — sump depth above the sump base at which the pump switches off.
+- `--pump-shutoff-head FLOAT` — shut-off head `H_shut` for the pump curve.
+- `--pump-curve-coeff FLOAT` — pump-curve coefficient `k_pump`.
+- `--pipe-loss-coeff FLOAT` — pipe-loss coefficient `k_pipe`.
+- `--pump-availability FLOAT` — placeholder availability factor `eta_p` (default `1.0`).
+
+Notes and conventions for sump runs
+
+- In the public CLI and UI, the sump is treated as a basement add-on and should be configured together with a basement.
+- The pump lift head is derived internally from the external hydraulic head and `--sump-base-elevation`.
+- When a sump is enabled, the lumped exterior-to-basement opening configured by `--basement-ingress-*` is intercepted by the sump first instead of feeding the basement directly.
+- The building↔basement bypass configured by `--basement-connection-*` still feeds the basement directly and does not go through the sump.
+- The solver uses the same global `--dt` for the sump, pump, and other chambers. Smaller `--dt` values are recommended when pump switching or sump overflow thresholds are important.
+- Internal hydraulic substeps are not implemented in this release. They remain a possible future enhancement if sharper threshold handling is needed.
 
 ## Force-related inputs
 
@@ -105,7 +144,6 @@ python3 batch_run.py \
   --contents-vulnerability example_run/uk_contents_vulnerability.csv \
   --outdir batch_results/uk_terraced_house_unprotected_loss
 ```
-
 
 
 

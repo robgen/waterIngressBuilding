@@ -15,7 +15,7 @@ The goal is not just to show water levels, but to answer the hydraulic questions
 
 The new interpretation layer adds three pieces:
 
-1. A diagnostics runner that replays the same hydraulic balances used by the solver and records:
+1. A diagnostics layer that reads the per-step trace emitted by the solver and records:
    - chamber heads and depths
    - pathway flows
    - cumulative pathway volumes
@@ -54,6 +54,10 @@ After a simulation finishes, the app now shows:
 Representative dashboard view:
 
 <img src="assets/interpretation_dashboard/case3_basement_sump_effective_dashboard.png" alt="Representative interpretation dashboard for a basement plus sump case" width="1000" />
+
+Matching standard result plot:
+
+<img src="assets/interpretation_dashboard/case3_basement_sump_effective_result.png" alt="Representative standard result plot for a basement plus sump case" width="850" />
 
 ---
 
@@ -135,7 +139,7 @@ It combines:
 The interpretation view is built from two code layers:
 
 - [diagnostics.py](/Users/roberto/repos/waterIngressBuilding/diagnostics.py)
-  This replays the event and records detailed pathway-level diagnostics.
+  This reads the simulation trace and records detailed pathway-level diagnostics without replaying the hydraulics in a second solver loop.
 
 - [viz.py](/Users/roberto/repos/waterIngressBuilding/viz.py)
   This turns the diagnostics into the multi-panel dashboard.
@@ -143,8 +147,8 @@ The interpretation view is built from two code layers:
 The Streamlit app then:
 
 1. parses the user inputs
-2. builds the runtime ingress list
-3. runs the diagnostics-enabled simulation
+2. runs the simulation
+3. derives diagnostics from the stored solver trace
 4. renders both the original result plot and the new dashboard
 5. exposes tables, narrative notes, and a diagnostics CSV download
 
@@ -161,6 +165,7 @@ The tutorial figures embedded below are generated from the same example definiti
 ```
 
 That script writes the dashboard PNGs into `docs/assets/interpretation_dashboard/`.
+For each case study it also writes a matching standard simulation-result PNG, so the tutorial has both the compact water-level view and the richer interpretation dashboard.
 
 ---
 

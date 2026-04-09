@@ -449,6 +449,8 @@ def parse_ingress_file(filepath):
         5: optional always_open flag (1 = True, 0 = False, default False)
 
     Lines with fewer than 3 numeric columns are skipped with a warning.
+    More than 5 columns is treated as an error because the public ingress-file
+    format intentionally does not support routed source/target columns.
     """
     ingress = []
     n_skipped = 0
@@ -461,6 +463,12 @@ def parse_ingress_file(filepath):
             if len(parts) < 3:
                 n_skipped += 1
                 continue
+            if len(parts) > 5:
+                raise ValueError(
+                    f"Unsupported ingress format in {filepath}: expected "
+                    "height, area, coeff[,name[,always_open]] with no "
+                    "source/target routing columns"
+                )
             try:
                 h    = float(parts[0])
                 area = float(parts[1])
@@ -525,6 +533,8 @@ def parse_ingress_text(text):
     See parse_ingress_file for column documentation.
     Malformed lines (fewer than 3 columns or non-numeric values) are skipped
     with a warning; the line number within the text block is reported.
+    More than 5 columns is treated as an error because routed source/target
+    syntax is not part of the public text/file ingress interface.
     """
     ingress = []
     n_skipped = 0
@@ -536,6 +546,12 @@ def parse_ingress_text(text):
         if len(parts) < 3:
             n_skipped += 1
             continue
+        if len(parts) > 5:
+            raise ValueError(
+                "Unsupported ingress text format: expected "
+                "height, area, coeff[,name[,always_open]] with no "
+                "source/target routing columns"
+            )
         try:
             h     = float(parts[0])
             area  = float(parts[1])
