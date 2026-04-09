@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import csv
+import warnings
 
 import forces
 from pump import (SumpPump, compute_sump_overflow, compute_pump_switch_state,
@@ -156,6 +157,17 @@ class Simulation:
         self.v_vals = external_velocities if external_velocities is not None else []
         # simulation timestep (seconds or same units as t_ext). Default is 60.
         self.dt = float(dt) if dt is not None else 60.0
+        # populated after run() — per-step trace consumed by diagnostics layer
+        self._last_trace = None
+        # snapshot of building state at construction time so run() is idempotent
+        self._initial_h_in = building.h_in
+        self._initial_h_basement = building.h_basement
+        if building.sump_pump is not None:
+            self._initial_h_sump = building.sump_pump.h_sump
+            self._initial_pump_state = building.sump_pump.pump_state
+        else:
+            self._initial_h_sump = 0.0
+            self._initial_pump_state = 0
 
     def run(self, progress_callback=None, verbose=False):
         """Run the simulation and return results.
@@ -174,6 +186,15 @@ class Simulation:
             • building-to-basement connection (ground↔basement in ingress_list)
               always bypasses the sump
         """
+        # Reset building to its state at Simulation construction so run() is idempotent
+        self.building.h_in = self._initial_h_in
+        self.building.h_basement = self._initial_h_basement
+        if self.building.sump_pump is not None:
+            self.building.sump_pump.h_sump = self._initial_h_sump
+            self.building.sump_pump.pump_state = self._initial_pump_state
+        # Reset velocity interpolation index (fixes stale index on second call)
+        self._vel_index = 0
+
         indoor_levels = []
         times = []
         basement_levels = []
@@ -185,10 +206,16 @@ class Simulation:
         sp = self.building.sump_pump          # SumpPump or None
         bi = self.building.basement_ingress   # IngressPathway or None (lumped perimeter)
 
+        _trace = {
+            'times': [], 'H_out': [], 'h_in': [], 'h_basement': [], 'h_sump': [],
+            'H_lift': [], 'pump_state': [], 'Q_ext_b': [], 'Q_b_bs': [],
+            'Q_ext_perimeter': [], 'Q_pump': [], 'Q_sump_overflow': [],
+            'sump_configured': sp is not None,  # scalar flag for diagnostics layer
+        }
+
         start_time = self.t_ext[0] if len(self.t_ext) > 0 else 0.0
         end_time = self.t_ext[-1] if len(self.t_ext) > 0 else 0.0
-        import math as _math
-        total_steps = max(1, int(_math.ceil((end_time - start_time) / max(self.dt, 1e-9))))
+        total_steps = max(1, int(math.ceil((end_time - start_time) / max(self.dt, 1e-9))))
         i = 0
 
         for step in range(total_steps + 1):
@@ -216,7 +243,7 @@ class Simulation:
             # interpolate external velocity
             v_out = 0.0
             if self.v_t and self.v_vals:
-                j_v = getattr(self, '_vel_index', 0)
+                j_v = self._vel_index
                 while j_v < len(self.v_t) - 1 and t >= self.v_t[j_v + 1]:
                     j_v += 1
                 self._vel_index = j_v
@@ -260,10 +287,14 @@ class Simulation:
             # ── sump/pump update ─────────────────────────────────────────────
             current_h_sump = 0.0
             Q_s_bs = 0.0
+            H_lift = 0.0
+            Q_p = 0.0
+            pump_state_t = 0
             if sp is not None:
                 H_lift = compute_lift_head(H_out, sp.sump_base_elevation)
                 sp.pump_state = compute_pump_switch_state(
                     sp.h_sump, sp.pump_on_level, sp.pump_off_level, sp.pump_state)
+                pump_state_t = sp.pump_state
                 Q_p = compute_pump_flow(
                     sp.pump_state, sp.pump_availability,
                     sp.pump_shutoff_head, H_lift,
@@ -289,6 +320,21 @@ class Simulation:
             basement_levels.append(current_h_basement)
             sump_levels.append(current_h_sump)
 
+            # per-step trace (consumed by diagnostics layer — no replay needed)
+            _trace_perim = flow_os if sp is not None else flow_ob
+            _trace['times'].append(t)
+            _trace['H_out'].append(H_out)
+            _trace['h_in'].append(current_h_in)
+            _trace['h_basement'].append(current_h_basement)
+            _trace['h_sump'].append(current_h_sump)
+            _trace['H_lift'].append(H_lift)
+            _trace['pump_state'].append(pump_state_t)
+            _trace['Q_ext_b'].append(flow_og)
+            _trace['Q_b_bs'].append(flow_gb)
+            _trace['Q_ext_perimeter'].append(_trace_perim)
+            _trace['Q_pump'].append(Q_p)
+            _trace['Q_sump_overflow'].append(Q_s_bs)
+
             if progress_callback and total_steps > 0:
                 try:
                     progress_callback(min(1.0, (step + 1) / (total_steps + 1)))
@@ -296,6 +342,9 @@ class Simulation:
                     pass
             if verbose and (step + 1) % 1000 == 0:
                 print(f"Progress: {min(100, int(100*(step+1)/(total_steps+1)))}%")
+
+        # Store trace for diagnostics layer (eliminates replay loop)
+        self._last_trace = _trace
 
         # Backwards-compatible return tuple
         has_basement = bool(getattr(self.building, 'basement_area', 0.0)
@@ -390,24 +439,42 @@ def parse_velocity_file(filepath):
 
 
 def parse_ingress_file(filepath):
+    """Parse ingress paths file (height, area, coeff[, name[, always_open]]).
+
+    Columns:
+        1: sill height (m)
+        2: opening area (m²)
+        3: discharge coefficient
+        4: optional name
+        5: optional always_open flag (1 = True, 0 = False, default False)
+
+    Lines with fewer than 3 numeric columns are skipped with a warning.
+    """
     ingress = []
+    n_skipped = 0
     with open(filepath, 'r') as f:
         for line in f:
             s = line.strip()
             if not s or s.startswith('#'):
                 continue
-            parts = s.split(',')
+            parts = [p.strip() for p in s.split(',')]
             if len(parts) < 3:
+                n_skipped += 1
                 continue
             try:
-                h = float(parts[0])
+                h    = float(parts[0])
                 area = float(parts[1])
                 coeff = float(parts[2])
             except ValueError:
+                n_skipped += 1
                 continue
-            # optional name in 4th column
-            name = parts[3].strip() if len(parts) >= 4 else f"ing{len(ingress)}"
-            ingress.append(IngressPathway(height=h, area=area, coeff=coeff, name=name))
+            name = parts[3] if len(parts) >= 4 else f"ing{len(ingress)}"
+            always_open = bool(int(parts[4])) if len(parts) >= 5 else False
+            ingress.append(IngressPathway(height=h, area=area, coeff=coeff,
+                                          name=name, always_open=always_open))
+    if n_skipped:
+        warnings.warn(
+            f"{n_skipped} malformed line(s) skipped in {filepath}", stacklevel=2)
     if not ingress:
         raise ValueError(f"No ingress paths found in file: {filepath}")
     return ingress
@@ -453,17 +520,39 @@ def parse_velocity_text(text):
 
 
 def parse_ingress_text(text):
-    """Parse ingress definitions from a text block (h,area,coeff lines)."""
+    """Parse ingress definitions from a text block (h, area, coeff[, name[, always_open]]).
+
+    See parse_ingress_file for column documentation.
+    Malformed lines (fewer than 3 columns or non-numeric values) are skipped
+    with a warning; the line number within the text block is reported.
+    """
     ingress = []
-    for raw in text.splitlines():
+    n_skipped = 0
+    for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.split('#', 1)[0].strip()
         if not line:
             continue
         parts = [p.strip() for p in line.split(',') if p.strip()]
         if len(parts) < 3:
+            n_skipped += 1
+            continue
+        try:
+            h     = float(parts[0])
+            area  = float(parts[1])
+            coeff = float(parts[2])
+        except ValueError as exc:
+            warnings.warn(
+                f"Non-numeric value in ingress text at line {lineno}: {exc}",
+                stacklevel=2)
+            n_skipped += 1
             continue
         name = parts[3] if len(parts) >= 4 else f"ing{len(ingress)}"
-        ingress.append(IngressPathway(parts[0], parts[1], parts[2], name=name))
+        always_open = bool(int(parts[4])) if len(parts) >= 5 else False
+        ingress.append(IngressPathway(height=h, area=area, coeff=coeff,
+                                      name=name, always_open=always_open))
+    if n_skipped:
+        warnings.warn(
+            f"{n_skipped} malformed line(s) skipped in ingress text", stacklevel=2)
     if not ingress:
         raise ValueError('No ingress entries provided')
     return ingress
@@ -682,31 +771,9 @@ def main(argv=None):
         sim_basement = None
         sim_sump = None
 
-    # interpolate external hydrograph to simulation times so plots/animation have matching lengths
-    def sample_external(sim_times, t_ext, h_ext):
-        sampled = []
-        j = 0
-        for t in sim_times:
-            # advance segment index
-            while j < len(t_ext) - 1 and t >= t_ext[j+1]:
-                j += 1
-            if j < len(t_ext) - 1:
-                t1, h1 = t_ext[j], h_ext[j]
-                t2, h2 = t_ext[j+1], h_ext[j+1]
-                if t2 != t1:
-                    frac = (t - t1) / (t2 - t1)
-                    sampled.append(h1 + frac * (h2 - h1))
-                else:
-                    sampled.append(h1)
-            else:
-                sampled.append(h_ext[-1] if h_ext else 0.0)
-        return sampled
-
-    # sample external using the original hydrograph times (converted to seconds)
-    sampled_external = sample_external(sim_times, times, levels)
-
-    # use the canonical zero-padding sampler defined at module scope
-    # (sample_with_zero_padding is imported from the module scope above)
+    # Interpolate external hydrograph to simulation times using the canonical sampler.
+    # Times beyond the hydrograph end are padded with 0.0 (water has receded).
+    sampled_external = sample_with_zero_padding(sim_times, times, levels)
 
     # sample external velocity (if available) to simulation times for plotting
     sampled_velocity_plot = None
@@ -809,12 +876,17 @@ def main(argv=None):
                     sampled_velocity_for_anim = sample_with_zero_padding(sim_times, v_times, v_vals) if (v_times and v_vals) else None
                 except Exception:
                     sampled_velocity_for_anim = None
+                _sp = building.sump_pump
+                _tr = sim._last_trace
                 viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim,
                                        ingress_list, anim_path, time_unit=units,
                                        basement_levels=sim_basement,
                                        basement_abs_levels=sim_basement_abs,
                                        velocity_series=sampled_velocity_for_anim,
-                                       sump_levels=sim_sump)
+                                       sump_levels=sim_sump,
+                                       sump_overflow_level=(_sp.overflow_level if _sp else None),
+                                       Q_perim_series=(_tr['Q_ext_perimeter'] if _tr else None),
+                                       Q_bypass_series=(_tr['Q_b_bs'] if _tr else None))
             except TypeError:
                 viz.generate_animation(sim_times_display, sim_levels, sampled_for_anim,
                                        ingress_list, anim_path, time_unit=units)

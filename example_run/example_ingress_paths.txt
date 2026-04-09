@@ -10,6 +10,11 @@
 # HR Wallingford Technical Note SR 669
 # https://thefloodhub.co.uk/pfr/#:~:text=In%20bungalows%20or%20properties%20with,dish%20washers%20and%20washing%20machines
 
+# Format:
+#   height, area, coeff[,name]
+#
+# These rows represent exterior-to-main-building ingress pathways only.
+#
 # height above interior floor level (m), area (m^2), discharge coefficient, name
 0.10, 0.001, 0.5, Brick wall cracks or mortar joints
 0.00, 0.006, 0.6, Airbrick vent

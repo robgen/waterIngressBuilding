@@ -76,8 +76,8 @@ def test_load_vulnerability_curve_averages_duplicate_heights():
 
         curve = load_vulnerability_curve(path)
 
-        assert curve.heights_m == [0.0, 0.5, 1.0]
-        assert curve.losses == [1000.0, 2500.0, 6000.0]
+        assert curve.heights_m == (0.0, 0.5, 1.0)
+        assert curve.losses == (1000.0, 2500.0, 6000.0)
         assert abs(curve.interpolate_loss(0.75) - 4250.0) < 1e-9
     finally:
         os.remove(path)

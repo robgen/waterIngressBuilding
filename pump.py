@@ -26,6 +26,7 @@ user-facing ingress file as exterior-to-building-only pathways.
 """
 
 import math
+import warnings
 from dataclasses import dataclass, field
 
 
@@ -69,6 +70,27 @@ class SumpPump:
     # mutable state — deepcopy these between batch cases
     h_sump: float = 0.0
     pump_state: int = 0
+
+    def __post_init__(self):
+        if self.sump_area <= 0.0:
+            raise ValueError(
+                f"SumpPump.sump_area must be > 0, got {self.sump_area}")
+        if self.pump_off_level >= self.pump_on_level:
+            raise ValueError(
+                f"SumpPump.pump_off_level ({self.pump_off_level}) must be "
+                f"< pump_on_level ({self.pump_on_level}): hysteresis band is inverted")
+        if self.overflow_level < 0.0:
+            raise ValueError(
+                f"SumpPump.overflow_level must be >= 0, got {self.overflow_level}")
+        if self.pump_shutoff_head <= 0.0:
+            warnings.warn(
+                f"SumpPump.pump_shutoff_head is {self.pump_shutoff_head} ≤ 0; "
+                "pump will always return zero flow.", stacklevel=2)
+        if self.pump_on_level > self.overflow_level:
+            warnings.warn(
+                f"SumpPump.pump_on_level ({self.pump_on_level}) > overflow_level "
+                f"({self.overflow_level}): pump only activates after the sump "
+                "overflows — sump will spill before the pump engages.", stacklevel=2)
 
 
 # ── pure helper functions ─────────────────────────────────────────────────────

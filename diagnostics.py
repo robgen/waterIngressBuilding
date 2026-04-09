@@ -6,21 +6,26 @@ docs/INTERPRETATION_DASHBOARD_TUTORIAL.md and spec section 17.2.
 
 Design principle (spec §17.2)
 ------------------------------
-The diagnostics runner uses the **same pure helper functions** as
-Simulation.run() (via pump.py) and the same IngressPathway.compute_flow()
-logic.  It does NOT replicate hydraulic equations independently.
+Diagnostics are built from the per-step trace emitted by Simulation.run()
+(stored as sim._last_trace).  There is no independent replay loop here —
+all hydraulic arithmetic lives in Simulation.run() and pump.py.
 
-The runner replays the simulation from scratch with identical arithmetic,
-recording per-timestep pathway flows, cumulative volumes, control states,
-and key event timings.  This guarantees that diagnostics are always
-consistent with the main simulation output.
+``run_diagnostics`` is a convenience wrapper that creates a Simulation,
+calls run(), and returns the diagnostics dict.  When you already have a
+Simulation that has been run, call ``diagnostics_from_trace`` directly
+to avoid a second simulation pass.
 
 Usage
 -----
+    # Preferred — single simulation pass
+    sim = Simulation(building, ingress, times_s, levels, dt=dt_s)
+    sim.run()
+    diag = diagnostics_from_trace(sim._last_trace, sim.dt)
+
+    # Convenience wrapper (creates and runs a fresh Simulation internally)
     from diagnostics import run_diagnostics
     diag = run_diagnostics(building, ingress_list, times_s, levels, dt=dt_s,
                            v_times=v_t, v_vals=v_v)
-    # diag is a dict of lists, one entry per simulation timestep
 
 Keys returned
 -------------
@@ -45,234 +50,148 @@ events             : dict of named event timings (keyed strings → time in seco
 """
 
 import copy
-import math
-
-from pump import (compute_sump_overflow, compute_pump_switch_state,
-                  compute_lift_head, compute_pump_flow)
 
 
-def run_diagnostics(building, ingress_list, external_times, external_levels,
-                    dt=60.0, v_times=None, v_vals=None):
-    """Replay the simulation and return pathway-resolved diagnostics.
+def diagnostics_from_trace(trace, dt):
+    """Build the diagnostics dict from a per-step trace emitted by Simulation.run().
 
-    Parameters are the same as Simulation.__init__.  The building and its
-    sump_pump/basement_ingress state is deep-copied internally so the caller's
-    state is not modified.
+    Parameters
+    ----------
+    trace : dict
+        The ``_last_trace`` dict populated by ``Simulation.run()``.
+    dt : float
+        Simulation timestep (same units as trace['times']).
 
-    Returns a dict with time-series lists (one value per simulation timestep)
-    and an 'events' sub-dict with key event timings.
+    Returns
+    -------
+    dict
+        Full diagnostics dict (same structure as returned by run_diagnostics).
     """
-    # Deep-copy the building so we do not disturb the caller's state
-    bldg = copy.deepcopy(building)
-    sp   = bldg.sump_pump          # SumpPump or None (already deep-copied)
-    bi   = bldg.basement_ingress   # IngressPathway or None
+    dt = float(dt)
 
-    v_t   = list(v_times) if v_times else []
-    v_v   = list(v_vals)  if v_vals  else []
+    times         = trace['times']
+    H_out         = trace['H_out']
+    h_in          = trace['h_in']
+    h_basement    = trace['h_basement']
+    h_sump        = trace['h_sump']
+    H_lift        = trace['H_lift']
+    pump_state    = trace['pump_state']
+    Q_ext_b       = trace['Q_ext_b']
+    Q_b_bs        = trace['Q_b_bs']
+    Q_ext_perim   = trace['Q_ext_perimeter']
+    Q_pump        = trace['Q_pump']
+    Q_sump_ov     = trace['Q_sump_overflow']
 
-    # ── output arrays ─────────────────────────────────────────────────────────
-    out_times          = []
-    out_H_out          = []
-    out_h_in           = []
-    out_h_basement     = []
-    out_h_sump         = []
-    out_H_lift         = []
-    out_pump_state     = []
-    out_Q_ext_b        = []   # exterior → ground floor
-    out_Q_b_bs         = []   # ground floor → basement (net)
-    out_Q_perimeter    = []   # lumped perimeter flow (→ basement or → sump)
-    out_Q_pump         = []   # pump discharge
-    out_Q_sump_ov      = []   # sump overflow → basement
+    # Use the explicit flag written by Simulation.run(); fall back to flow activity
+    # for traces produced by older code that lacks the flag.
+    has_sump = trace.get('sump_configured',
+                         any(ps != 0 for ps in pump_state)
+                         or any(q > 0 for q in Q_pump)
+                         or any(q > 0 for q in Q_sump_ov))
 
-    cum_ext_b      = 0.0
-    cum_b_bs       = 0.0
-    cum_perimeter  = 0.0
-    cum_pump       = 0.0
-    cum_sump_ov    = 0.0
+    # ── cumulative sums ───────────────────────────────────────────────────────
+    vol_ext_b_cum     = list(_cumsum(Q_ext_b,     dt))
+    vol_b_bs_cum      = list(_cumsum(Q_b_bs,      dt))
+    vol_perimeter_cum = list(_cumsum(Q_ext_perim,  dt))
+    vol_pump_cum      = list(_cumsum(Q_pump,       dt))
+    vol_sump_ov_cum   = list(_cumsum(Q_sump_ov,    dt))
 
+    cum_ext_b     = vol_ext_b_cum[-1]     if vol_ext_b_cum     else 0.0
+    cum_b_bs      = vol_b_bs_cum[-1]      if vol_b_bs_cum      else 0.0
+    cum_perimeter = vol_perimeter_cum[-1] if vol_perimeter_cum else 0.0
+    cum_pump      = vol_pump_cum[-1]      if vol_pump_cum      else 0.0
+    cum_sump_ov   = vol_sump_ov_cum[-1]  if vol_sump_ov_cum   else 0.0
+
+    # ── event detection ───────────────────────────────────────────────────────
     events = {}
 
-    # ── time-stepping (mirrors Simulation.run exactly) ─────────────────────────
-    dt = float(dt)
-    t_ext   = external_times
-    h_ext   = external_levels
-    start_t = t_ext[0]  if t_ext else 0.0
-    end_t   = t_ext[-1] if t_ext else 0.0
-    total_steps = max(1, int(math.ceil((end_t - start_t) / max(dt, 1e-9))))
-
-    current_h_in       = bldg.h_in
-    current_h_basement = bldg.h_basement
-    ext_idx = 0
-    vel_idx = 0
-
-    for step in range(total_steps + 1):
-        t = start_t + step * dt
-        if t > end_t:
-            t = end_t
-
-        # interpolate external level
-        while ext_idx < len(t_ext) - 1 and t >= t_ext[ext_idx + 1]:
-            ext_idx += 1
-        if ext_idx < len(t_ext) - 1:
-            t1, h1 = t_ext[ext_idx], h_ext[ext_idx]
-            t2, h2 = t_ext[ext_idx+1], h_ext[ext_idx+1]
-            h_out = h1 + (h2 - h1) * (t - t1) / (t2 - t1) if t2 != t1 else h1
-        else:
-            h_out = h_ext[-1] if h_ext else 0.0
-
-        H_out      = h_out
-        H_in       = current_h_in
-        H_basement = bldg.z_basement + current_h_basement
-        H_sump_abs = (sp.sump_base_elevation + sp.h_sump) if sp is not None else 0.0
-
-        # interpolate velocity
-        v_out = 0.0
-        if v_t and v_v:
-            while vel_idx < len(v_t) - 1 and t >= v_t[vel_idx + 1]:
-                vel_idx += 1
-            if vel_idx < len(v_t) - 1:
-                vt1, vv1 = v_t[vel_idx], v_v[vel_idx]
-                vt2, vv2 = v_t[vel_idx+1], v_v[vel_idx+1]
-                v_out = vv1 + (vv2 - vv1)*(t-vt1)/(vt2-vt1) if vt2 != vt1 else vv1
-            else:
-                v_out = 0.0 if t > v_t[-1] else (v_v[-1] if v_v else 0.0)
-
-        # ingress flows (exterior→building only)
-        flow_og = 0.0
-        flow_gb = 0.0
-        for ing in ingress_list:
-            src = getattr(ing, 'source', 'outside')
-            tgt = getattr(ing, 'target', 'ground')
-            if src == 'outside' and tgt == 'ground':
-                flow_og += ing.compute_flow(H_out, H_in, v_source=v_out)
-            elif src == 'ground' and tgt == 'basement':
-                flow_gb += ing.compute_flow(H_in, H_basement)
-            elif src == 'basement' and tgt == 'ground':
-                flow_gb -= ing.compute_flow(H_basement, H_in)
-
-        # lumped perimeter pathway
-        flow_ob = 0.0
-        flow_os = 0.0
-        if bi is not None:
-            if sp is not None:
-                flow_os = bi.compute_flow(H_out, H_sump_abs, v_source=v_out)
-            else:
-                flow_ob = bi.compute_flow(H_out, H_basement, v_source=v_out)
-
-        # ground floor update
-        bldg.update_water_level((flow_og - flow_gb) * dt, zone='ground')
-        current_h_in = bldg.h_in
-
-        # sump update
-        Q_pump_t  = 0.0
-        Q_sov_t   = 0.0
-        H_lift_t  = 0.0
-        u_t       = 0
-        if sp is not None:
-            H_lift_t = compute_lift_head(H_out, sp.sump_base_elevation)
-            sp.pump_state = compute_pump_switch_state(
-                sp.h_sump, sp.pump_on_level, sp.pump_off_level, sp.pump_state)
-            u_t = sp.pump_state
-            Q_pump_t = compute_pump_flow(
-                sp.pump_state, sp.pump_availability,
-                sp.pump_shutoff_head, H_lift_t,
-                sp.pump_curve_coeff, sp.pipe_loss_coeff)
-            Q_sov_t = compute_sump_overflow(
-                sp.h_sump, sp.overflow_level,
-                sp.overflow_coeff, sp.overflow_exponent)
-            sp.h_sump = max(0.0, sp.h_sump + (flow_os - Q_pump_t - Q_sov_t) * dt / sp.sump_area)
-
-        # basement update
-        vol_basement = (flow_ob + flow_gb + Q_sov_t) * dt
-        ov = bldg.update_water_level(vol_basement, zone='basement')
-        if ov and ov > 0.0:
-            bldg.update_water_level(ov, zone='ground')
-        current_h_basement = bldg.h_basement
-
-        # record step
-        out_times.append(t)
-        out_H_out.append(H_out)
-        out_h_in.append(current_h_in)
-        out_h_basement.append(current_h_basement)
-        out_h_sump.append(sp.h_sump if sp is not None else 0.0)
-        out_H_lift.append(H_lift_t)
-        out_pump_state.append(u_t)
-        out_Q_ext_b.append(flow_og)
-        out_Q_b_bs.append(flow_gb)
-        Q_perim = flow_os if sp is not None else flow_ob
-        out_Q_perimeter.append(Q_perim)
-        out_Q_pump.append(Q_pump_t)
-        out_Q_sump_ov.append(Q_sov_t)
-
-        cum_ext_b     += flow_og * dt
-        cum_b_bs      += flow_gb * dt
-        cum_perimeter += Q_perim * dt
-        cum_pump      += Q_pump_t * dt
-        cum_sump_ov   += Q_sov_t * dt
-
-        # ── event detection ────────────────────────────────────────────────
-        if 't_first_gf_inundation' not in events and current_h_in > 0.0:
+    for i, t in enumerate(times):
+        if 't_first_gf_inundation' not in events and h_in[i] > 0.0:
             events['t_first_gf_inundation'] = t
-        if 't_first_basement_inundation' not in events and current_h_basement > 0.0:
+        if 't_first_basement_inundation' not in events and h_basement[i] > 0.0:
             events['t_first_basement_inundation'] = t
-        if sp is not None and 't_first_pump_on' not in events and u_t == 1:
+        if 't_first_pump_on' not in events and pump_state[i] == 1:
             events['t_first_pump_on'] = t
-        if sp is not None and 't_first_sump_overflow' not in events and Q_sov_t > 0.0:
+        if 't_first_sump_overflow' not in events and Q_sump_ov[i] > 0.0:
             events['t_first_sump_overflow'] = t
 
-    # ── cumulative volume final ────────────────────────────────────────────────
-    # Find peak indices
     def _argmax(lst):
         return max(range(len(lst)), key=lambda i: lst[i]) if lst else 0
 
-    events['t_peak_ext']      = out_times[_argmax(out_H_out)]
-    events['t_peak_gf']       = out_times[_argmax(out_h_in)]
-    events['t_peak_basement'] = out_times[_argmax(out_h_basement)]
-    if sp is not None:
-        events['t_peak_sump'] = out_times[_argmax(out_h_sump)]
+    if times:
+        events['t_peak_ext']      = times[_argmax(H_out)]
+        events['t_peak_gf']       = times[_argmax(h_in)]
+        events['t_peak_basement'] = times[_argmax(h_basement)]
+        if has_sump:
+            events['t_peak_sump'] = times[_argmax(h_sump)]
 
     # Dominant basement source
     if cum_perimeter > 0 or cum_b_bs > 0:
-        if cum_b_bs > cum_perimeter:
-            events['dominant_basement_source'] = 'bypass'
-        else:
-            events['dominant_basement_source'] = 'perimeter'
+        events['dominant_basement_source'] = 'bypass' if cum_b_bs > cum_perimeter else 'perimeter'
     else:
         events['dominant_basement_source'] = 'none'
 
-    # Pump interception ratio  (how much of perimeter inflow was pumped out)
+    # Pump interception ratio
     if cum_perimeter > 0:
         events['pump_interception_ratio'] = min(1.0, cum_pump / cum_perimeter)
     else:
         events['pump_interception_ratio'] = None
 
-    # Cumulative volume totals
-    events['vol_ext_b_total']         = cum_ext_b
-    events['vol_perimeter_total']      = cum_perimeter
-    events['vol_b_bs_total']           = cum_b_bs
-    events['vol_pump_total']           = cum_pump
-    events['vol_sump_overflow_total']  = cum_sump_ov
+    events['vol_ext_b_total']        = cum_ext_b
+    events['vol_perimeter_total']    = cum_perimeter
+    events['vol_b_bs_total']         = cum_b_bs
+    events['vol_pump_total']         = cum_pump
+    events['vol_sump_overflow_total'] = cum_sump_ov
+    events['sump_configured']        = has_sump
 
     return {
-        'times':              out_times,
-        'H_out':              out_H_out,
-        'h_in':               out_h_in,
-        'h_basement':         out_h_basement,
-        'h_sump':             out_h_sump,
-        'H_lift':             out_H_lift,
-        'pump_state':         out_pump_state,
-        'Q_ext_b':            out_Q_ext_b,
-        'Q_b_bs':             out_Q_b_bs,
-        'Q_ext_perimeter':    out_Q_perimeter,
-        'Q_pump':             out_Q_pump,
-        'Q_sump_overflow':    out_Q_sump_ov,
-        'vol_ext_b_cum':      list(_cumsum(out_Q_ext_b, dt)),
-        'vol_b_bs_cum':       list(_cumsum(out_Q_b_bs,  dt)),
-        'vol_perimeter_cum':  list(_cumsum(out_Q_perimeter, dt)),
-        'vol_pump_cum':       list(_cumsum(out_Q_pump,  dt)),
-        'vol_sump_overflow_cum': list(_cumsum(out_Q_sump_ov, dt)),
-        'events':             events,
+        'times':                 times,
+        'H_out':                 H_out,
+        'h_in':                  h_in,
+        'h_basement':            h_basement,
+        'h_sump':                h_sump,
+        'H_lift':                H_lift,
+        'pump_state':            pump_state,
+        'Q_ext_b':               Q_ext_b,
+        'Q_b_bs':                Q_b_bs,
+        'Q_ext_perimeter':       Q_ext_perim,
+        'Q_pump':                Q_pump,
+        'Q_sump_overflow':       Q_sump_ov,
+        'vol_ext_b_cum':         vol_ext_b_cum,
+        'vol_b_bs_cum':          vol_b_bs_cum,
+        'vol_perimeter_cum':     vol_perimeter_cum,
+        'vol_pump_cum':          vol_pump_cum,
+        'vol_sump_overflow_cum': vol_sump_ov_cum,
+        'events':                events,
     }
+
+
+def run_diagnostics(building, ingress_list, external_times, external_levels,
+                    dt=60.0, v_times=None, v_vals=None):
+    """Run a fresh simulation and return pathway-resolved diagnostics.
+
+    This is a convenience wrapper.  Internally it creates a Simulation,
+    calls run() (which populates sim._last_trace), then calls
+    diagnostics_from_trace().  The building state is deep-copied so the
+    caller's building is not modified.
+
+    When you already have a Simulation that has been run, prefer:
+        diag = diagnostics_from_trace(sim._last_trace, sim.dt)
+    to avoid a second simulation pass.
+    """
+    # Local import avoids a module-level dependency on main.py (main.py does
+    # not import from diagnostics.py, so there is no circular import).
+    from main import Simulation
+
+    bldg = copy.deepcopy(building)
+    sim = Simulation(
+        bldg, ingress_list, external_times, external_levels,
+        dt=dt,
+        external_vel_times=v_times,
+        external_velocities=v_vals,
+    )
+    sim.run()
+    return diagnostics_from_trace(sim._last_trace, sim.dt)
 
 
 def _cumsum(flow_list, dt):
@@ -297,9 +216,9 @@ def generate_narrative(diag):
     has_sump = any(q > 0 for q in diag.get('Q_pump', []))
     lines = []
 
-    h_peak_gf = max(diag['h_in']) if diag['h_in'] else 0.0
-    h_peak_bs = max(diag['h_basement']) if diag['h_basement'] else 0.0
-    h_peak_sump = max(diag['h_sump']) if diag.get('h_sump') else 0.0
+    h_peak_gf   = max(diag['h_in'])       if diag['h_in']       else 0.0
+    h_peak_bs   = max(diag['h_basement']) if diag['h_basement'] else 0.0
+    h_peak_sump = max(diag['h_sump'])     if diag.get('h_sump') else 0.0
 
     lines.append(f"Peak ground-floor depth: {h_peak_gf:.3f} m")
     lines.append(f"Peak basement depth: {h_peak_bs:.3f} m")

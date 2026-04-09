@@ -57,7 +57,9 @@ import csv
 import importlib
 import math
 import os
+import re
 import sys
+import warnings
 
 from damage import load_vulnerability_curve
 from main import (
@@ -77,17 +79,22 @@ _MUL = {'seconds': 1.0, 'minutes': 60.0, 'hours': 3600.0}
 # ── file discovery ────────────────────────────────────────────────────────────
 
 def _numeric_suffix(filename):
-    """Extract the leading integer from the numeric part of a filename stem."""
+    """Extract the trailing integer from a filename stem (e.g. depth_042.csv → 42).
+
+    Only the rightmost contiguous digit run is used, so filenames that include
+    dates or version numbers in earlier positions (e.g. depth_2024_001.csv → 1)
+    are handled correctly.
+    """
     stem = os.path.splitext(filename)[0]
-    digits = ''.join(c for c in stem if c.isdigit())
-    return int(digits) if digits else 0
+    m = re.search(r'(\d+)$', stem)
+    return int(m.group(1)) if m else 0
 
 
 def _discover_pairs(depth_dir, velocity_dir):
     """
     Return sorted list of (case_id, depth_path, velocity_path_or_None).
 
-    For layout A the velocity file is matched by identical numeric suffix.
+    For layout A the velocity file is matched by identical trailing numeric suffix.
     For layout B (combined files) velocity_dir is None and the third column
     of each depth file is used if present.
     """
@@ -95,18 +102,15 @@ def _discover_pairs(depth_dir, velocity_dir):
     for fname in sorted(os.listdir(depth_dir)):
         if not fname.endswith('.csv'):
             continue
-        case_id = _numeric_suffix(fname)
+        suffix = _numeric_suffix(fname)
         depth_path = os.path.join(depth_dir, fname)
         vel_path = None
         if velocity_dir:
-            digits = ''.join(c for c in os.path.splitext(fname)[0] if c.isdigit())
             for vname in os.listdir(velocity_dir):
-                if vname.endswith('.csv'):
-                    vdigits = ''.join(c for c in os.path.splitext(vname)[0] if c.isdigit())
-                    if vdigits == digits:
-                        vel_path = os.path.join(velocity_dir, vname)
-                        break
-        pairs.append((case_id, depth_path, vel_path))
+                if vname.endswith('.csv') and _numeric_suffix(vname) == suffix:
+                    vel_path = os.path.join(velocity_dir, vname)
+                    break
+        pairs.append((suffix, depth_path, vel_path))
     return sorted(pairs, key=lambda x: x[0])
 
 
@@ -119,6 +123,7 @@ def _parse_depth_file_maybe_combined(filepath):
     """
     times, depths, velocities = [], [], []
     has_velocity = None
+    n_skipped = 0
     with open(filepath) as f:
         for raw in f:
             line = raw.split('#', 1)[0].strip()
@@ -126,13 +131,23 @@ def _parse_depth_file_maybe_combined(filepath):
                 continue
             parts = [p.strip() for p in line.split(',')]
             if len(parts) < 2:
+                n_skipped += 1
+                continue
+            try:
+                t = float(parts[0])
+                d = float(parts[1])
+            except ValueError:
+                n_skipped += 1
                 continue
             if has_velocity is None:
                 has_velocity = len(parts) >= 3
-            times.append(float(parts[0]))
-            depths.append(float(parts[1]))
+            times.append(t)
+            depths.append(d)
             if has_velocity:
                 velocities.append(float(parts[2]) if len(parts) >= 3 else 0.0)
+    if n_skipped:
+        warnings.warn(
+            f"{n_skipped} malformed line(s) skipped in {filepath}", stacklevel=2)
     if not times:
         raise ValueError(f'No data found in {filepath}')
     return times, depths, velocities if has_velocity else None

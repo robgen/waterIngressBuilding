@@ -29,7 +29,7 @@ from PIL import Image
 from main import Building, IngressPathway, Simulation, parse_external_text, parse_ingress_file, parse_external_file, parse_ingress_text, parse_velocity_text, sample_with_zero_padding
 from damage import load_vulnerability_curve
 from pump import SumpPump
-from diagnostics import run_diagnostics, diagnostics_to_csv_rows, generate_narrative
+from diagnostics import diagnostics_from_trace, diagnostics_to_csv_rows, generate_narrative
 
 import viz
 
@@ -520,9 +520,7 @@ if run_button:
             st.subheader('Advanced interpretation')
             try:
                 status_text.text('Running diagnostics...')
-                diag = run_diagnostics(
-                    building, ingress_list, times_seconds, levels,
-                    dt=dt_seconds, v_times=v_times_seconds, v_vals=v_vals)
+                diag = diagnostics_from_trace(sim._last_trace, sim.dt)
                 status_text.text('Diagnostics complete')
 
                 dashboard_path = os.path.join(outdir, 'interpretation_dashboard.png')
@@ -583,12 +581,17 @@ if run_button:
                         [building.z_basement + hb for hb in sim_basement]
                         if sim_basement is not None else None
                     )
+                    _sp = building.sump_pump
+                    _tr = sim._last_trace
                     viz.generate_animation(sim_times_display, sim_levels, sampled_external,
                                            ingress_list, anim_path, time_unit=time_unit,
                                            basement_levels=sim_basement,
                                            basement_abs_levels=sim_basement_abs,
                                            velocity_series=sampled_velocity,
-                                           sump_levels=sim_sump)
+                                           sump_levels=sim_sump,
+                                           sump_overflow_level=(_sp.overflow_level if _sp else None),
+                                           Q_perim_series=(_tr['Q_ext_perimeter'] if _tr else None),
+                                           Q_bypass_series=(_tr['Q_b_bs'] if _tr else None))
                     with open(anim_path, 'rb') as f:
                         anim_bytes = f.read()
                     try:

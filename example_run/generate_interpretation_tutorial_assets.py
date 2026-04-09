@@ -20,7 +20,7 @@ sys.path.insert(0, _repo)
 
 from main import Building, IngressPathway, Simulation, parse_external_file, parse_ingress_file
 from pump import SumpPump
-from diagnostics import run_diagnostics
+from diagnostics import diagnostics_from_trace
 import viz
 
 # ── paths ─────────────────────────────────────────────────────────────────────
@@ -80,12 +80,11 @@ def _make_ingress(bypass_area=0.0):
 
 
 def _run(building, ingress, label):
-    """Run simulation + diagnostics and return diag dict."""
+    """Run simulation and return diagnostics built from the trace."""
     print(f'  Running {label}...')
     sim = Simulation(building, ingress, TIMES_S, LEVELS, dt=DT_S)
-    sim.run()   # we don't need the return here; diagnostics replay it
-    diag = run_diagnostics(building, ingress, TIMES_S, LEVELS, dt=DT_S)
-    return diag
+    sim.run()
+    return diagnostics_from_trace(sim._last_trace, sim.dt)
 
 
 def _save(diag, name, label):

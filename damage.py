@@ -10,9 +10,14 @@ from dataclasses import dataclass
 class VulnerabilityCurve:
     """Piecewise-linear loss curve defined over water depth."""
 
-    heights_m: list
-    losses: list
+    heights_m: tuple
+    losses: tuple
     loss_column: str = 'mean_repair_loss_GBP'
+
+    def __post_init__(self):
+        # Convert any list inputs to tuples so the frozen guarantee is genuine
+        object.__setattr__(self, 'heights_m', tuple(self.heights_m))
+        object.__setattr__(self, 'losses', tuple(self.losses))
 
     def interpolate_loss(self, height_m):
         """Return the linearly interpolated loss at a given water depth."""

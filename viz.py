@@ -19,6 +19,20 @@ import matplotlib.animation as animation
 from matplotlib import patches
 from matplotlib.ticker import FuncFormatter
 
+# ── canonical colour palette ───────────────────────────────────────────────────
+# One colour per hydraulic concept.  Every plot in this module reuses these
+# so the same colour always means the same thing across all outputs.
+_C = {
+    'external':  '#2980b9',  # outside water body / outside→ground-floor inflow
+    'indoor':    '#e67e22',  # ground-floor interior water
+    'basement':  '#27ae60',  # basement floor (unprotected, outside the sump)
+    'sump':      '#9467bd',  # sump chamber water level
+    'perimeter': '#17becf',  # exterior perimeter pathway (outside→basement/sump)
+    'bypass':    '#d4a017',  # ground↔basement bypass pathway
+    'pump':      '#6c3483',  # pump discharge (darker purple — sump family)
+    'overflow':  '#c0392b',  # sump overflow spilling into basement
+}
+
 
 def save_external_preview(times, levels, outpath, time_unit=None):
     fig, ax = plt.subplots(figsize=(6, 3))
@@ -225,12 +239,13 @@ def save_simulation_result(sim_times, sim_levels, external_levels, outpath,
                            velocity_series=None, sump_levels=None):
     """Save a combined plot of external/indoor (and optional basement/sump) levels."""
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(sim_times, external_levels, label='External (h_out)', color='tab:blue')
-    ax.plot(sim_times, sim_levels, label='Indoor (h_in)', color='tab:orange')
+    ax.plot(sim_times, external_levels, label='External (h_out)', color=_C['external'])
+    ax.plot(sim_times, sim_levels, label='Indoor (h_in)', color=_C['indoor'])
     if basement_levels is not None:
-        ax.plot(sim_times, basement_levels, label='Basement (h_bs)', linestyle='--', color='#2ca02c')
+        _bs_lbl = 'Basement: unprotected' if sump_levels is not None else 'Basement (h_bs)'
+        ax.plot(sim_times, basement_levels, label=_bs_lbl, linestyle='--', color=_C['basement'])
     if sump_levels is not None:
-        ax.plot(sim_times, sump_levels, label='Sump depth (h_s)', linestyle=':', color='#9467bd')
+        ax.plot(sim_times, sump_levels, label='Basement: sump', linestyle=':', color=_C['sump'])
     xlabel = f'Time ({time_unit})' if time_unit else 'Time'
     ax.set_xlabel(xlabel)
     ax.set_ylabel('Water Level (m)')
@@ -285,7 +300,9 @@ def save_forces_result(sim_times, forces_rows, outpath, time_unit=None):
 
 def generate_animation(sim_times, sim_levels, external_levels, ingress_list, outpath,
                        fps=10, max_frames=200, time_unit=None, basement_levels=None,
-                       basement_abs_levels=None, velocity_series=None, sump_levels=None):
+                       basement_abs_levels=None, velocity_series=None, sump_levels=None,
+                       sump_overflow_level=None, Q_perim_series=None,
+                       Q_bypass_series=None):
     # Prepare frames (downsample if too many)
     n_frames = len(sim_times)
     if n_frames <= 0:
@@ -302,10 +319,12 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
     building_height = max(3.0, max_level * 1.4 + 0.5)
     unit_label = 's' if (time_unit is None or time_unit == 'seconds') else ('min' if time_unit.startswith('min') else ('h' if time_unit.startswith('hour') else time_unit))
 
-    # Pre-compute ground<->basement flow series
-    Qgb_series = [0.0] * len(sim_times)
-    if ingress_list and basement_levels is not None:
+    # Ground↔basement flow series — prefer trace data (Q_bypass_series) over re-computation
+    if Q_bypass_series is not None:
+        Qgb_series = list(Q_bypass_series)
+    elif ingress_list and basement_levels is not None:
         abs_basement = basement_abs_levels if basement_abs_levels is not None else basement_levels
+        Qgb_series = [0.0] * len(sim_times)
         if abs_basement is not None:
             for i in range(len(sim_times)):
                 h_in_i = sim_levels[i]
@@ -319,6 +338,23 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
                     elif src == 'basement' and tgt == 'ground':
                         total -= ing.compute_flow(H_b_i, h_in_i)
                 Qgb_series[i] = total
+    else:
+        Qgb_series = [0.0] * len(sim_times)
+
+    # Pre-compute cumulative volumes (for basement source split)
+    # dt per step derived from sim_times (handles non-uniform spacing)
+    _dts = ([sim_times[k+1] - sim_times[k] for k in range(len(sim_times) - 1)] + [0.0])
+    cum_perim  = [0.0] * len(sim_times)
+    cum_bypass = [0.0] * len(sim_times)
+    _rp = 0.0
+    _rb = 0.0
+    for _k in range(len(sim_times)):
+        _qp = Q_perim_series[_k] if (Q_perim_series is not None and _k < len(Q_perim_series)) else 0.0
+        _qb = max(0.0, Qgb_series[_k])   # only positive (ground→basement) direction
+        _rp += _qp * _dts[_k]
+        _rb += _qb * _dts[_k]
+        cum_perim[_k]  = _rp
+        cum_bypass[_k] = _rb
 
     # ------------------------------------------------------------------ layout
     # Left: building cross-section.  Right: live time-series chart.
@@ -389,7 +425,7 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
 
     # Interior water patch
     interior_patch = patches.Rectangle((bx + 0.02, 0), building_width - 0.04, 0.0,
-                                        facecolor='#5ba4cf', alpha=0.65, zorder=3)
+                                        facecolor=_C['indoor'], alpha=0.65, zorder=3)
     ax_top.add_patch(interior_patch)
     interior_lbl = ax_top.text(bx + building_width / 2, 0.0, '',
                                 ha='center', va='bottom', fontsize=9,
@@ -399,7 +435,7 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
     ex_x = 2.2
     ex_width = 1.5
     ext_rect = patches.Rectangle((ex_x, 0), ex_width, 0.0,
-                                   facecolor='#2980b9', alpha=0.55, zorder=3)
+                                   facecolor=_C['external'], alpha=0.55, zorder=3)
     ax_top.add_patch(ext_rect)
     ax_top.text(ex_x + ex_width / 2, building_height * 0.97,
                 'External\nwater', ha='center', va='top', fontsize=8, color='#1a3d6b')
@@ -417,28 +453,68 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
 
     ingress_arrows = []
 
-    # Basement panel
+    # Basement / sump bar-chart panel
+    _bar_w   = 0.55
+    _bx_bs   = 0.20   # basement bar left x
+    _bx_sp   = 1.25   # sump bar left x
+    _bx_end  = 2.05   # right edge for x-axis
     if basement_levels is not None:
-        max_basement = max(basement_levels or [0.0])
-        ax_b.set_xlim(-0.5, 4.0)
-        ax_b.set_ylim(0, max(0.1, max_basement * 1.2 + 0.05))
-        ax_b.set_ylabel('Basement (m)', fontsize=8)
-        ax_b.grid(True, alpha=0.15, linestyle=':')
-        base_patch = patches.Rectangle((bx + 0.02, 0), building_width - 0.04, 0.0,
-                                        facecolor='#27ae60', alpha=0.60)
-        ax_b.add_patch(base_patch)
+        _max_bs  = max(basement_levels or [0.0])
+        _max_sp  = max(sump_levels or [0.0]) if sump_levels is not None else 0.0
+        _crest   = sump_overflow_level if sump_overflow_level is not None else 0.0
+        _y_max   = max(0.1, _max_bs * 1.25, _max_sp * 1.25, _crest * 1.25) + 0.05
+        ax_b.set_xlim(0, _bx_end)
+        ax_b.set_ylim(0, _y_max)
+        ax_b.set_ylabel('Depth (m)', fontsize=8)
+        ax_b.grid(True, alpha=0.15, linestyle=':', axis='y')
+        ax_b.set_xticks([_bx_bs + _bar_w / 2, _bx_sp + _bar_w / 2])
+        ax_b.set_xticklabels(['Basement', 'Sump'], fontsize=7.5)
+        ax_b.tick_params(axis='x', length=0)
+
+        # Basement — perimeter (exterior→basement) portion: green, diagonal hatch
+        base_perim_patch = patches.Rectangle(
+            (_bx_bs, 0), _bar_w, 0.0,
+            facecolor=_C['basement'], alpha=0.70, hatch='///',
+            edgecolor='white', linewidth=0.5,
+            label='Perimeter (ext→bs)', zorder=3)
+        ax_b.add_patch(base_perim_patch)
+        # Basement — bypass (ground→basement) portion: same green, dotted hatch, stacked above
+        base_bypass_patch = patches.Rectangle(
+            (_bx_bs, 0), _bar_w, 0.0,
+            facecolor=_C['basement'], alpha=0.45, hatch='...',
+            edgecolor='white', linewidth=0.5,
+            label='Bypass (gf→bs)', zorder=3)
+        ax_b.add_patch(base_bypass_patch)
+
+        # Sump bar (purple) and overflow crest dashed line
+        if sump_levels is not None:
+            sump_bar_patch = patches.Rectangle(
+                (_bx_sp, 0), _bar_w, 0.0,
+                facecolor=_C['sump'], alpha=0.80, label='Sump', zorder=3)
+            ax_b.add_patch(sump_bar_patch)
+            if sump_overflow_level is not None:
+                ax_b.hlines(sump_overflow_level, _bx_sp - 0.05, _bx_sp + _bar_w + 0.05,
+                            colors='red', linewidths=1.4, linestyles='--', zorder=5)
+                ax_b.text(_bx_sp + _bar_w + 0.07, sump_overflow_level,
+                          f'crest\n{sump_overflow_level:.2f} m',
+                          va='center', ha='left', fontsize=6.5, color='red', zorder=6)
+        else:
+            sump_bar_patch = None
+
+        ax_b.legend(fontsize=6, loc='upper right', framealpha=0.75)
 
     # --------------------------------------------------------- time-series chart
-    ax_chart.plot(sim_times, external_levels, color='#2980b9',
+    ax_chart.plot(sim_times, external_levels, color=_C['external'],
                   label='External (h_out)', linewidth=1.8, alpha=0.85)
-    ax_chart.plot(sim_times, sim_levels, color='#e67e22',
+    ax_chart.plot(sim_times, sim_levels, color=_C['indoor'],
                   label='Indoor (h_in)', linewidth=1.8, alpha=0.85)
     if basement_levels is not None:
-        ax_chart.plot(sim_times, basement_levels, color='#27ae60', linestyle='--',
-                      label='Basement (h_bs)', linewidth=1.4, alpha=0.80)
+        _bs_label = 'Basement: unprotected' if sump_levels is not None else 'Basement (h_bs)'
+        ax_chart.plot(sim_times, basement_levels, color=_C['basement'], linestyle='--',
+                      label=_bs_label, linewidth=1.4, alpha=0.80)
     if sump_levels is not None:
-        ax_chart.plot(sim_times, sump_levels, color='#9467bd', linestyle=':',
-                      label='Sump (h_s)', linewidth=1.4, alpha=0.85)
+        ax_chart.plot(sim_times, sump_levels, color=_C['sump'], linestyle=':',
+                      label='Basement: sump', linewidth=1.4, alpha=0.85)
     ax_chart.legend(fontsize=7, loc='upper left')
 
     xlabel = f'Time ({unit_label})'
@@ -461,7 +537,11 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
         vel_text.set_text('')
         cursor_line.set_xdata([sim_times[0]])
         if basement_levels is not None:
-            base_patch.set_height(0.0)
+            base_perim_patch.set_height(0.0)
+            base_bypass_patch.set_height(0.0)
+            base_bypass_patch.set_y(0.0)
+            if sump_bar_patch is not None:
+                sump_bar_patch.set_height(0.0)
         return []
 
     def update(frame_i):
@@ -502,9 +582,27 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
             except Exception:
                 vel_text.set_text('')
 
-        # Basement
+        # Basement + sump bars
         if basement_levels is not None:
-            base_patch.set_height(basement_levels[i])
+            h_bs = basement_levels[i]
+            # Split basement depth by cumulative volume ratio (perimeter vs bypass)
+            _cp = cum_perim[i]
+            _cb = cum_bypass[i]
+            _tot = _cp + _cb
+            if _tot > 1e-9:
+                h_perim_part  = h_bs * (_cp / _tot)
+                h_bypass_part = h_bs - h_perim_part
+            elif h_bs > 0:
+                h_perim_part  = h_bs   # unknown split — all blue
+                h_bypass_part = 0.0
+            else:
+                h_perim_part  = 0.0
+                h_bypass_part = 0.0
+            base_perim_patch.set_height(h_perim_part)
+            base_bypass_patch.set_y(h_perim_part)
+            base_bypass_patch.set_height(h_bypass_part)
+            if sump_bar_patch is not None and sump_levels is not None:
+                sump_bar_patch.set_height(sump_levels[i])
 
         # Time label
         time_text.set_text(f'T = {t_now:.1f} {unit_label}')
@@ -522,10 +620,10 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
             y = ing.height
             if Q > 0:
                 xa, xb = ex_x + 0.05, ingress_x - 0.04
-                color = 'dodgerblue'
+                color = _C['external']
             elif Q < 0:
                 xa, xb = ingress_x - 0.04, ex_x + 0.05
-                color = 'crimson'
+                color = _C['indoor']
             else:
                 xa = xb = ingress_x - 0.04
                 color = 'gray'
@@ -562,9 +660,9 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
                     except Exception:
                         pass
                 if Qgb > 0:
-                    color = 'dodgerblue'
+                    color = _C['bypass']
                 elif Qgb < 0:
-                    color = 'crimson'
+                    color = _C['basement']
                 mag = min(1.0, abs(Qgb) / Q_scale)
                 arr_v = ax_top.annotate('', xy=(x0, y1), xytext=(x0, y0),
                                          arrowprops=dict(arrowstyle='-|>', color=color,
@@ -610,7 +708,8 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds', title_suff
     """
     times    = diag['times']
     n        = len(times)
-    has_sump = any(q > 0 for q in diag.get('Q_pump', [0]))
+    has_sump = diag.get('events', {}).get('sump_configured',
+               any(q > 0 for q in diag.get('Q_pump', [0])))
     ev       = diag.get('events', {})
 
     # Convert times to display units
@@ -632,12 +731,13 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds', title_suff
 
     # ── Panel 1: Water-surface heads ──────────────────────────────────────────
     ax1 = axes[0]
-    ax1.plot(t_disp, diag['H_out'],      color='#2980b9', lw=1.8, label='External head')
-    ax1.plot(t_disp, diag['h_in'],       color='#e67e22', lw=1.6, label='Ground floor (h_in)')
+    ax1.plot(t_disp, diag['H_out'],      color=_C['external'],  lw=1.8, label='External head')
+    ax1.plot(t_disp, diag['h_in'],       color=_C['indoor'],    lw=1.6, label='Ground floor (h_in)')
     if any(v > 0 for v in diag['h_basement']):
-        ax1.plot(t_disp, diag['h_basement'], color='#27ae60', lw=1.4, ls='--', label='Basement (h_bs)')
+        _bs_lbl = 'Basement: unprotected' if has_sump else 'Basement (h_bs)'
+        ax1.plot(t_disp, diag['h_basement'], color=_C['basement'], lw=1.4, ls='--', label=_bs_lbl)
     if has_sump:
-        ax1.plot(t_disp, diag['h_sump'],     color='#9467bd', lw=1.4, ls=':', label='Sump (h_s)')
+        ax1.plot(t_disp, diag['h_sump'],     color=_C['sump'],     lw=1.4, ls=':', label='Basement: sump')
         # shade pump-on periods
         pump_state = diag['pump_state']
         in_on = False
@@ -647,10 +747,10 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds', title_suff
                 t_on_start = t_disp[k]
                 in_on = True
             elif pump_state[k] == 0 and in_on:
-                ax1.axvspan(t_on_start, t_disp[k], alpha=0.10, color='#9467bd', label='_nolegend_')
+                ax1.axvspan(t_on_start, t_disp[k], alpha=0.10, color=_C['sump'], label='_nolegend_')
                 in_on = False
         if in_on:
-            ax1.axvspan(t_on_start, t_disp[-1], alpha=0.10, color='#9467bd', label='_nolegend_')
+            ax1.axvspan(t_on_start, t_disp[-1], alpha=0.10, color=_C['sump'], label='_nolegend_')
     ax1.set_xlabel(xlabel)
     ax1.set_ylabel('Head (m)')
     ax1.set_title(f'Water-surface heads{" — " + title_suffix if title_suffix else ""}',
@@ -660,16 +760,16 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds', title_suff
 
     # ── Panel 2: Instantaneous pathway flows ──────────────────────────────────
     ax2 = axes[1]
-    ax2.plot(t_disp, diag['Q_ext_b'],         color='#2980b9', lw=1.4,
+    ax2.plot(t_disp, diag['Q_ext_b'],         color=_C['external'],  lw=1.4,
              label='Outside → Ground floor')
-    ax2.plot(t_disp, diag['Q_b_bs'],          color='#27ae60', lw=1.4, ls='--',
-             label='Ground floor → Basement')
-    ax2.plot(t_disp, diag['Q_ext_perimeter'], color='#e67e22', lw=1.4,
+    ax2.plot(t_disp, diag['Q_b_bs'],          color=_C['bypass'],    lw=1.4, ls='--',
+             label='Ground floor → Basement (bypass)')
+    ax2.plot(t_disp, diag['Q_ext_perimeter'], color=_C['perimeter'], lw=1.4,
              label='Outside → Basement/Sump (perimeter)')
     if has_sump:
-        ax2.plot(t_disp, diag['Q_pump'],          color='#9467bd', lw=1.4, ls='-.',
+        ax2.plot(t_disp, diag['Q_pump'],          color=_C['pump'],     lw=1.4, ls='-.',
                  label='Pump discharge')
-        ax2.plot(t_disp, diag['Q_sump_overflow'], color='#d62728', lw=1.2, ls=':',
+        ax2.plot(t_disp, diag['Q_sump_overflow'], color=_C['overflow'], lw=1.2, ls=':',
                  label='Sump → Basement overflow')
     ax2.set_xlabel(xlabel)
     ax2.set_ylabel('Flow rate (m³/s)')
@@ -679,16 +779,16 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds', title_suff
 
     # ── Panel 3: Cumulative volumes ───────────────────────────────────────────
     ax3 = axes[2]
-    ax3.plot(t_disp, diag['vol_ext_b_cum'],     color='#2980b9', lw=1.6,
+    ax3.plot(t_disp, diag['vol_ext_b_cum'],     color=_C['external'],  lw=1.6,
              label='Outside → Ground floor')
-    ax3.plot(t_disp, diag['vol_b_bs_cum'],      color='#27ae60', lw=1.4, ls='--',
-             label='Ground floor → Basement')
-    ax3.plot(t_disp, diag['vol_perimeter_cum'], color='#e67e22', lw=1.6,
+    ax3.plot(t_disp, diag['vol_b_bs_cum'],      color=_C['bypass'],    lw=1.4, ls='--',
+             label='Ground floor → Basement (bypass)')
+    ax3.plot(t_disp, diag['vol_perimeter_cum'], color=_C['perimeter'], lw=1.6,
              label='Perimeter inflow (→ basement or sump)')
     if has_sump:
-        ax3.plot(t_disp, diag['vol_pump_cum'],          color='#9467bd', lw=1.4, ls='-.',
+        ax3.plot(t_disp, diag['vol_pump_cum'],          color=_C['pump'],     lw=1.4, ls='-.',
                  label='Pump discharge')
-        ax3.plot(t_disp, diag['vol_sump_overflow_cum'], color='#d62728', lw=1.2, ls=':',
+        ax3.plot(t_disp, diag['vol_sump_overflow_cum'], color=_C['overflow'], lw=1.2, ls=':',
                  label='Sump overflow → Basement')
     ax3.set_xlabel(xlabel)
     ax3.set_ylabel('Cumulative volume (m³)')
@@ -699,9 +799,9 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds', title_suff
     # ── Panel 4 (sump only): Control and thresholds ───────────────────────────
     if has_sump:
         ax4 = axes[3]
-        ax4.plot(t_disp, diag['h_sump'], color='#9467bd', lw=1.6, label='Sump depth h_s')
-        ax4.plot(t_disp, diag['Q_pump'], color='#1f77b4', lw=1.2, ls='-.', label='Pump flow (m³/s)')
-        ax4.plot(t_disp, diag['H_lift'], color='#aec7e8', lw=1.0, ls=':', label='Lift head H_lift (m)')
+        ax4.plot(t_disp, diag['h_sump'], color=_C['sump'],    lw=1.6, label='Sump depth h_s')
+        ax4.plot(t_disp, diag['Q_pump'], color=_C['pump'],    lw=1.2, ls='-.', label='Pump flow (m³/s)')
+        ax4.plot(t_disp, diag['H_lift'], color='#95a5a6',    lw=1.0, ls=':', label='Lift head H_lift (m)')
         # thresholds (constant horizontal lines)
         # obtain thresholds from diag meta if available, else skip
         ev_tot = ev.get('vol_sump_overflow_total', 0.0)
@@ -719,16 +819,16 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds', title_suff
     ax5.axis('off')
 
     # Horizontal bar chart of total volumes
-    labels_bar = ['Outside→Ground floor', 'Perimeter inflow', 'Ground→Basement']
+    labels_bar = ['Outside→Ground floor', 'Perimeter inflow', 'Ground→Basement (bypass)']
     vals_bar   = [ev.get('vol_ext_b_total', 0.0),
                   ev.get('vol_perimeter_total', 0.0),
                   ev.get('vol_b_bs_total', 0.0)]
-    colors_bar = ['#2980b9', '#e67e22', '#27ae60']
+    colors_bar = [_C['external'], _C['perimeter'], _C['bypass']]
     if has_sump:
         labels_bar += ['Pump discharge', 'Sump overflow']
         vals_bar   += [ev.get('vol_pump_total', 0.0),
                        ev.get('vol_sump_overflow_total', 0.0)]
-        colors_bar += ['#9467bd', '#d62728']
+        colors_bar += [_C['pump'], _C['overflow']]
 
     ax_bar = ax5.inset_axes([0.0, 0.45, 0.45, 0.50])
     y_pos = range(len(labels_bar))
