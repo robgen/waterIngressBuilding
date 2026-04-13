@@ -133,7 +133,7 @@ class IngressPathway:
         return flow_rate if delta_H_eff > 0.0 else -flow_rate
 
 class Simulation:
-    def __init__(self, building, ingress_list, external_times, external_levels, dt=60.0, external_vel_times=None, external_velocities=None):
+    def __init__(self, building, ingress_list, external_times, external_levels, dt=60.0, external_vel_times=None, external_velocities=None, conductance_resolver=None):
         """Create a simulation.
 
         Args:
@@ -142,9 +142,13 @@ class Simulation:
             external_times: list of times for external hydrograph
             external_levels: list of external levels
             dt: simulation timestep in same units as external_times (default 60.0)
+            conductance_resolver: optional callable(h_ext: float) -> list[IngressPathway].
+                Called once per timestep to return the active ingress list for that step.
+                When None (default), self.ingress_list is used unchanged every step.
         """
         self.building = building
         self.ingress_list = ingress_list
+        self._conductance_resolver = conductance_resolver
         self.t_ext = external_times
         self.h_ext = external_levels
         # optional external velocity hydrograph (separate timebase allowed)
@@ -254,7 +258,8 @@ class Simulation:
             flow_og = 0.0   # outside → ground floor
             flow_gb = 0.0   # ground ↔ basement connection (positive = ground→basement)
 
-            for ingress in self.ingress_list:
+            active_ingress = self._conductance_resolver(H_out) if self._conductance_resolver is not None else self.ingress_list
+            for ingress in active_ingress:
                 src = getattr(ingress, 'source', 'outside')
                 tgt = getattr(ingress, 'target', 'ground')
                 if src == 'outside' and tgt == 'ground':
@@ -626,6 +631,45 @@ def main(argv=None):
                         help='Pipe friction + minor loss coefficient k_pipe (default 0).')
     parser.add_argument('--pump-availability', type=float, default=1.0,
                         help='Pump availability factor eta_p (default 1.0).')
+    # ── fragility / membrane ──────────────────────────────────────────────────
+    parser.add_argument('--membrane-file', default=None,
+                        help='CSV file defining membrane(s) (spec §3.2).')
+    parser.add_argument('--membrane-group', type=int, default=None,
+                        help='group_id of membrane-protected paths (override / parametric).')
+    parser.add_argument('--membrane-height', type=float, default=None,
+                        help='Membrane sill elevation above datum (m).')
+    parser.add_argument('--membrane-area', type=float, default=None,
+                        help='Membrane base-state lumped leakage area (m²).')
+    parser.add_argument('--membrane-Cd', type=float, default=None,
+                        help='Membrane base-state discharge coefficient (–).')
+    parser.add_argument('--membrane-median', type=float, default=None,
+                        help='Membrane seal height above sill — median_m_1 (m).')
+    parser.add_argument('--membrane-beta', type=float, default=None,
+                        help='Membrane overtopping log-std-dev beta_ln_1 (–).')
+    # ── basement fragility (indexed args, up to state 3) ─────────────────────
+    for _i in range(1, 4):
+        parser.add_argument(f'--basement-state-name-{_i}', default=None,
+                            help=f'Basement fragility state {_i} label.')
+        parser.add_argument(f'--basement-median-{_i}', type=float, default=None,
+                            help=f'Basement fragility state {_i} median capacity (m above sill).')
+        parser.add_argument(f'--basement-beta-{_i}', type=float, default=None,
+                            help=f'Basement fragility state {_i} log-std-dev (–).')
+        parser.add_argument(f'--basement-area-{_i}', type=float, default=None,
+                            help=f'Basement fragility state {_i} orifice area (m²).')
+        parser.add_argument(f'--basement-Cd-{_i}', type=float, default=None,
+                            help=f'Basement fragility state {_i} discharge coefficient (–).')
+    # ── Monte Carlo ───────────────────────────────────────────────────────────
+    parser.add_argument('--n-replicates', type=int, default=1,
+                        help='Number of Monte Carlo replicates (default 1 = deterministic).')
+    parser.add_argument('--random-seed', type=int, default=None,
+                        help='Random seed for reproducibility.')
+    parser.add_argument('--output-percentiles', nargs='+', type=int,
+                        default=[10, 25, 50, 75, 90],
+                        help='Percentiles to report in fragility summary (default: 10 25 50 75 90).')
+    parser.add_argument('--ingress-format', choices=['classic', 'fragility'], default=None,
+                        help='Ingress file format: classic (height,area,coeff[,name]) or '
+                             'fragility (extended with group_id + state columns). '
+                             'Auto-detected when omitted.')
     args = parser.parse_args(argv)
 
     outdir = args.outdir
@@ -667,8 +711,39 @@ def main(argv=None):
     print(f"Saved external preview to {external_preview_path}")
 
     print(f"Reading ingress data from: {args.ingress}")
-    ingress_list = parse_ingress_file(args.ingress)
-    print(f"Found {len(ingress_list)} ingress paths (exterior→building)")
+    # Auto-detect fragility format: use it when --ingress-format=fragility is
+    # explicit, or when the user has passed any membrane/fragility arguments.
+    _use_fragility_format = (
+        getattr(args, 'ingress_format', None) == 'fragility'
+        or getattr(args, 'membrane_file', None) is not None
+        or getattr(args, 'membrane_group', None) is not None
+        or getattr(args, 'n_replicates', 1) > 1
+    )
+    if _use_fragility_format:
+        import fragility as _frag
+        _frag_paths = _frag.parse_ingress_fragility_file(args.ingress)
+        # Load membranes (file + arg override)
+        _file_membranes = []
+        if getattr(args, 'membrane_file', None):
+            _file_membranes = _frag.parse_membrane_file(args.membrane_file)
+        _arg_membrane = _frag.parse_membrane_args(args)
+        _membranes = _frag.merge_membrane_source(_file_membranes, _arg_membrane)
+        _frag.assign_representative_paths(_frag_paths, _membranes)
+        # Basement fragility
+        _basement_frag = _frag.parse_basement_fragility_args(args)
+        # For display / preview we build a classic ingress_list from base params
+        ingress_list = [
+            IngressPathway(height=p.height_m, area=p.area_m2, coeff=p.Cd, name=p.name)
+            for p in _frag_paths
+        ]
+        print(f"Found {len(_frag_paths)} ingress paths (fragility format, "
+              f"{len(_membranes)} membrane(s))")
+    else:
+        _frag_paths = None
+        _membranes = []
+        _basement_frag = None
+        ingress_list = parse_ingress_file(args.ingress)
+        print(f"Found {len(ingress_list)} ingress paths (exterior→building)")
     # Ground↔basement bypass connection (added to ingress_list, not basement_ingress)
     if (getattr(args, 'basement_connection_height', None) is not None
             and getattr(args, 'basement_connection_area', 0.0)
@@ -763,6 +838,66 @@ def main(argv=None):
 
     # (velocity preview will be saved after the simulation so it uses the
     # same interpolation/padding as the plotted/animated velocity)
+
+    # ── Monte Carlo path (fragility format + n_replicates > 1) ──────────────
+    _n_rep = getattr(args, 'n_replicates', 1)
+    if _frag_paths is not None and _n_rep > 1:
+        import fragility as _frag
+
+        def _building_factory():
+            b = Building(floor_area=args.floor)
+            if getattr(args, 'basement_area', None) and args.basement_area > 0.0:
+                b.basement_area = float(args.basement_area)
+                b.h_basement = 0.0
+                if getattr(args, 'basement_floor_elevation', None) is not None:
+                    b.z_basement = float(args.basement_floor_elevation)
+            if (getattr(args, 'basement_ingress_height', None) is not None
+                    and getattr(args, 'basement_ingress_area', 0.0)
+                    and args.basement_ingress_area > 0.0):
+                b.basement_ingress = IngressPathway(
+                    height=float(args.basement_ingress_height),
+                    area=float(args.basement_ingress_area),
+                    coeff=float(args.basement_ingress_coeff),
+                    name='ext-basement-perimeter',
+                    source='outside', target='basement')
+            if getattr(args, 'sump_area', 0.0) and args.sump_area > 0.0:
+                b.sump_pump = building.sump_pump  # reuse already-constructed SumpPump
+            return b
+
+        def _mc_progress(r, n):
+            if args.verbose:
+                print(f'  replicate {r}/{n}')
+
+        print(f'Running Monte Carlo: {_n_rep} replicates …')
+        mc_result = _frag.run_fragility_montecarlo(
+            building_factory=_building_factory,
+            paths=_frag_paths,
+            membranes=_membranes,
+            basement_fragility=_basement_frag,
+            external_times=times,
+            external_levels=levels,
+            n_replicates=_n_rep,
+            dt=dt_seconds,
+            external_vel_times=v_times,
+            external_velocities=v_vals,
+            seed=getattr(args, 'random_seed', None),
+            percentile_values=tuple(getattr(args, 'output_percentiles', [10,25,50,75,90])),
+            progress_callback=_mc_progress,
+        )
+        # Write outputs
+        _frag.write_replicates_csv(mc_result, os.path.join(outdir, 'fragility_replicates.csv'))
+        _frag.write_summary_csv(mc_result,    os.path.join(outdir, 'fragility_summary.csv'))
+        _frag.write_state_freq_csv(mc_result, os.path.join(outdir, 'fragility_state_freq.csv'))
+        print(f"Saved fragility outputs to {outdir}/fragility_*.csv")
+        p50 = mc_result.percentiles.get('peak_h_in', {}).get('P50', float('nan'))
+        print(f"P50 peak interior depth: {p50:.4f} m")
+        print('Done.')
+        if temp_dir_ctx is not None:
+            try:
+                temp_dir_ctx.cleanup()
+            except Exception:
+                pass
+        return
 
     print('Running simulation...')
     def progress(p):

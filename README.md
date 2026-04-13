@@ -22,13 +22,30 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Run the headless simulation (example):
+3. Run the classic headless example and create the GIF:
 
 ```bash
-python3 main.py --external example_run/example_external_levels.csv --ingress example_run/example_ingress_paths.txt --outdir example_run --animate
+python3 main.py \
+  --external example_run/example_external_levels.csv \
+  --ingress example_run/example_ingress_paths.txt \
+  --outdir example_run \
+  --animate \
+  --anim-out simulation_animation.gif
 ```
 
-Note: the project default time unit is minutes. Use `--time-units` to override (choices: seconds, minutes, hours). If you want a temporary run that doesn't leave files behind, use `--temp-output` to write outputs to a temporary directory that is removed when the run completes.
+This writes the classic example outputs into `example_run/`, including
+`simulation_animation.gif`, `simulation_result.png`, and the ingress/external
+preview plots.
+
+Note: the project default time unit is minutes. Use `--time-units` to override
+(choices: seconds, minutes, hours). If you want a temporary run that doesn't
+leave files behind, use `--temp-output` to write outputs to a temporary
+directory that is removed when the run completes.
+
+If you are looking at `example_run/run_example.py`, note that it currently
+contains several alternative example blocks and a batch-style Example E. The
+explicit `main.py` command above is the canonical way to reproduce the classic
+single-run GIF example.
 
 4. Run the web UI (Streamlit):
 

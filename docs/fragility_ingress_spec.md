@@ -10,8 +10,10 @@ The core design principles are:
 - A single uniform draw per path or membrane per replicate governs all state transitions for that element. This is equivalent to sampling from the element's capacity distribution and ensures monotonic state transitions.
 - All fragility functions are lognormal, expressed as exceedance probabilities conditioned on depth above the element sill. This is directly consistent with BS 8511 certification data.
 - The deterministic case is a natural subset: a path with no fragility columns behaves exactly as in the existing solver.
+- This extension does not reintroduce the removed `always_open` ingress option. The baseline deterministic solver continues to treat every ingress path as a submerged opening: if both sides are below the sill, the path exchanges no flow.
 - The membrane (perimeter flood protection element) is the only one-to-many protection case and is handled by a separate optional input file, or by command-line arguments for parametric analyses.
 - Physical inputs (ingress paths, membrane) always come from files by default. Command-line arguments act as overrides, primarily for parametric sweeps.
+- The basement connection is a separate hydraulic element defined by its own arguments. It supports the same fragility logic as any ingress path — same lognormal framework, same single draw, same threshold inversion — applied to the basement conductance rather than to a named path. Basement protection measures (e.g. a flood door on the stair, a sealed light well) are physically independent of any membrane and are modelled independently.
 
 ---
 
@@ -104,6 +106,20 @@ The representative path is the first path listed in the membrane's group (lowest
 
 When the membrane overtops, protected paths that have their own fragility are **not permitted** (see Section 4, validation). Protected paths are always deterministic; their parameters are used as-is when the membrane is overtopped.
 
+### 2.7 Basement fragility
+
+The basement is a separate hydraulic compartment defined by its own arguments, not by a named row in the ingress path file. Its connection to external floodwater — through a stair opening, light well, or basement-level aperture — is characterised by a single conductance (base-state `area_m2` and `Cd`) and a sill elevation.
+
+Basement protection measures (a flood door on the stair, a sealed light well) reduce that conductance. The fragility of those measures follows exactly the same logic as any ingress path:
+
+- Base state: the protected basement connection at certified or best-performance conductance.
+- Degraded state(s): the basement connection at degraded conductance, up to the unprotected opening geometry.
+- One lognormal fragility per state transition, parameterised by `median_m` and `beta_ln`.
+- One $u \sim \mathcal{U}(0,1)$ draw per replicate, inverted to capacity thresholds before the time loop.
+- At each timestep: compare $h(t) = \max(0, h_{\text{ext}}(t) - z_{\text{sill,basement}})$ against the thresholds.
+
+The basement fragility is defined entirely through command-line arguments (or their file-based equivalent if a basement file is used). It is independent of the membrane: a membrane protecting ground-level airbricks does not affect the basement connection, and vice versa. This reflects the physical reality that basement openings (stair doors, light wells, basement windows) are distinct from the ground-level openings a skirt-type membrane covers.
+
 ---
 
 ## 3. Input Files
@@ -111,6 +127,11 @@ When the membrane overtops, protected paths that have their own fragility are **
 ### 3.1 Ingress path file
 
 One row per ingress path. Base hydraulic parameters are always required. Fragility columns are optional and extend the row to the right for as many degraded states as needed.
+
+This section describes the fragility-extension ingress format, not the current
+public deterministic input file. In the deterministic solver today, the public
+ingress file remains `height, area, coeff[,name]` only; there is no
+`always_open` column or equivalent override.
 
 **Column specification:**
 
@@ -204,21 +225,63 @@ Command-line arguments act as overrides for parametric analyses — primarily fo
 --membrane-beta     FLOAT   beta_ln_1 (–)
 ```
 
-**Example parametric sweep over membrane seal height:**
+**Basement arguments** define the basement connection and its optional fragility. The base hydraulic parameters follow the existing code pattern. The fragility arguments extend that pattern with the same indexed column structure used for ingress paths:
 
-```bash
-for h in 0.3 0.4 0.5 0.6 0.7 0.8 0.9; do
-    python run.py --ingress paths.csv \
-                  --membrane-group 1 \
-                  --membrane-height 0.0 \
-                  --membrane-area 1e-5 \
-                  --membrane-Cd 0.6 \
-                  --membrane-median $h \
-                  --membrane-beta 0.07
-done
+```
+# Existing basement hydraulic arguments (unchanged)
+--basement-area     FLOAT   base-state area_m2 of basement connection (m²)
+--basement-Cd       FLOAT   base-state Cd of basement connection (–)
+--basement-height   FLOAT   sill elevation of basement connection above datum (m)
+
+# New fragility arguments — one set per degraded state, indexed from 1
+--basement-state-name-1   STR     label for first degraded state (e.g. baseline)
+--basement-median-1       FLOAT   median_m_1 (m above sill)
+--basement-beta-1         FLOAT   beta_ln_1 (–)
+--basement-area-1         FLOAT   area_m2 in degraded state 1 (m²)
+--basement-Cd-1           FLOAT   Cd in degraded state 1 (–)
+
+# Additional states follow the same pattern with index 2, 3, ...
+--basement-state-name-2   STR
+--basement-median-2       FLOAT
+--basement-beta-2         FLOAT
+--basement-area-2         FLOAT
+--basement-Cd-2           FLOAT
 ```
 
-The same override logic applies to the basement argument following the existing code pattern.
+If no fragility arguments are provided for the basement, the basement connection is treated as deterministic — identical to the existing behaviour. Fragility is activated only when at least `--basement-state-name-1`, `--basement-median-1`, `--basement-beta-1`, `--basement-area-1`, and `--basement-Cd-1` are all provided together.
+
+**Example — deterministic basement (existing behaviour, unchanged):**
+
+```bash
+python run.py --ingress paths.csv \
+              --basement-area 0.02 --basement-Cd 0.6 --basement-height 0.0
+```
+
+**Example — basement with one fragility (flood door on stair):**
+
+```bash
+python run.py --ingress paths.csv \
+              --basement-area 4e-7 --basement-Cd 0.6 --basement-height 0.0 \
+              --basement-state-name-1 baseline \
+              --basement-median-1 0.65 \
+              --basement-beta-1 0.35 \
+              --basement-area-1 0.02 \
+              --basement-Cd-1 0.6
+```
+
+**Example — parametric sweep over basement protection median:**
+
+```bash
+for eta in 0.3 0.5 0.7 0.9; do
+    python run.py --ingress paths.csv \
+                  --basement-area 4e-7 --basement-Cd 0.6 --basement-height 0.0 \
+                  --basement-state-name-1 baseline \
+                  --basement-median-1 $eta \
+                  --basement-beta-1 0.35 \
+                  --basement-area-1 0.02 \
+                  --basement-Cd-1 0.6
+done
+```
 
 ---
 
@@ -235,25 +298,30 @@ Parse the ingress path file. For each path store base parameters and any fragili
 
 Parse the membrane file or construct from arguments per override precedence rules. For each membrane, store base parameters, `group_id`, and fragility definition. Identify the representative path as the first (lowest row index) path in the ingress file sharing the membrane's `group_id`.
 
-### Step 3 — Validate
+### Step 3 — Load basement (if provided)
 
-- **Fragility–membrane conflict**: for every path with `group_id != 0`, check that no fragility columns are populated. If any are found, raise an error naming the offending path and halt. The user must either remove the fragility from the path or remove the path from the membrane group.
-- **Monotonic medians**: for every probabilistic path and every membrane, verify medians are strictly increasing across states.
-- **Complete state definitions**: verify all five state columns are present together for each defined state.
+Parse basement hydraulic parameters from arguments. If fragility arguments are present (all five of `--basement-state-name-1`, `--basement-median-1`, `--basement-beta-1`, `--basement-area-1`, `--basement-Cd-1` provided), construct a basement fragility definition with the same indexed state structure as ingress paths. Store as a separate probabilistic element. If no fragility arguments are present, the basement connection is deterministic.
 
-### Step 4 — For each Monte Carlo replicate: sample capacity thresholds
+### Step 4 — Validate
 
-For each probabilistic path and each membrane, draw $u \sim \mathcal{U}(0,1)$ independently and invert all fragility curves:
+- **Fragility–membrane conflict**: for every path with `group_id != 0`, check that no fragility columns are populated. If any are found, raise an error naming the offending path and halt.
+- **Monotonic medians**: for every probabilistic path, every membrane, and the basement (if fragility is defined), verify medians are strictly increasing across states.
+- **Complete state definitions**: verify all five state columns are present together for each defined state, for paths and basement alike.
+- **Basement fragility completeness**: if any basement fragility argument is provided, verify all five required arguments for that state index are present. A partial definition raises an error.
+
+### Step 5 — For each Monte Carlo replicate: sample capacity thresholds
+
+For each probabilistic ingress path, each membrane, and the basement (if fragility is defined), draw $u \sim \mathcal{U}(0,1)$ independently and invert all fragility curves:
 
 $$h^*_k = \eta_k \cdot \exp\!\left(\beta_k \cdot \Phi^{-1}(u)\right) \quad k = 1, \ldots, N$$
 
-Store thresholds as fixed scalars for this replicate. Deterministic paths require no sampling.
+Store thresholds as fixed scalars for this replicate. Deterministic paths and a deterministic basement require no sampling.
 
-### Step 5 — Run the deterministic time loop
+### Step 6 — Run the deterministic time loop
 
 At each timestep $t$:
 
-**For each probabilistic path:**
+**For each probabilistic ingress path:**
 1. Compute $h(t) = \max(0,\ h_{\text{ext}}(t) - \text{height\_m})$.
 2. Identify active state: highest $k$ with $h(t) \geq h^*_k$, else state 0.
 3. Pass active state (`area_m2`, `Cd`) to solver.
@@ -265,17 +333,22 @@ At each timestep $t$:
 4. If overtopped (state 1): all group paths restored to their own ingress file parameters; membrane orifice suppressed ($10^{-9}$ m²).
 5. If second state defined and active: same as overtopped, plus representative path additionally carries second-state (`area_m2_2`, `Cd_2`).
 
-**For deterministic paths:** pass fixed `area_m2` and `Cd` unchanged.
+**For the basement:**
+1. Compute $h_{\text{basement}}(t) = \max(0,\ h_{\text{ext}}(t) - z_{\text{sill,basement}})$.
+2. If basement fragility is defined: identify active state using same threshold comparison. Pass active state (`area_m2`, `Cd`) to the basement hydraulic calculation.
+3. If basement is deterministic: pass fixed base (`area_m2`, `Cd`) unchanged.
 
-### Step 6 — Record outputs
+**For deterministic ingress paths:** pass fixed `area_m2` and `Cd` unchanged.
 
-Per replicate: all solver outputs (peak interior depth, flood duration above thresholds, total ingress volume), sampled $u$ values, capacity thresholds $h^*_k$, and active state at peak external depth for each element.
+### Step 7 — Record outputs
 
-### Step 7 — Repeat and aggregate
+Per replicate: all solver outputs (peak interior depth, flood duration above thresholds, total ingress volume), sampled $u$ values and capacity thresholds for each probabilistic element including the basement, and active state at peak external depth for each element.
 
-Repeat Steps 4–6 for $N_{\text{rep}}$ replicates. Compute:
+### Step 8 — Repeat and aggregate
+
+Repeat Steps 5–7 for $N_{\text{rep}}$ replicates. Compute:
 - Percentile distributions of output metrics (P10, P50, P90, etc.).
-- State frequency tables: fraction of replicates in which each element reached each state.
+- State frequency tables: fraction of replicates in which each element — including the basement — reached each degraded state.
 - Rank correlation between each element's $u$ draw and key output metrics.
 
 ---
@@ -394,6 +467,23 @@ $$A_{\text{equiv}} = \frac{3.33 \times 10^{-5}}{0.6 \times \sqrt{2 \times 9.81 \
 
 **No product dataset.** Calibration relies on design drawings and, for existing structures, survey measurements of actual crest levels. Treat $\eta$ as the surveyed crest height and $\beta$ as a sensitivity parameter.
 
+### 5.8 Basement connection protection
+
+**Physical description:** the basement receives surface floodwater through discrete openings connecting it to the external environment or to the ground floor: the basement stair door or hatch, basement-level windows or light wells, and service penetrations through basement walls. Each of these can carry its own flood protection measure. In the model the entire basement connection is represented as a single lumped conductance; the fragility governs uncertainty on that lumped value.
+
+**Applicable products and standards:**
+- Basement stair flood door or hatch: BS 8511-1 (flood door category). Calibration follows Section 5.2.
+- Basement window: BS 8511-1 (flood window category). Calibration follows Section 5.2.
+- Basement light well cover: bespoke product; no standard leakage limit. Treat similarly to a service penetration seal (Section 5.4).
+
+**Base-state area:** if a single flood door protects the stair, use the door's certified leakage equivalent area as the base-state area, following the conversion in Section 5.1. If multiple openings are protected by different products, the lumped equivalent area is the sum of the individual equivalent areas (in parallel).
+
+**Degraded-state area:** the unprotected basement connection geometry — the sum of all basement-level aperture areas. Estimate from a building survey.
+
+**Median capacity:** MLE on the kitemark dataset for the relevant product type (flood door or window). If the basement connection is dominated by a stair door, use the flood door dataset (Section 5.2). If it is dominated by light wells or penetrations, calibration data are sparse and $\eta$ should be treated as a sensitivity parameter.
+
+**Note on independence from membrane:** the basement connection fragility is sampled independently from all ingress path fragilities and from the membrane. A membrane protecting ground-level airbricks does not affect the basement connection. If a scenario requires both ground-level and basement protection, define both independently.
+
 ---
 
 ## 6. Summary of Modelling Assumptions and Limitations
@@ -409,3 +499,5 @@ $$A_{\text{equiv}} = \frac{3.33 \times 10^{-5}}{0.6 \times \sqrt{2 \times 9.81 \
 | Membrane representative-path convention | Avoids solver modification; suppressed paths use $10^{-9}$ m² to avoid numerical issues | Physical coupling between membrane leakage and sub-floor drainage not modelled; membrane treated as single lumped orifice |
 | Membrane-protected paths must be deterministic | Avoids ambiguous compound fragility logic | When membrane overtops, exposed paths are treated as fully unprotected deterministic openings; their own uncertainty is ignored |
 | File-as-default, argument-as-override | Arguments are overrides for parametric sweeps; physical inputs live in files for reproducibility | Both ingestion paths must produce identical internal objects; argument parsing must be kept in sync with file column definitions |
+| Basement fragility uses same framework as ingress paths | Consistent; no new code logic needed beyond argument parsing; parametric sweeps over basement protection are natural | Basement connection is a single lumped conductance; spatial variation within the basement boundary is not modelled |
+| Basement and membrane fragilities are independent | Physically correct: ground-level membrane and basement openings are distinct pathways | Scenarios where a single barrier protects both ground-floor and basement openings simultaneously cannot be represented without defining them as separate named paths |
