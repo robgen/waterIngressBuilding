@@ -13,23 +13,23 @@ Files (examples in `example_run/`):
   2,0.5
 
 - `example_ingress_paths.txt` — Ingress pathways. Each line is:
-  - `height, area, coeff[,name[,always_open]]`
+  - `height, area, coeff[,name]`
 
   These pathways represent exterior-to-main-building ingress only.
-  The optional `always_open` flag accepts `1` for true and `0` for false.
 
   Example lines:
 
   0.0, 0.01, 0.6, wall_crack
   0.3, 0.002, 0.6, airbrick
-  0.0, 0.0005, 0.5, service_penetration, 1
+  0.0, 0.0005, 0.5, service_penetration
 
 Parsing notes
 
 - Lines starting with `#` or blank lines are ignored.
 - Non-numeric or malformed lines are skipped.
 - For ingress entries, the parser will use a generated name if none is provided.
-- Extra routing columns such as `source,target` are intentionally not supported in the public ingress-file format and will raise an error.
+- Extra columns are intentionally not supported in the public ingress-file format and will raise an error.
+- Legacy 5th-column `always_open` values are no longer supported.
 
 Units and conventions
 
@@ -37,7 +37,6 @@ Units and conventions
 - Areas: square metres (m^2).
 - Heights/levels: metres (m).
 - Coefficient: empirical discharge coefficient (dimensionless).
-- `always_open`: boolean flag (`1` or `0`) that allows a pathway to continue exchanging flow even when neither side is above the sill.
 
 Tips
 
@@ -144,6 +143,5 @@ python3 batch_run.py \
   --contents-vulnerability example_run/uk_contents_vulnerability.csv \
   --outdir batch_results/uk_terraced_house_unprotected_loss
 ```
-
 
 

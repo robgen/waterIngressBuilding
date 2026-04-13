@@ -90,7 +90,7 @@ class Building:
             raise ValueError(f'Unknown zone: {zone}')
 
 class IngressPathway:
-    def __init__(self, height, area, coeff, name="Opening", always_open=False, source='outside', target='ground'):
+    def __init__(self, height, area, coeff, name="Opening", source='outside', target='ground'):
         """An ingress pathway (orifice/opening).
 
         Arguments:
@@ -98,15 +98,11 @@ class IngressPathway:
             area: opening area (m^2)
             coeff: discharge coefficient
             name: optional name
-            always_open: if True, allow flow based solely on head difference
-                         even when both sides are below the orifice height.
-                         Default False preserves the previous behaviour.
         """
         self.height = float(height)
         self.area = float(area)
         self.coeff = float(coeff)
         self.name = name
-        self.always_open = bool(always_open)
         # semantic endpoints: 'outside'|'ground'|'basement'
         self.source = source
         self.target = target
@@ -116,13 +112,12 @@ class IngressPathway:
 
         H_source and H_target are absolute water surface elevations (m) on the
         source and target sides measured on a common datum. The pathway sill is
-        `self.height` on the same datum. If both sides are below the sill and
-        `always_open` is False then Q=0. Otherwise the orifice-like law is
-        evaluated with the head difference \Delta H = H_source - H_target.
+        `self.height` on the same datum. If both sides are below the sill then
+        Q=0. Otherwise the orifice-like law is evaluated with the head
+        difference delta_H = H_source - H_target.
         """
-        # if the opening is above the water on both sides and it's not forced-open,
-        # there is no flow.
-        if (not self.always_open) and H_source < self.height and H_target < self.height:
+        # If the opening is above the water on both sides, there is no flow.
+        if H_source < self.height and H_target < self.height:
             return 0.0
 
         # The submerged/open test above intentionally uses the raw surface
@@ -439,18 +434,18 @@ def parse_velocity_file(filepath):
 
 
 def parse_ingress_file(filepath):
-    """Parse ingress paths file (height, area, coeff[, name[, always_open]]).
+    """Parse ingress paths file (height, area, coeff[, name]).
 
     Columns:
         1: sill height (m)
         2: opening area (m²)
         3: discharge coefficient
         4: optional name
-        5: optional always_open flag (1 = True, 0 = False, default False)
 
     Lines with fewer than 3 numeric columns are skipped with a warning.
-    More than 5 columns is treated as an error because the public ingress-file
-    format intentionally does not support routed source/target columns.
+    More than 4 columns is treated as an error because the public ingress-file
+    format intentionally does not support extra flags or routed source/target
+    columns.
     """
     ingress = []
     n_skipped = 0
@@ -463,11 +458,11 @@ def parse_ingress_file(filepath):
             if len(parts) < 3:
                 n_skipped += 1
                 continue
-            if len(parts) > 5:
+            if len(parts) > 4:
                 raise ValueError(
                     f"Unsupported ingress format in {filepath}: expected "
-                    "height, area, coeff[,name[,always_open]] with no "
-                    "source/target routing columns"
+                    "height, area, coeff[,name] with no extra columns "
+                    "(legacy always_open and source/target fields are not supported)"
                 )
             try:
                 h    = float(parts[0])
@@ -477,9 +472,8 @@ def parse_ingress_file(filepath):
                 n_skipped += 1
                 continue
             name = parts[3] if len(parts) >= 4 else f"ing{len(ingress)}"
-            always_open = bool(int(parts[4])) if len(parts) >= 5 else False
             ingress.append(IngressPathway(height=h, area=area, coeff=coeff,
-                                          name=name, always_open=always_open))
+                                          name=name))
     if n_skipped:
         warnings.warn(
             f"{n_skipped} malformed line(s) skipped in {filepath}", stacklevel=2)
@@ -528,12 +522,13 @@ def parse_velocity_text(text):
 
 
 def parse_ingress_text(text):
-    """Parse ingress definitions from a text block (h, area, coeff[, name[, always_open]]).
+    """Parse ingress definitions from a text block (h, area, coeff[, name]).
 
     See parse_ingress_file for column documentation.
     Malformed lines (fewer than 3 columns or non-numeric values) are skipped
     with a warning; the line number within the text block is reported.
-    More than 5 columns is treated as an error because routed source/target
+    More than 4 columns is treated as an error because extra flags and routed
+    source/target
     syntax is not part of the public text/file ingress interface.
     """
     ingress = []
@@ -546,11 +541,11 @@ def parse_ingress_text(text):
         if len(parts) < 3:
             n_skipped += 1
             continue
-        if len(parts) > 5:
+        if len(parts) > 4:
             raise ValueError(
                 "Unsupported ingress text format: expected "
-                "height, area, coeff[,name[,always_open]] with no "
-                "source/target routing columns"
+                "height, area, coeff[,name] with no extra columns "
+                "(legacy always_open and source/target fields are not supported)"
             )
         try:
             h     = float(parts[0])
@@ -563,9 +558,8 @@ def parse_ingress_text(text):
             n_skipped += 1
             continue
         name = parts[3] if len(parts) >= 4 else f"ing{len(ingress)}"
-        always_open = bool(int(parts[4])) if len(parts) >= 5 else False
         ingress.append(IngressPathway(height=h, area=area, coeff=coeff,
-                                      name=name, always_open=always_open))
+                                      name=name))
     if n_skipped:
         warnings.warn(
             f"{n_skipped} malformed line(s) skipped in ingress text", stacklevel=2)

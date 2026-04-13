@@ -87,3 +87,8 @@ def test_load_vulnerability_curve_averages_duplicate_heights():
 def test_parse_ingress_text_rejects_routing_columns():
     with pytest.raises(ValueError):
         parse_ingress_text("0.0, 0.01, 0.6, crack, outside, basement")
+
+
+def test_parse_ingress_text_rejects_legacy_always_open_column():
+    with pytest.raises(ValueError):
+        parse_ingress_text("0.0, 0.01, 0.6, crack, 1")

@@ -227,12 +227,12 @@ The local `sample_external` closure has been deleted.  All sampling in
 
 ---
 
-### Q. ~~`always_open` not exposed in the CLI or Streamlit UI~~ — **Partially resolved**
+### Q. ~~Hidden `always_open` ingress flag expanded the public file format~~ — **Resolved**
 
-`parse_ingress_file` and `parse_ingress_text` now read an optional 5th column
-(`0` or `1`) that sets `always_open` per pathway.  The CLI `--animate` and
-Streamlit UI do not yet expose it as a dedicated control; it must be encoded
-in the ingress file.
+The legacy `always_open` flag has been removed from `IngressPathway`,
+`parse_ingress_file`, and `parse_ingress_text`.  Public ingress inputs are now
+back to `height, area, coeff[,name]` only, matching the documented submerged-
+opening behaviour used by the example models.
 
 ---
 
@@ -279,6 +279,6 @@ numbers in earlier positions correctly.
 | N | Malformed lines skipped silently | **Resolved** |
 | O | `import math` inside `run()` | **Resolved** |
 | P | `sample_external` closure duplicated `sample_with_zero_padding` | **Resolved** |
-| Q | `always_open` not exposed in ingress file format | **Partially resolved** — readable from 5th column; no CLI/UI flag |
+| Q | Hidden `always_open` ingress flag expanded the file format | **Resolved** — removed from code and public inputs |
 | R | `VulnerabilityCurve` frozen but held mutable lists | **Resolved** |
 | S | Batch file matching by digit concatenation was fragile | **Resolved** |
