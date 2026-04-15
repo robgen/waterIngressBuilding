@@ -72,25 +72,13 @@ def _load(path):
 
 def plot_mc_case(case_dir, title, out_name):
     reps   = _load(os.path.join(case_dir, 'out', 'fragility_replicates.csv'))
-    summ   = _load(os.path.join(case_dir, 'out', 'fragility_summary.csv'))
     sfreq  = _load(os.path.join(case_dir, 'out', 'fragility_state_freq.csv'))
 
-    peak_h  = np.array([float(r['peak_h_in_m'])         for r in reps])
-    peak_bs = np.array([float(r['peak_h_basement_m'])    for r in reps])
-    vol_in  = np.array([float(r['total_volume_in_m3'])   for r in reps])
-    n       = len(peak_h)
+    peak_h   = np.array([float(r['peak_h_in_m'])              for r in reps])
+    peak_ext = np.array([float(r.get('peak_h_ext_m', 0.5))    for r in reps])
+    n        = len(peak_h)
 
-    # percentile values keyed by "P10" etc.
-    pct: dict[str, dict[str, float]] = {}
-    for row in summ:
-        m = row['metric']
-        pct[m] = {k: float(v) for k, v in row.items()
-                  if k.startswith('P') and v != ''}
-
-    pct_h = pct.get('peak_h_in', {})
-    labels_sorted = sorted(pct_h.keys(), key=lambda x: int(x[1:]))
-
-    # split replicates: "low" (near-zero) vs "high"
+    # split replicates: "intact" (near-zero) vs "degraded"
     threshold = max(peak_h) * 0.05 if max(peak_h, default=0) > 0 else 0.01
     low_mask  = peak_h < threshold
     high_mask = ~low_mask
@@ -98,116 +86,99 @@ def plot_mc_case(case_dir, title, out_name):
     n_high    = int(high_mask.sum())
 
     # ── figure layout ─────────────────────────────────────────────────────────
-    fig = plt.figure(figsize=(14, 9))
+    fig = plt.figure(figsize=(14, 6.5))
     fig.patch.set_facecolor('white')
     gs = gridspec.GridSpec(
-        2, 3, figure=fig,
-        hspace=0.46, wspace=0.38,
-        left=0.07, right=0.97, top=0.91, bottom=0.08)
+        1, 2, figure=fig,
+        width_ratios=[2.8, 1],
+        hspace=0.0, wspace=0.32,
+        left=0.07, right=0.97, top=0.88, bottom=0.12)
 
-    # ── (0,0)+(0,1) — histogram spanning two columns ──────────────────────────
-    ax_hist = fig.add_subplot(gs[0, :2])
+    # ── Scatter: peak h_ext vs peak h_int, with CDF on right y-axis ──────────
+    ax_s = fig.add_subplot(gs[0, 0])
 
-    # separate colour for the two clusters
+    sc_handles = []
     if n_high > 0 and n_low > 0:
-        ax_hist.hist(peak_h[low_mask],  bins=25, color=_BLUE,   alpha=0.75,
-                     edgecolor='white', lw=0.4, label=f'Intact  (n = {n_low})',  zorder=3)
-        ax_hist.hist(peak_h[high_mask], bins=25, color=_ORANGE, alpha=0.75,
-                     edgecolor='white', lw=0.4, label=f'Degraded  (n = {n_high})', zorder=3)
+        sc1 = ax_s.scatter(
+            peak_h[low_mask], peak_ext[low_mask],
+            color=_BLUE, alpha=0.45, s=22, zorder=3, linewidths=0,
+            label=f'Intact  (n = {n_low})')
+        sc2 = ax_s.scatter(
+            peak_h[high_mask], peak_ext[high_mask],
+            color=_ORANGE, alpha=0.55, s=22, zorder=4, linewidths=0,
+            label=f'Degraded  (n = {n_high})')
+        sc_handles = [sc1, sc2]
     else:
-        ax_hist.hist(peak_h, bins=35, color=_BLUE, alpha=0.78,
-                     edgecolor='white', lw=0.4, zorder=3)
+        sc = ax_s.scatter(
+            peak_h, peak_ext,
+            color=_BLUE, alpha=0.45, s=22, zorder=3, linewidths=0,
+            label=f'n = {n}')
+        sc_handles = [sc]
 
-    # percentile vertical lines
-    for pname in ('P10', 'P25', 'P50', 'P75', 'P90'):
-        val = pct_h.get(pname)
-        if val is None:
-            continue
-        ax_hist.axvline(val, color=PCT_COLOURS[pname], lw=1.8,
-                        ls=PCT_LS[pname], zorder=5,
-                        label=f'{pname} = {val:.3f} m')
+    ax_s.set_xlabel('Peak interior depth  $h_{in}^{max}$  (m)')
+    ax_s.set_ylabel('Peak exterior depth  $h_{ext}^{max}$  (m)')
+    ax_s.set_xlim(left=0)
 
-    ax_hist.set_xlabel('Peak ground-floor depth  $h_{in}^{max}$  (m)')
-    ax_hist.set_ylabel('Number of replicates')
-    ax_hist.set_title('Distribution of peak interior depth')
-    ax_hist.legend(fontsize=8, loc='upper right', ncol=2)
-    ax_hist.text(0.02, 0.96, f'n = {n} replicates',
-                 transform=ax_hist.transAxes,
-                 fontsize=8.5, va='top', color='#555',
-                 bbox=dict(boxstyle='round,pad=0.28', fc='white',
-                           ec='#ccc', alpha=0.88))
+    # If h_ext is constant (fixed hydrograph), tighten the y-axis so the strip
+    # of scatter points is visible rather than lost at the centre of a wide range.
+    ext_range = float(peak_ext.max() - peak_ext.min())
+    if ext_range < 1e-4:
+        mid = float(peak_ext.mean())
+        ax_s.set_ylim(mid * 0.7, mid * 1.3)
+    else:
+        ax_s.set_ylim(bottom=0)
 
-    # ── (0,2) — percentile bar chart ──────────────────────────────────────────
-    ax_bar = fig.add_subplot(gs[0, 2])
-    if labels_sorted:
-        vals  = [pct_h[l] for l in labels_sorted]
-        cols  = [PCT_COLOURS.get(l, _BLUE) for l in labels_sorted]
-        xpos  = np.arange(len(labels_sorted))
-        bars  = ax_bar.bar(xpos, vals, color=cols, edgecolor='white',
-                           width=0.65, zorder=3)
-        ax_bar.bar_label(bars, fmt='%.3f', fontsize=7.5, padding=3,
-                         color='#333')
-        ax_bar.set_xticks(xpos)
-        ax_bar.set_xticklabels(labels_sorted, fontsize=8.5)
-        ax_bar.set_ylabel('Peak ground-floor depth  (m)')
-        ax_bar.set_title('Percentile summary\n$h_{in}^{max}$')
-        ax_bar.set_ylim(0, max(vals) * 1.25 if max(vals) > 0 else 0.1)
-        ax_bar.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.3f'))
+    # ── CDF of peak interior depth on right y-axis (shares x = h_int) ────────
+    ax_cdf = ax_s.twinx()
+    plt.rcParams['axes.spines.right'] = True   # re-enable for twin axis
+    ax_cdf.spines['right'].set_visible(True)
+    ax_cdf.spines['right'].set_color('#c8cdd2')
+    ax_cdf.spines['right'].set_linewidth(0.8)
 
-    # ── (1,0)+(1,1) — empirical CDF with shaded band ─────────────────────────
-    ax_cdf = fig.add_subplot(gs[1, :2])
-    h_sort = np.sort(peak_h)
-    cdf    = np.linspace(1 / n, 1.0, n)
+    h_sort   = np.sort(peak_h)
+    cdf_pct  = np.linspace(100.0 / n, 100.0, n)
 
-    # shade P10–P90 band
-    p10 = pct_h.get('P10', h_sort[0])
-    p90 = pct_h.get('P90', h_sort[-1])
-    ax_cdf.axvspan(p10, p90, color=_BLUE, alpha=0.07, zorder=1,
-                   label='P10–P90 band')
-
-    ax_cdf.fill_between(h_sort, cdf * 100,
-                        color=_BLUE, alpha=0.10, step='post', zorder=2)
-    ax_cdf.step(h_sort, cdf * 100, color=_BLUE, lw=2.0,
-                where='post', zorder=4, label='Empirical CDF')
-
-    for pname in ('P10', 'P25', 'P50', 'P75', 'P90'):
-        val = pct_h.get(pname)
-        if val is None:
-            continue
-        p_val = int(pname[1:])
-        ax_cdf.plot([val, val], [0, p_val],
-                    color=PCT_COLOURS[pname], lw=0.9, ls=':',
-                    zorder=3, alpha=0.70)
-        ax_cdf.plot([0, val], [p_val, p_val],
-                    color=PCT_COLOURS[pname], lw=0.9, ls=':',
-                    zorder=3, alpha=0.70)
-        ax_cdf.scatter([val], [p_val], s=28, color=PCT_COLOURS[pname],
-                       zorder=5, edgecolors='white', lw=0.5)
-
-    ax_cdf.set_xlabel('Peak ground-floor depth  $h_{in}^{max}$  (m)')
-    ax_cdf.set_ylabel('Cumulative probability  (%)')
-    ax_cdf.set_title('Empirical CDF of peak interior depth')
-    ax_cdf.set_ylim(0, 105)
-    ax_cdf.set_xlim(left=0)
-    ax_cdf.legend(fontsize=8, loc='upper left')
+    ax_cdf.fill_between(h_sort, cdf_pct, step='post', color=_RED, alpha=0.06, zorder=1)
+    cdf_line, = ax_cdf.step(h_sort, cdf_pct, color=_RED, lw=1.8,
+                             where='post', zorder=5, label='Empirical CDF')
+    ax_cdf.set_ylim(0, 108)
+    ax_cdf.set_ylabel('Cumulative probability  (%)', color=_RED)
+    ax_cdf.tick_params(axis='y', labelcolor=_RED)
     ax_cdf.yaxis.set_major_formatter(
         mticker.FuncFormatter(lambda x, _: f'{x:.0f}%'))
+    ax_cdf.grid(False)   # avoid double grid
 
-    # ── (1,2) — element state frequencies ────────────────────────────────────
-    ax_sf = fig.add_subplot(gs[1, 2])
+    # Subtle percentile hairlines on the CDF panel
+    for pname, pval_arr in [('P25', np.percentile(peak_h, 25)),
+                             ('P50', np.percentile(peak_h, 50)),
+                             ('P75', np.percentile(peak_h, 75))]:
+        p_num = int(pname[1:])
+        ax_cdf.plot([pval_arr, pval_arr], [0, p_num],
+                    color=PCT_COLOURS[pname], lw=0.8, ls=':', alpha=0.6, zorder=2)
+        ax_cdf.plot([0, pval_arr], [p_num, p_num],
+                    color=PCT_COLOURS[pname], lw=0.8, ls=':', alpha=0.6, zorder=2)
+
+    # Combined legend (scatter handles + CDF line)
+    ax_s.legend(handles=sc_handles + [cdf_line], fontsize=8, loc='upper right')
+    ax_s.set_title('Peak $h_{ext}$ vs peak $h_{in}$ — scatter and empirical CDF')
+
+    # ── Element state frequencies ─────────────────────────────────────────────
+    ax_sf = fig.add_subplot(gs[0, 1])
     if sfreq:
-        state_cols = [k for k in sfreq[0] if k.startswith('state_')]
-        elems      = [r['element'] for r in sfreq]
-        n_el = len(elems); n_st = len(state_cols)
-        x    = np.arange(n_el)
-        bw   = 0.75 / max(n_st, 1)
+        # Sort columns by state index so cumulative→exact differencing is correct
+        state_cols = sorted(
+            [k for k in sfreq[0] if k.startswith('state_')],
+            key=lambda c: int(c.split('_')[1]))
+        elems = [r['element'] for r in sfreq]
+        n_el  = len(elems); n_st = len(state_cols)
+        x     = np.arange(n_el)
+        bw    = 0.75 / max(n_st, 1)
         blues = matplotlib.colormaps.get_cmap('Blues_r')
 
         for si, col in enumerate(state_cols):
-            freqs  = [float(r[col]) if r.get(col, '') != '' else 0.0
-                      for r in sfreq]
+            freqs  = [float(r.get(col, 0) or 0) for r in sfreq]
             colour = blues(0.15 + 0.60 * si / max(n_st - 1, 1))
-            lbl    = col.replace('state_', 'State ≥ ').replace('_freq', '')
+            lbl    = f'State {si}'
             b      = ax_sf.bar(x + si * bw, freqs, bw,
                                label=lbl, color=colour,
                                edgecolor='white', lw=0.4, zorder=3)
@@ -218,11 +189,28 @@ def plot_mc_case(case_dir, title, out_name):
             [e.replace('membrane:', 'mem:')[:16] for e in elems],
             rotation=30, ha='right', fontsize=7.5)
         ax_sf.set_ylabel('Fraction of replicates')
-        ax_sf.set_title('Element state frequencies\n(proxy via peak $h_{in}$)')
-        ax_sf.set_ylim(0, 1.12)
+        ax_sf.set_title('Element state frequencies')
+        ax_sf.set_ylim(0, 1.30)
         ax_sf.legend(fontsize=7.5, loc='upper right')
         ax_sf.yaxis.set_major_formatter(
             mticker.FuncFormatter(lambda x, _: f'{x:.0%}'))
+
+        # Explanation annotation
+        expl = (
+            'Each bar: fraction of replicates\n'
+            'in exactly that state.\n\n'
+            'State 0  base state (not degraded)\n'
+            'State k  degraded to state k\n'
+            '  (e.g. seal failure,\n'
+            '   membrane overtopping)\n\n'
+            'Bars sum to 100% per element.'
+        )
+        ax_sf.text(0.04, 0.60, expl,
+                   transform=ax_sf.transAxes,
+                   fontsize=7.2, va='top', ha='left',
+                   color='#444',
+                   bbox=dict(boxstyle='round,pad=0.4', fc='white',
+                             ec='#d0d5dd', alpha=0.95))
     else:
         ax_sf.text(0.5, 0.5, 'No state data',
                    transform=ax_sf.transAxes,
@@ -235,7 +223,7 @@ def plot_mc_case(case_dir, title, out_name):
     if n_low > 0 and n_high > 0:
         split_txt = (f'{n_low}/{n}  replicates at near-zero  ({100*n_low/n:.1f}%)\n'
                      f'{n_high}/{n}  replicates with significant ingress  ({100*n_high/n:.1f}%)')
-        fig.text(0.50, 0.935, split_txt,
+        fig.text(0.42, 0.935, split_txt,
                  ha='center', va='top', fontsize=8.5, color='#444',
                  style='italic',
                  bbox=dict(boxstyle='round,pad=0.35', fc='#f4f6f9',
@@ -256,6 +244,11 @@ if __name__ == '__main__':
     plot_mc_case(
         os.path.join(HERE, 'ex08'),
         'Case 08 — Fragility MC: membrane-protected group  (n = 500, seed = 42)',
+        'mc_result.png',
+    )
+    plot_mc_case(
+        os.path.join(HERE, 'ex09'),
+        'Case 09 — Deterministic membrane: design capacity above flood peak  (n = 500, seed = 42)',
         'mc_result.png',
     )
     print('Done.')

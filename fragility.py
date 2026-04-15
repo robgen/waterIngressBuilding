@@ -614,6 +614,7 @@ class ReplicateRecord:
     peak_h_basement: float
     peak_h_sump: float
     total_volume_in: float       # m³ ingressed to ground floor
+    peak_h_ext: float            # peak exterior depth (same for all reps in fixed hydrograph)
     u_basement: Optional[float]
     basement_thresholds: Optional[List[float]]
 
@@ -720,6 +721,7 @@ def run_fragility_montecarlo(
         peak_h_in       = max(sim_levels, default=0.0)
         peak_h_basement = max(sim_basement, default=0.0)
         peak_h_sump     = max(sim_sump, default=0.0)
+        peak_h_ext_val  = max(external_levels, default=0.0)
 
         # Approximate total ingressed volume via trapezoidal integration of
         # indoor level × floor area  (change in stored volume = proxy for ingress)
@@ -744,6 +746,7 @@ def run_fragility_montecarlo(
             peak_h_basement=peak_h_basement,
             peak_h_sump=peak_h_sump,
             total_volume_in=vol_in,
+            peak_h_ext=peak_h_ext_val,
             u_basement=sampled.u_values.get('basement'),
             basement_thresholds=sampled.basement_thresholds,
         ))
@@ -866,7 +869,8 @@ def write_replicates_csv(result: MonteCarloResult, filepath: str) -> None:
             n = len(result.replicates[0].capacity_thresholds.get(tk, []))
             for i in range(1, n + 1):
                 header.append(f'h_star_{i}_{tk}')
-        header += ['peak_h_in_m', 'peak_h_basement_m', 'peak_h_sump_m', 'total_volume_in_m3']
+        header += ['peak_h_in_m', 'peak_h_basement_m', 'peak_h_sump_m',
+                   'peak_h_ext_m', 'total_volume_in_m3']
         writer.writerow(header)
         for rec in result.replicates:
             row = [rec.replicate_id]
@@ -874,26 +878,40 @@ def write_replicates_csv(result: MonteCarloResult, filepath: str) -> None:
             for tk in all_thr_keys:
                 for v in rec.capacity_thresholds.get(tk, []):
                     row.append(v)
-            row += [rec.peak_h_in, rec.peak_h_basement, rec.peak_h_sump, rec.total_volume_in]
+            row += [rec.peak_h_in, rec.peak_h_basement, rec.peak_h_sump,
+                    rec.peak_h_ext, rec.total_volume_in]
             writer.writerow(row)
 
 
 def write_summary_csv(result: MonteCarloResult, filepath: str) -> None:
-    """Write percentile summary to CSV."""
+    """Write percentile summary to CSV (values formatted to 5 decimal places)."""
     with open(filepath, 'w', newline='') as fh:
         writer = csv.writer(fh)
         all_pct_keys = sorted({k for d in result.percentiles.values() for k in d})
         writer.writerow(['metric'] + all_pct_keys)
         for metric, pcts in sorted(result.percentiles.items()):
-            writer.writerow([metric] + [pcts.get(k, '') for k in all_pct_keys])
+            row = [metric]
+            for k in all_pct_keys:
+                v = pcts.get(k)
+                row.append(f'{v:.5f}' if v is not None else '')
+            writer.writerow(row)
 
 
 def write_state_freq_csv(result: MonteCarloResult, filepath: str) -> None:
-    """Write state frequency table to CSV."""
+    """Write per-state frequency table to CSV.
+
+    Each state_k_freq column is the fraction of replicates in **exactly** state k
+    (not cumulative exceedance).  Rows sum to 1.0 per element.
+    """
     with open(filepath, 'w', newline='') as fh:
         writer = csv.writer(fh)
         max_states = max((len(v) for v in result.state_frequencies.values()), default=0)
         writer.writerow(['element'] + [f'state_{k}_freq' for k in range(max_states)])
-        for elem, freqs in sorted(result.state_frequencies.items()):
-            row = [elem] + freqs + [''] * (max_states - len(freqs))
+        for elem, cum_freqs in sorted(result.state_frequencies.items()):
+            # cum_freqs[k] = P(state >= k); convert to P(state == k)
+            exact = []
+            for k, cum_k in enumerate(cum_freqs):
+                next_cum = cum_freqs[k + 1] if k + 1 < len(cum_freqs) else 0.0
+                exact.append(round(max(0.0, cum_k - next_cum), 6))
+            row = [elem] + exact + [''] * (max_states - len(exact))
             writer.writerow(row)

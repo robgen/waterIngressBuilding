@@ -4,7 +4,7 @@
 Run from the repo root:
     python3 case_studies/run_cases.py
 
-Eight cases in order of complexity:
+Nine cases in order of complexity:
   01 – Ground floor, single opening at sill = 0 m
   02 – Ground floor, raised sill at 0.3 m
   03 – Ground floor, two openings with different sill heights
@@ -13,6 +13,7 @@ Eight cases in order of complexity:
   06 – Basement + sump/pump that is overwhelmed
   07 – Fragility MC: single probabilistic seal (50 % failure at peak depth)
   08 – Fragility MC: membrane-protected group (50 % membrane failure)
+  09 – Deterministic membrane: design capacity above flood peak (no failure)
 """
 
 import csv
@@ -271,6 +272,32 @@ run('ex08', [
     '--n-replicates', '500',
     '--random-seed', '42',
 ], mkdir(os.path.join(ex08, 'out')))
+
+# ── Ex 09: deterministic membrane — design capacity above flood peak ──────────
+# Same two pathways as Ex 08 (airbrick + door_gap behind membrane group_id=1).
+# Membrane: sill = 0 m, base leakage ≈ 0.  Capacity = 0.6 m, β = 0 (deterministic).
+# Peak flood = 0.5 m < 0.6 m = capacity  →  membrane never overtopped in any replicate.
+# Expected: 0/500 overtopping events, interior depth ≈ 0 throughout.
+# Contrasts with Ex 08 where the same membrane (capacity 0.5 m, β = 0.1) fails in ≈ 50 %.
+print('\nEx 09 – deterministic membrane (design capacity above flood peak)')
+ex09 = mkdir(os.path.join(HERE, 'ex09'))
+write_text(os.path.join(ex09, 'membrane_det.csv'),
+           '# group_id, height_m, area_m2, Cd, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
+           '1, 0.0, 1.0e-6, 0.6, overtopped, 0.6, 0.0, 1.0e-9, 0.6\n')
+run('ex09', [
+    '--ingress',       os.path.join(ex08, 'ingress_frag.csv'),   # same airbrick + door_gap
+    '--ingress-format','fragility',
+    '--membrane-file', os.path.join(ex09, 'membrane_det.csv'),
+    '--floor', '50',
+    '--n-replicates', '500',
+    '--random-seed', '42',
+], mkdir(os.path.join(ex09, 'out')))
+
+# Generate MC result figures for ex07, ex08, ex09
+print('\nGenerating fragility MC figures ...')
+subprocess.run([PY, os.path.join(HERE, 'plot_mc.py')],
+               capture_output=True, text=True, cwd=ROOT)
+print('  OK  ex07 + ex08 + ex09 mc_result.png')
 
 # ── generate report ───────────────────────────────────────────────────────────
 print('\nGenerating report.md ...')
@@ -566,6 +593,40 @@ delays part of the inflow.
 ### State frequency table
 
 {tbl08_states}
+
+---
+
+## Case 09 — Deterministic membrane (design capacity above flood peak)
+
+**Setup:** identical pathways to Case 08 (airbrick + door\_gap behind membrane
+group\_id = 1, 50 m² floor).  The membrane capacity is **deterministic**:
+β = 0, median η = **0.6 m** — fixed capacity, no uncertainty.
+
+With the triangular hydrograph peaking at **0.5 m < 0.6 m**, the demand
+never reaches the membrane capacity.  The membrane remains intact in every
+replicate.
+
+While intact, the membrane presents only its base-state leakage conductance
+(area = 1 × 10⁻⁶ m²) to the flood; the pathways behind it are suppressed to
+1 × 10⁻⁹ m².  This results in negligible interior depth throughout.
+
+**Comparison with Case 08:** in Case 08 the same membrane has η = 0.5 m and
+β = 0.1, giving P(failure) = 50 %.  Case 09 shows that raising the design
+capacity by 0.1 m (to just above the flood peak) eliminates all ingress when
+there is no uncertainty.
+
+**Qualitative check:** scatter and CDF both cluster at h\_in ≈ 0;
+state frequency shows State 0 = 100 %, State 1 = 0 %.
+
+![]({sim09})
+
+### Percentile summary
+
+{tbl09_summary}
+
+### State frequency table
+
+{tbl09_states}
 """)
 
 report = report.format(
@@ -579,6 +640,7 @@ report = report.format(
     sim06=img(os.path.join(HERE, 'ex06')),
     sim07=img(os.path.join(HERE, 'ex07'), 'mc_result.png'),
     sim08=img(os.path.join(HERE, 'ex08'), 'mc_result.png'),
+    sim09=img(os.path.join(HERE, 'ex09'), 'mc_result.png'),
     gif01=gif_link(os.path.join(HERE, 'ex01')),
     gif02=gif_link(os.path.join(HERE, 'ex02')),
     gif03=gif_link(os.path.join(HERE, 'ex03')),
@@ -589,6 +651,8 @@ report = report.format(
     tbl07_states =mc_table(os.path.join(HERE, 'ex07'), 'fragility_state_freq.csv') or '_not generated_',
     tbl08_summary=mc_table(os.path.join(HERE, 'ex08'), 'fragility_summary.csv') or '_not generated_',
     tbl08_states =mc_table(os.path.join(HERE, 'ex08'), 'fragility_state_freq.csv') or '_not generated_',
+    tbl09_summary=mc_table(os.path.join(HERE, 'ex09'), 'fragility_summary.csv') or '_not generated_',
+    tbl09_states =mc_table(os.path.join(HERE, 'ex09'), 'fragility_state_freq.csv') or '_not generated_',
 )
 
 report_path = os.path.join(HERE, 'report.md')

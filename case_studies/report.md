@@ -231,15 +231,15 @@ wide.
 
 | metric | P10 | P25 | P50 | P75 | P90 |
 | --- | --- | --- | --- | --- | --- |
-| peak_h_basement | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
-| peak_h_in | 1.338816591069177e-05 | 1.338816591069177e-05 | 1.338816591069177e-05 | 0.11141965865701241 | 0.17462296390125154 |
-| total_volume_in | 0.000668688295534588 | 0.000668688295534588 | 0.000668688295534588 | 5.570982212850621 | 8.731147475062578 |
+| peak_h_basement | 0.00000 | 0.00000 | 0.00000 | 0.00000 | 0.00000 |
+| peak_h_in | 0.00001 | 0.00001 | 0.00001 | 0.11142 | 0.17462 |
+| total_volume_in | 0.00067 | 0.00067 | 0.00067 | 5.57098 | 8.73115 |
 
 ### State frequency table
 
 | element | state_0_freq | state_1_freq |
 | --- | --- | --- |
-| seal_door | 1.0 | 0.498 |
+| seal_door | 0.502 | 0.498 |
 
 ---
 
@@ -277,12 +277,52 @@ delays part of the inflow.
 
 | metric | P10 | P25 | P50 | P75 | P90 |
 | --- | --- | --- | --- | --- | --- |
-| peak_h_basement | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
-| peak_h_in | 0.00013291917224786008 | 0.00013291917224786008 | 0.00013291917224786008 | 0.08057464579912538 | 0.11099713874695413 |
-| total_volume_in | 0.006638751412392997 | 0.006638751412392997 | 0.006638751412392997 | 4.028725082756269 | 5.5498497301477085 |
+| peak_h_basement | 0.00000 | 0.00000 | 0.00000 | 0.00000 | 0.00000 |
+| peak_h_in | 0.00013 | 0.00013 | 0.00013 | 0.08057 | 0.11100 |
+| total_volume_in | 0.00664 | 0.00664 | 0.00664 | 4.02873 | 5.54985 |
 
 ### State frequency table
 
 | element | state_0_freq | state_1_freq |
 | --- | --- | --- |
-| membrane:1 | 1.0 | 0.498 |
+| membrane:1 | 0.502 | 0.498 |
+
+---
+
+## Case 09 — Deterministic membrane (design capacity above flood peak)
+
+**Setup:** identical pathways to Case 08 (airbrick + door\_gap behind membrane
+group\_id = 1, 50 m² floor).  The membrane capacity is **deterministic**:
+β = 0, median η = **0.6 m** — fixed capacity, no uncertainty.
+
+With the triangular hydrograph peaking at **0.5 m < 0.6 m**, the demand
+never reaches the membrane capacity.  The membrane remains intact in every
+replicate.
+
+While intact, the membrane presents only its base-state leakage conductance
+(area = 1 × 10⁻⁶ m²) to the flood; the pathways behind it are suppressed to
+1 × 10⁻⁹ m².  This results in negligible interior depth throughout.
+
+**Comparison with Case 08:** in Case 08 the same membrane has η = 0.5 m and
+β = 0.1, giving P(failure) = 50 %.  Case 09 shows that raising the design
+capacity by 0.1 m (to just above the flood peak) eliminates all ingress when
+there is no uncertainty.
+
+**Qualitative check:** scatter and CDF both cluster at h\_in ≈ 0;
+state frequency shows State 0 = 100 %, State 1 = 0 %.
+
+![](ex09/out/mc_result.png)
+
+### Percentile summary
+
+| metric | P10 | P25 | P50 | P75 | P90 |
+| --- | --- | --- | --- | --- | --- |
+| peak_h_basement | 0.00000 | 0.00000 | 0.00000 | 0.00000 | 0.00000 |
+| peak_h_in | 0.00013 | 0.00013 | 0.00013 | 0.00013 | 0.00013 |
+| total_volume_in | 0.00664 | 0.00664 | 0.00664 | 0.00664 | 0.00664 |
+
+### State frequency table
+
+| element | state_0_freq | state_1_freq |
+| --- | --- | --- |
+| membrane:1 | 1.0 | 0.0 |

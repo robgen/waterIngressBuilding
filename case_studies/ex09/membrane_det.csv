@@ -1,0 +1,2 @@
+# group_id, height_m, area_m2, Cd, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1
+1, 0.0, 1.0e-6, 0.6, overtopped, 0.6, 0.0, 1.0e-9, 0.6
