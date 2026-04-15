@@ -1,0 +1,2 @@
+# name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1
+seal_door, 0.0, 1.0e-7, 0.6, 0, failed, 0.5, 0.3, 5.0e-3, 0.6

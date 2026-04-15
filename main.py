@@ -110,22 +110,46 @@ class IngressPathway:
     def compute_flow(self, H_source, H_target, v_source=0.0):
         """Compute volumetric flow (m^3 / time-unit) using absolute surface heads.
 
-        H_source and H_target are absolute water surface elevations (m) on the
-        source and target sides measured on a common datum. The pathway sill is
-        `self.height` on the same datum. If both sides are below the sill then
-        Q=0. Otherwise the orifice-like law is evaluated with the head
-        difference delta_H = H_source - H_target.
+        H_source and H_target are absolute water surface elevations (m) on a
+        common datum (ground level = 0).  The pathway sill (`self.height`) is
+        the physical elevation of the opening on the same datum.
+
+        The driving head is based on the water depth **above the sill** on each
+        side, not the raw surface elevation:
+
+            h_src = max(0, H_source − sill)   [+ v²/2g kinetic correction]
+            h_tgt = max(0, H_target − sill)
+            ΔH    = h_src − h_tgt
+
+        This gives the standard two-regime behaviour automatically:
+
+        * **Free discharge** (H_target ≤ sill): h_tgt = 0, so ΔH = H_source − sill.
+          Applies when the receiving space has not flooded to the opening level
+          (e.g. an empty basement below a ground-level perimeter seal, or an
+          empty ground floor below a raised-threshold door).
+        * **Submerged discharge** (H_target > sill): ΔH = (H_source − sill) −
+          (H_target − sill) = H_source − H_target, identical to the classic form.
+
+        Flow stops naturally (ΔH = 0) when both surfaces reach the same height
+        above the sill, including the exact moment both reach sill level.
+
+        An optional hydrodynamic correction v²/(2g) is added to h_src to account
+        for kinetic energy at the source (e.g. fast-moving floodwater).
+
+        Sign convention: positive Q = flow in the source→target direction.
         """
-        # If the opening is above the water on both sides, there is no flow.
-        if H_source < self.height and H_target < self.height:
+        # Guard: no flow when neither side has water above the opening.
+        # H_source uses <= so that a dry exterior at exactly sill level (common
+        # when sill = 0 and h_ext = 0) returns Q = 0.
+        if H_source <= self.height and H_target < self.height:
             return 0.0
 
-        # The submerged/open test above intentionally uses the raw surface
-        # elevations (no dynamic head). However, when computing the driving
-        # head for the orifice we optionally include a hydrodynamic correction
-        # from an external velocity at the source side:  v^2/(2g).
         g = 9.81
-        delta_H_eff = float(H_source) + (float(v_source) ** 2) / (2.0 * g) - float(H_target)
+        sill = float(self.height)
+        # Head above the sill on each side (clamped to zero when below sill).
+        h_src = max(0.0, float(H_source) - sill) + (float(v_source) ** 2) / (2.0 * g)
+        h_tgt = max(0.0, float(H_target) - sill)
+        delta_H_eff = h_src - h_tgt
         if delta_H_eff == 0.0:
             return 0.0
 
@@ -284,13 +308,38 @@ class Simulation:
             self.building.update_water_level(vol_ground, zone='ground')
             current_h_in = self.building.h_in
 
-            # ── sump/pump update ─────────────────────────────────────────────
+            # ── sump/pump + basement — unified free-surface update ───────────
+            # Option B: sump pit and basement floor form a single connected vessel.
+            # The pit occupies [z_sump_base, z_basement] with area A_sump; once the
+            # free surface rises to z_basement the water spreads over the full
+            # basement floor (area A_sump + A_bsmt).  The pump draws from the
+            # combined volume; h_sump and h_bsmt are derived geometrically.
+            #
+            # The old sump-overflow weir (Q_s_bs) is no longer needed as a
+            # basement-coupling mechanism; its role is replaced by the geometric
+            # area transition at the basement floor level.
             current_h_sump = 0.0
-            Q_s_bs = 0.0
+            Q_s_bs = 0.0   # kept in trace for backward compat; always 0 now
             H_lift = 0.0
             Q_p = 0.0
             pump_state_t = 0
+
             if sp is not None:
+                # sump_depth: height of the sump overflow crest above sump_base.
+                # Water below this level is contained within the sump (no basement
+                # losses).  Water above this level has overflowed onto the basement
+                # floor and constitutes h_basement (the loss-relevant depth).
+                # Using overflow_level (not the geometric pit_depth) means h_basement
+                # remains zero whenever the pump keeps the sump below its crest.
+                sump_depth = sp.overflow_level
+                V_sump_full = sp.sump_area * sump_depth  # volume when sump is at crest
+
+                # Reconstruct current total volume from state vars.
+                V_total = (sp.sump_area * min(sp.h_sump, sump_depth)
+                           + (sp.sump_area + self.building.basement_area)
+                           * current_h_basement)
+
+                # Pump switch and flow (evaluated at start-of-step h_sump).
                 H_lift = compute_lift_head(H_out, sp.sump_base_elevation)
                 sp.pump_state = compute_pump_switch_state(
                     sp.h_sump, sp.pump_on_level, sp.pump_off_level, sp.pump_state)
@@ -299,21 +348,46 @@ class Simulation:
                     sp.pump_state, sp.pump_availability,
                     sp.pump_shutoff_head, H_lift,
                     sp.pump_curve_coeff, sp.pipe_loss_coeff)
-                Q_s_bs = compute_sump_overflow(
-                    sp.h_sump, sp.overflow_level,
-                    sp.overflow_coeff, sp.overflow_exponent)
-                delta_h = (flow_os - Q_p - Q_s_bs) * self.dt / sp.sump_area
-                sp.h_sump = max(0.0, sp.h_sump + delta_h)
-                current_h_sump = sp.h_sump
 
-            # ── basement update ──────────────────────────────────────────────
-            # flow_ob: perimeter inflow when no sump (0 when sump active)
-            # Q_s_bs: sump overflow into basement (0 when no sump)
-            vol_basement = (flow_ob + flow_gb + Q_s_bs) * self.dt
-            overflow = self.building.update_water_level(vol_basement, zone='basement')
-            if overflow and overflow > 0.0:
-                self.building.update_water_level(overflow, zone='ground')
-            current_h_basement = self.building.h_basement
+                # Net volume change: exterior perimeter inflow + ground-floor
+                # bypass inflow − pump removal.  flow_gb is routed into the
+                # unified vessel (not separately to the basement) because the
+                # basement is part of the vessel.
+                dV = (flow_os + flow_gb - Q_p) * self.dt
+                V_total = max(0.0, V_total + dV)
+
+                # Geometric inversion: derive h_sump and h_bsmt from V_total.
+                if V_total <= V_sump_full:
+                    # Water within sump capacity — basement floor remains dry.
+                    sp.h_sump = V_total / sp.sump_area if sp.sump_area > 0 else 0.0
+                    self.building.h_basement = 0.0
+                else:
+                    # Sump has overflowed; excess spreads onto the basement floor.
+                    V_above = V_total - V_sump_full
+                    h_above = V_above / (sp.sump_area + self.building.basement_area)
+                    sp.h_sump = sump_depth + h_above
+                    self.building.h_basement = h_above
+
+                # Basement ceiling: overflow to ground floor.
+                max_bsmt = max(0.0, self.building.basement_ceiling_elevation
+                               - self.building.z_basement)
+                if self.building.h_basement > max_bsmt:
+                    excess = self.building.h_basement - max_bsmt
+                    overflow_vol = excess * (sp.sump_area + self.building.basement_area)
+                    self.building.h_basement = max_bsmt
+                    sp.h_sump = sump_depth + max_bsmt
+                    self.building.update_water_level(overflow_vol, zone='ground')
+
+                current_h_sump = sp.h_sump
+                current_h_basement = self.building.h_basement
+
+            else:
+                # ── no sump: standard basement update ───────────────────────
+                vol_basement = (flow_ob + flow_gb) * self.dt
+                overflow = self.building.update_water_level(vol_basement, zone='basement')
+                if overflow and overflow > 0.0:
+                    self.building.update_water_level(overflow, zone='ground')
+                current_h_basement = self.building.h_basement
 
             times.append(t)
             indoor_levels.append(current_h_in)
@@ -947,10 +1021,16 @@ def main(argv=None):
         print(f"Failed to save velocity preview: {e}")
 
     sim_out_path = os.path.join(outdir, 'simulation_result.png')
+    _bsmt_max = (max(0.0, building.basement_ceiling_elevation - building.z_basement)
+                 if getattr(building, 'basement_area', 0.0) > 0 else None)
+    _sump_ov  = (building.sump_pump.overflow_level
+                 if building.sump_pump is not None else None)
     try:
         viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path,
                                    time_unit=units, basement_levels=sim_basement,
-                                   velocity_series=sampled_velocity_plot, sump_levels=sim_sump)
+                                   velocity_series=sampled_velocity_plot, sump_levels=sim_sump,
+                                   basement_max_depth=_bsmt_max,
+                                   sump_overflow_level=_sump_ov)
     except TypeError:
         viz.save_simulation_result(sim_times_display, sim_levels, sampled_external, sim_out_path,
                                    time_unit=units)

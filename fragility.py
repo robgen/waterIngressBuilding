@@ -754,7 +754,7 @@ def run_fragility_montecarlo(
         except Exception:
             pass
 
-    return _aggregate(records, percentile_values, paths, membranes)
+    return _aggregate(records, percentile_values, paths, membranes, external_levels)
 
 
 def _aggregate(
@@ -762,6 +762,7 @@ def _aggregate(
     percentile_values: Tuple[int, ...],
     paths: List[FragilePath],
     membranes: List[Membrane],
+    external_levels: List[float],
 ) -> MonteCarloResult:
     """Compute percentiles, state frequencies, and rank correlations."""
     from scipy.stats import spearmanr
@@ -793,15 +794,18 @@ def _aggregate(
             rank_corr[key] = float(rho)
 
     # State frequencies: for each probabilistic path / membrane, what fraction
-    # of replicates had peak_h_in-time state ≥ k?
-    # Approximate: fraction of replicates where capacity threshold k was exceeded
-    # by the peak external level.  We don't store per-step active states, so we
-    # use the sampled capacity thresholds and the peak_h_in as a proxy.
-    # (Full per-step state tracking would require storing sim._last_trace per rep.)
+    # of replicates reached state ≥ k?
+    # An element reaches state k when the peak external head above its sill
+    # equals or exceeds the sampled capacity threshold h*_k.  This is exactly
+    # the condition used in select_active_state() during the time loop.
+    max_h_ext = max(external_levels, default=0.0)
+
     state_freq: Dict[str, List[float]] = {}
     for p in paths:
         if p.fragility is None:
             continue
+        # Max head above sill seen by this pathway during the event
+        max_h_path = max(0.0, max_h_ext - p.height_m)
         n_states = len(p.fragility.states)
         freqs = []
         for k in range(n_states + 1):
@@ -811,13 +815,15 @@ def _aggregate(
                 exceeded = sum(
                     1 for rec in records
                     if p.name in rec.capacity_thresholds
-                    and rec.peak_h_in >= rec.capacity_thresholds[p.name][k - 1]
+                    and max_h_path >= rec.capacity_thresholds[p.name][k - 1]
                 )
                 freqs.append(exceeded / len(records))
         state_freq[p.name] = freqs
 
     for m in membranes:
         key = f'membrane:{m.group_id}'
+        # Max head above membrane sill
+        max_h_mem = max(0.0, max_h_ext - m.height_m)
         n_states = len(m.fragility.states)
         freqs = []
         for k in range(n_states + 1):
@@ -827,7 +833,7 @@ def _aggregate(
                 exceeded = sum(
                     1 for rec in records
                     if key in rec.capacity_thresholds
-                    and rec.peak_h_in >= rec.capacity_thresholds[key][k - 1]
+                    and max_h_mem >= rec.capacity_thresholds[key][k - 1]
                 )
                 freqs.append(exceeded / len(records))
         state_freq[key] = freqs

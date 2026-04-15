@@ -2,3 +2,5 @@ streamlit
 matplotlib
 Pillow
 pytest
+numpy
+scipy
