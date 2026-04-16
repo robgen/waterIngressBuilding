@@ -13,6 +13,7 @@ Usage:
 import csv
 import io
 import os
+import sys
 import tempfile
 
 import matplotlib
@@ -21,6 +22,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'case_studies'))
+from plot_schematics import draw_schematic
 
 from main import (
     Building, IngressPathway, Simulation,
@@ -377,6 +381,60 @@ with tab_setup:
             st.info('No velocity — hydrodynamic term is zero.')
         elif not _show_vel:
             st.info('Upload a velocity CSV or choose a source above.')
+
+    # ── Building schematic ────────────────────────────────────────────────────
+    st.divider()
+    st.markdown('**Building schematic**')
+    _col_l, _col_sch, _col_r = st.columns([1.5, 2, 1.5])
+    with _col_sch:
+        _bsmt_d_sch = (abs(float(basement_floor_elev))
+                       if enable_basement and basement_area > 0 else None)
+        _path_style_sch = 'prob' if enable_mc else 'det'
+        _gf_paths_sch   = []
+        _bsmt_paths_sch = []
+        try:
+            if ing_mode == 'Upload file' and uploaded_ingress:
+                _tmp_sch = _save_tmp(_read_bytes(uploaded_ingress), '.txt')
+                for _p in parse_ingress_file(_tmp_sch):
+                    if getattr(_p, 'target', 'ground') == 'ground':
+                        _gf_paths_sch.append(dict(
+                            sill=_p.height, name=_p.name or 'path',
+                            style=_path_style_sch))
+            elif ing_mode == 'Manual table' and manual_ing_tbl is not None:
+                _recs_sch = (manual_ing_tbl.to_dict('records')
+                             if hasattr(manual_ing_tbl, 'to_dict') else list(manual_ing_tbl))
+                for _rs in _recs_sch:
+                    try:
+                        _gf_paths_sch.append(dict(
+                            sill=float(_rs.get('height', 0.0)),
+                            name=str(_rs.get('name', 'path')),
+                            style=_path_style_sch,
+                        ))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if enable_basement and basement_area > 0 and float(bsmt_ing_area) > 0:
+            _bsmt_paths_sch = [dict(
+                sill=float(bsmt_ing_height), name='bsmt ingress', style='det')]
+        _mem_cfg_sch = None
+        if enable_mc and uploaded_membrane is not None:
+            _mem_cfg_sch = dict(sill=0.0, capacity=0.5, style='prob')
+        _sch_subtitle = ('Basement' + (' + pump' if enable_sump else '')
+                         if enable_basement else 'Ground floor only')
+        _sch_cfg = dict(
+            label='Current setup', subtitle=_sch_subtitle,
+            floor_h=2.5, bsmt_d=_bsmt_d_sch,
+            sump=enable_sump, pump=enable_sump,
+            gf_paths=_gf_paths_sch, bsmt_paths=_bsmt_paths_sch,
+            membrane=_mem_cfg_sch,
+        )
+        _sch_fig, _sch_ax = plt.subplots(
+            figsize=(3.5, 5.0 if _bsmt_d_sch else 3.5))
+        _sch_fig.patch.set_facecolor('white')
+        draw_schematic(_sch_ax, _sch_cfg)
+        st.pyplot(_sch_fig, use_container_width=True)
+        plt.close(_sch_fig)
 
 
 # ════════════════════════════════════════════════════════════════════════════
