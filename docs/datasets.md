@@ -246,9 +246,9 @@ level** (equivalent to *h_out* in the simulation model). Velocity is in
 
 ```bash
 python3 main.py \
-  --external "water time series/depth/depth_042.csv" \
+  --external "hydrographs/depth/depth_042.csv" \
   --ingress  example_run/example_ingress_paths.txt \
-  --external-velocity "water time series/velocity/velocity_042.csv" \
+  --external-velocity "hydrographs/velocity/velocity_042.csv" \
   --floor 50 --dt 1 --time-units minutes \
   --outdir results/case_042
 ```
@@ -258,9 +258,9 @@ python3 main.py \
 ```bash
 for i in $(seq -w 1 100); do
   python3 main.py \
-    --external  "water time series/depth/depth_${i}.csv" \
+    --external  "hydrographs/depth/depth_${i}.csv" \
     --ingress   example_run/example_ingress_paths.txt \
-    --external-velocity "water time series/velocity/velocity_${i}.csv" \
+    --external-velocity "hydrographs/velocity/velocity_${i}.csv" \
     --floor 50 --dt 1 --time-units minutes \
     --outdir "results/case_${i}"
 done
@@ -278,7 +278,7 @@ exploration.
 ### 8.5 Regenerating the Dataset
 
 ```bash
-cd "water time series"
+cd "hydrographs"
 python3 generate.py
 ```
 

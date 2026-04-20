@@ -4,7 +4,7 @@
 Run from the repo root:
     python3 case_studies/run_cases.py
 
-Nine cases in order of complexity:
+Twelve cases in order of complexity:
   01 – Ground floor, single opening at sill = 0 m
   02 – Ground floor, raised sill at 0.3 m
   03 – Ground floor, two openings with different sill heights
@@ -14,6 +14,9 @@ Nine cases in order of complexity:
   07 – Fragility MC: single probabilistic seal (50 % failure at peak depth)
   08 – Fragility MC: membrane-protected group (50 % membrane failure)
   09 – Deterministic membrane: design capacity above flood peak (no failure)
+  10 – Basement + fragility on perimeter opening (probabilistic basement seal)
+  11 – Batch: deterministic, multiple hydrographs
+  12 – Batch + fragility: Monte Carlo per hydrograph
 """
 
 import csv

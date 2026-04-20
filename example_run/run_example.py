@@ -86,7 +86,7 @@ if __name__ == '__main__':
     import sys
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-    import batch_run
+    import batch
     from main import parse_ingress_file
 
     ingress_list = parse_ingress_file('example_ingress_paths.txt')
@@ -94,7 +94,7 @@ if __name__ == '__main__':
     building_content_vulnerability = load_vulnerability_curve('uk_buildingContents_vulnerability.csv')
     basement_content_vulnerability = load_vulnerability_curve('uk_basementContents_vulnerability.csv')
 
-    results = batch_run.run_batch(
+    results = batch.run_batch(
         depth_dir='.',
         velocity_dir=None,
         ingress_list=ingress_list,

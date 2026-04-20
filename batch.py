@@ -4,7 +4,7 @@ Batch run wrapper for the water ingress simulation.
 
 Runs one deterministic simulation per hydrograph file in a supplied directory
 and aggregates the results.  The randomness in the ensemble comes from the
-pre-generated hydrograph files (see water time series/generate.py); this
+pre-generated hydrograph files (see hydrographs/generate.py); this
 script itself performs no parameter sampling.
 
 For each case the script:
@@ -20,8 +20,7 @@ For each case the script:
   3. Writes results to batch_results.csv and a statistical summary to
      batch_summary.csv in the specified output directory.
 
-See docs/NOTE_montecarlo.md for the planned true Monte Carlo implementation
-that will sample building and ingress parameters from distributions at runtime.
+See docs/model.md for the planned Monte Carlo / fragility architecture.
 
 Inputs
 ------
@@ -32,16 +31,15 @@ Two directory layouts are supported:
        velocity_dir/  velocity_001.csv … velocity_100.csv   (optional)
      Files are matched by the numeric suffix in their names.
 
-  B) Single combined-file directory  (future layout, see
-     water time series/NOTE_combined_input_format.md)
+  B) Single combined-file directory
      Each CSV has three columns: time, depth, velocity.
      Pass --depth-dir pointing to this directory; omit --velocity-dir.
 
 Usage
 -----
-  python3 batch_run.py \\
-      --depth-dir    "water time series/depth"      \\
-      --velocity-dir "water time series/velocity"   \\
+  python3 batch.py \\
+      --depth-dir    "hydrographs/depth"      \\
+      --velocity-dir "hydrographs/velocity"   \\
       --ingress      example_run/example_ingress_paths.txt \\
       --contents-vulnerability example_run/uk_contents_vulnerability.csv \\
       --floor        50                              \\
