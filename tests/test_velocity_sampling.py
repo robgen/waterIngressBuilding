@@ -1,6 +1,6 @@
 import math
 
-from main import Simulation, Building, IngressPathway, sample_with_zero_padding
+from engine import Simulation, Building, IngressPathway, sample_with_zero_padding
 
 
 def test_zero_padding_on_sim_times():

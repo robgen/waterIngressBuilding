@@ -7,11 +7,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from diagnostics import (diagnostics_from_trace, diagnostics_to_csv_rows,
-                         generate_narrative, run_diagnostics)
-from main import Building, IngressPathway, Simulation
+from report import (diagnostics_from_trace, diagnostics_to_csv_rows,
+                    generate_narrative, run_diagnostics)
+from engine import Building, IngressPathway, Simulation
 from pump import SumpPump
-import viz
+import plot as viz
 
 
 def _make_sump_building():

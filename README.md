@@ -145,13 +145,13 @@ Written to `--outdir`. See [docs/reference.md](docs/reference.md) for full colum
 
 ## Validation case studies
 
-Twelve cases of increasing complexity, from a single-opening ground-floor model to batch + fragility, are defined in `case_studies/run_cases.py`.
+Twelve cases of increasing complexity, from a single-opening ground-floor model to batch + fragility, are defined in `examples/run_examples.py`.
 
 ```bash
-python3 case_studies/run_cases.py
+python3 examples/run_examples.py
 ```
 
-Outputs go to `case_studies/exNN/out/`. Reference metrics for regression testing are in `case_studies/reference/`. See [case_studies/report.md](case_studies/report.md) for documented expectations and results.
+Outputs go to `examples/exNN/out/`. Reference metrics for regression testing are in `examples/reference/`. See [examples/report.md](examples/report.md) for documented expectations and results.
 
 ---
 
@@ -162,7 +162,7 @@ pytest -q          # recommended
 python3 tests/run_tests.py   # without pytest
 ```
 
-`tests/test_regression.py` reproduces all validation cases and compares peak metrics against reference values in `case_studies/reference/`. Any implementation change that shifts results is caught here (tolerance: 1 % on peak depths, 5 % on volumes).
+`tests/test_regression.py` reproduces all validation cases and compares peak metrics against reference values in `examples/reference/`. Any implementation change that shifts results is caught here (tolerance: 1 % on peak depths, 5 % on volumes).
 
 ---
 

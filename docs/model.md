@@ -239,4 +239,4 @@ Hydrograph
 
 ### Regression contract
 
-All twelve validation case studies in `case_studies/` have reference peak metrics in `case_studies/reference/`. `tests/test_regression.py` runs each case and asserts computed metrics match reference values within tolerance (1 % for peak depths, 5 % for volumes). This test must pass before any merge.
+All twelve validation case studies in `examples/` have reference peak metrics in `examples/reference/`. `tests/test_regression.py` runs each case and asserts computed metrics match reference values within tolerance (1 % for peak depths, 5 % for volumes). This test must pass before any merge.

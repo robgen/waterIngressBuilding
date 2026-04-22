@@ -247,7 +247,7 @@ level** (equivalent to *h_out* in the simulation model). Velocity is in
 ```bash
 python3 main.py \
   --external "hydrographs/depth/depth_042.csv" \
-  --ingress  example_run/example_ingress_paths.txt \
+  --ingress  path/to/ingress.csv \
   --external-velocity "hydrographs/velocity/velocity_042.csv" \
   --floor 50 --dt 1 --time-units minutes \
   --outdir results/case_042
@@ -259,7 +259,7 @@ python3 main.py \
 for i in $(seq -w 1 100); do
   python3 main.py \
     --external  "hydrographs/depth/depth_${i}.csv" \
-    --ingress   example_run/example_ingress_paths.txt \
+    --ingress   path/to/ingress.csv \
     --external-velocity "hydrographs/velocity/velocity_${i}.csv" \
     --floor 50 --dt 1 --time-units minutes \
     --outdir "results/case_${i}"
