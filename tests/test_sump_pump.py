@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from pump import (SumpPump, compute_sump_overflow, compute_pump_switch_state,
                   compute_pump_flow, compute_lift_head)
-from main import Building, IngressPathway, Simulation
+from engine import Building, IngressPathway, Simulation
 
 
 # ── unit tests: compute_sump_overflow ────────────────────────────────────────

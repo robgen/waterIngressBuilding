@@ -2,6 +2,47 @@
 
 All notable changes to this project are documented in this file.
 
+## [planned — major refactor]
+
+### Documentation reorganisation
+
+- `docs/` consolidated from eight files to five: `model.md`, `fragility.md`, `limitations.md`, `reference.md`, `datasets.md`.
+- `docs/model.md`: complete rewrite of `TECHNICAL.md`; absorbs `sump_pump_extension_spec.md` and the Streamlit dashboard section; adds code architecture and regression contract.
+- `docs/fragility.md`: clean rewrite of `fragility_ingress_spec.md`; retains physics and calibration sections; removes stale input format descriptions.
+- `docs/limitations.md`: cleaned up `KNOWN_LIMITATIONS.md`; resolved items condensed to a summary table.
+- `docs/reference.md`: replaces `README_INPUTS.md` and `INPUTOUTPUT.md`; covers all inputs, CLI flags, and output files in one place.
+- `docs/datasets.md`: replaces `hydrographs/HYDROGRAPH_GENERATION.md`.
+- Deleted: `NOTE_montecarlo.md`, `WISHLIST.md`, `INTERPRETATION_DASHBOARD_TUTORIAL.md`, `sump_pump_extension_spec.md`, `fragility_ingress_spec.md`, `README_INPUTS.md`, `INPUTOUTPUT.md`, `hydrographs/NOTE_combined_input_format.md`, `example_run/example_fragility_README.md`.
+- `README.md` rewritten: conceptual intro, documentation table, run-mode table, examples for all five modes, outputs summary, roadmap.
+- `.gitignore` updated: simulation outputs from `example_run/`, `parametric_run/` excluded.
+- Naming convention: all docs files lowercase; only `README.md`, `CHANGELOG.md`, `LICENSE` retain uppercase (conventional).
+
+### Architecture
+
+- New module `engine.py`: canonical single-simulation runner, extracted from `main.py`. Owns `Building`, `IngressPath`, `SimConfig`, `Hydrograph`, `SimResult`, and `engine.run(config, hydro) → SimResult`.
+- `fragility.py` refactored: now a Monte Carlo wrapper that calls `engine.run()` once per replicate. Exposes `fragility.run(config, hydro) → MonteCarloResult`.
+- `batch.py` (renamed from `batch_run.py`): now a thin iterator — discovers hydrograph files, calls `engine.run()` or `fragility.run()` per file, aggregates results. Exposes `batch.run(config, hydro_dir) → BatchResult`. No longer re-implements building configuration.
+- Batch + fragility now composable: `batch.run()` runs full Monte Carlo for each hydrograph when `config.montecarlo` is set.
+- `damage.py` → `loss.py`: more expressive name for vulnerability/loss curve logic.
+- `viz.py` → `plot.py`: more expressive name; methods renamed `plot.simulation()`, `plot.batch()`, `plot.montecarlo()`.
+- `diagnostics.py` → `report.py`: more expressive name; methods renamed `report.generate()`, `report.to_csv()`.
+- `streamlit_app.py` → `app.py`.
+- `main.py` → `cli.py`: now a thin shim only; all simulation logic moved to `engine`, `fragility`, `batch`.
+
+### Inputs
+
+- Unified pathway CSV format: a single header-based CSV format is used for all pathway inputs (ground-floor ingress, basement perimeter opening, membranes). One parser handles all three; routing is determined by CLI flag (`--ingress`, `--basement-opening`, `--membrane`).
+- Fragility state columns are optional extensions to the base pathway columns; omitting them gives a deterministic pathway. No separate "fragility format" is needed.
+- Basement perimeter opening (`--basement-opening`): previously configured via indexed CLI args (`--basement-ingress-*`, `--basement-state-name-1`, …). Now specified as a single-row CSV file using the same format as the ingress file.
+- Sump and pump flags unified under `--sumppump-*` prefix (previously split between `--sump-*` and `--pump-*`). The two components are always configured together; the prefix reflects this.
+- No backward compatibility with old ingress file formats. Existing input files must be updated to the header-based format.
+
+### Testing
+
+- `tests/test_regression.py`: new regression test suite that runs all nine validation case studies programmatically and compares peak metrics against reference values in `case_studies/reference/`.
+- Reference metric JSON files stored in `case_studies/reference/exNN.json` (generated once and committed). Tolerances: 1 % for peak depths, 5 % for volumes.
+- Three new case studies added: ex10 (basement + fragility), ex11 (batch deterministic), ex12 (batch + fragility).
+
 ## [2025-10-28]
 
 - Added Streamlit-based web UI: `streamlit_app.py` (replaces legacy Tk GUI).

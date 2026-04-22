@@ -210,6 +210,6 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Generated batch outputs
-batch_results/*
-!batch_results/.gitkeep
+# Simulation and batch outputs (user-generated, not tracked)
+batch_results/
+

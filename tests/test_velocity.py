@@ -1,6 +1,6 @@
 import math
 
-from main import IngressPathway, Simulation, Building
+from engine import IngressPathway, Simulation, Building
 
 
 def test_compute_flow_increases_with_velocity():

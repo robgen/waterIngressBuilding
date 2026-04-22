@@ -3,8 +3,8 @@ import os
 import tempfile
 import pytest
 
-from damage import VulnerabilityCurve, load_vulnerability_curve
-from main import Building, IngressPathway, Simulation, parse_ingress_text
+from loss import VulnerabilityCurve, load_vulnerability_curve
+from engine import Building, IngressPathway, Simulation, parse_ingress_text
 
 
 def test_no_ingress_no_change():

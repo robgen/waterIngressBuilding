@@ -1,14 +1,10 @@
 """Probabilistic fragility layer for water ingress modelling.
 
-Implements the Monte Carlo fragility extension specified in
-docs/fragility_ingress_spec.md.  The deterministic solver (main.py) is
-untouched except for the conductance_resolver hook added to Simulation.
-
 Public API
 ----------
 Data model:   FragilityState, FragilityDefinition, FragilePath, Membrane,
               BasementFragility, SampledThresholds
-Parsing:      parse_ingress_fragility_file, parse_membrane_file,
+Parsing:      parse_pathway_file, fragile_path_to_membrane,
               parse_membrane_args, merge_membrane_source,
               parse_basement_fragility_args
 Validation:   validate_fragility_inputs, assign_representative_paths
@@ -164,97 +160,6 @@ def _parse_fragility_states_from_parts(
         idx += 5
         block += 1
     return FragilityDefinition(states) if states else None
-
-
-def parse_ingress_fragility_file(filepath: str) -> List[FragilePath]:
-    """Parse extended ingress CSV into a list of FragilePath objects.
-
-    Format (per spec §3.1):
-        name, height_m, area_m2, Cd, group_id
-            [, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1 [, …]]
-
-    Comment lines (#) and blank lines are skipped.
-    Validates inputs before returning (monotonic medians, completeness,
-    fragility–membrane conflicts).
-    """
-    paths: List[FragilePath] = []
-    n_skipped = 0
-    with open(filepath, newline='') as fh:
-        for lineno, raw in enumerate(fh, start=1):
-            line = raw.split('#', 1)[0].strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) < 5:
-                n_skipped += 1
-                continue
-            try:
-                name     = parts[0]
-                height   = float(parts[1])
-                area     = float(parts[2])
-                cd       = float(parts[3])
-                group_id = int(parts[4])
-            except ValueError as exc:
-                raise ValueError(
-                    f"{filepath}:{lineno}: bad base columns — {exc}"
-                ) from exc
-
-            fragility = _parse_fragility_states_from_parts(parts, 5, name)
-            paths.append(FragilePath(name, height, area, cd, group_id, fragility))
-
-    if n_skipped:
-        warnings.warn(f"{n_skipped} short line(s) skipped in {filepath}", stacklevel=2)
-    if not paths:
-        raise ValueError(f"No ingress paths found in {filepath}")
-
-    validate_fragility_inputs(paths, [])
-    return paths
-
-
-def parse_membrane_file(filepath: str) -> List[Membrane]:
-    """Parse membrane CSV into a list of Membrane objects.
-
-    Format (per spec §3.2):
-        group_id, height_m, area_m2, Cd,
-        state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1
-            [, state_name_2, median_m_2, beta_ln_2, area_m2_2, Cd_2]
-
-    At least one fragility state is required for every membrane row.
-    """
-    membranes: List[Membrane] = []
-    with open(filepath, newline='') as fh:
-        for lineno, raw in enumerate(fh, start=1):
-            line = raw.split('#', 1)[0].strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) < 9:
-                warnings.warn(
-                    f"{filepath}:{lineno}: membrane row needs ≥9 columns, skipped",
-                    stacklevel=2,
-                )
-                continue
-            try:
-                group_id = int(parts[0])
-                height   = float(parts[1])
-                area     = float(parts[2])
-                cd       = float(parts[3])
-            except ValueError as exc:
-                raise ValueError(
-                    f"{filepath}:{lineno}: bad membrane base columns — {exc}"
-                ) from exc
-
-            fragility = _parse_fragility_states_from_parts(parts, 4, f"membrane:{group_id}")
-            if fragility is None:
-                raise ValueError(
-                    f"{filepath}:{lineno}: membrane group_id={group_id} has no fragility states"
-                )
-            fragility.validate(f"membrane:{group_id}")
-            membranes.append(Membrane(group_id, height, area, cd, fragility))
-
-    if not membranes:
-        raise ValueError(f"No membrane rows found in {filepath}")
-    return membranes
 
 
 def parse_membrane_args(args) -> Optional[Membrane]:
@@ -471,7 +376,7 @@ def make_conductance_resolver(
 
     Import is deferred to avoid a circular dependency with main.py.
     """
-    from main import IngressPathway  # local import — main imports nothing from fragility
+    from engine import IngressPathway  # engine has no upstream project imports
 
     # Build fast lookup: group_id -> list of (path_index, FragilePath)
     group_map: Dict[int, List[Tuple[int, FragilePath]]] = {}
@@ -661,7 +566,7 @@ def run_fragility_montecarlo(
     Returns:
         MonteCarloResult with per-replicate records and aggregated statistics.
     """
-    from main import Building, IngressPathway, Simulation  # local import
+    from engine import Building, IngressPathway, Simulation  # engine has no upstream imports
 
     rng = np.random.default_rng(seed)
     records: List[ReplicateRecord] = []
@@ -915,3 +820,140 @@ def write_state_freq_csv(result: MonteCarloResult, filepath: str) -> None:
                 exact.append(round(max(0.0, cum_k - next_cum), 6))
             row = [elem] + exact + [''] * (max_states - len(exact))
             writer.writerow(row)
+
+
+# ── unified pathway file parser ───────────────────────────────────────────────
+
+def parse_pathway_file(filepath: str) -> List[FragilePath]:
+    """Parse any pathway CSV (ingress, basement-opening, or membrane) into FragilePaths.
+
+    Unified format (header row optional, always header-based):
+        name, height_m, area_m2, Cd[, group_id[, state_name_N, median_m_N, beta_ln_N, area_m2_N, Cd_N, …]]
+
+    - group_id defaults to 0 when the column is absent.
+    - Rows without fragility state columns produce deterministic FragilePaths.
+    - When used as a membrane file (via --membrane), the caller converts rows
+      with group_id > 0 and fragility to Membrane objects via fragile_path_to_membrane().
+
+    Skips comment lines (#) and blank lines.
+    """
+    paths: List[FragilePath] = []
+    header_seen = False
+    col_name = col_height = col_area = col_cd = col_group = None
+
+    with open(filepath, newline='') as fh:
+        for lineno, raw in enumerate(fh, start=1):
+            line = raw.split('#', 1)[0].strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split(',')]
+
+            # Detect header row (first non-comment non-blank row that has text in col 0)
+            if not header_seen:
+                try:
+                    float(parts[0])
+                    # First col is numeric → positional legacy format (not supported)
+                    raise ValueError(
+                        f"{filepath}:{lineno}: positional ingress format (height,area,coeff,name) "
+                        "is no longer supported. Use the header-based unified pathway format: "
+                        "name, height_m, area_m2, Cd[, group_id[, state columns]]"
+                    )
+                except ValueError as exc:
+                    if 'positional' in str(exc):
+                        raise
+                    # Non-numeric first col → treat as header
+                    lower = [p.lower() for p in parts]
+                    col_name   = next((i for i, h in enumerate(lower) if 'name' in h), 0)
+                    col_height = next((i for i, h in enumerate(lower) if 'height' in h), 1)
+                    col_area   = next((i for i, h in enumerate(lower) if 'area' in h and 'state' not in lower[max(0,i-1)]), 2)
+                    col_cd     = next((i for i, h in enumerate(lower) if h in ('cd', 'coeff', 'discharge')), 3)
+                    col_group  = next((i for i, h in enumerate(lower) if 'group' in h), None)
+                    header_seen = True
+                    continue
+
+            # Data row
+            if len(parts) < 4:
+                warnings.warn(f"{filepath}:{lineno}: row has fewer than 4 columns, skipped", stacklevel=2)
+                continue
+            try:
+                name   = parts[col_name]
+                height = float(parts[col_height])
+                area   = float(parts[col_area])
+                cd     = float(parts[col_cd])
+                gid    = int(parts[col_group]) if col_group is not None and col_group < len(parts) else 0
+            except (ValueError, IndexError) as exc:
+                raise ValueError(f"{filepath}:{lineno}: bad base columns — {exc}") from exc
+
+            frag_start = (col_group + 1) if col_group is not None else 4
+            fragility = _parse_fragility_states_from_parts(parts, frag_start, name)
+            paths.append(FragilePath(name, height, area, cd, gid, fragility))
+
+    if not paths:
+        raise ValueError(f"No pathway rows found in {filepath}")
+    return paths
+
+
+def fragile_path_to_membrane(fp: FragilePath) -> 'Membrane':
+    """Convert a FragilePath with group_id > 0 and fragility to a Membrane object."""
+    if fp.group_id == 0:
+        raise ValueError(f"Cannot convert ungrouped path '{fp.name}' to Membrane (group_id must be > 0)")
+    if fp.fragility is None:
+        raise ValueError(f"Cannot convert path '{fp.name}' to Membrane: no fragility states defined")
+    return Membrane(
+        group_id=fp.group_id,
+        height_m=fp.height_m,
+        area_m2=fp.area_m2,
+        Cd=fp.Cd,
+        fragility=fp.fragility,
+    )
+
+
+# ── high-level public run() ───────────────────────────────────────────────────
+
+def run(config, hydro, paths: List[FragilePath],
+        membranes: Optional[List['Membrane']] = None,
+        basement_frag: Optional['BasementFragility'] = None,
+        basement_pathway=None) -> 'MonteCarloResult':
+    """Run the Monte Carlo ensemble using SimConfig + Hydrograph.
+
+    This is the high-level fragility entry point.  Internally it wraps
+    run_fragility_montecarlo() using a building_factory derived from config.
+
+    Parameters
+    ----------
+    config           : engine.SimConfig
+    hydro            : engine.Hydrograph (times in seconds)
+    paths            : List[FragilePath] — all ingress paths
+    membranes        : List[Membrane] or None
+    basement_frag    : BasementFragility or None
+    basement_pathway : engine.IngressPathway for exterior→basement perimeter, or None
+    """
+    import copy as _copy
+
+    def _building_factory():
+        from engine import Building
+        b = Building(floor_area=config.floor_area)
+        if config.basement_area > 0.0:
+            b.basement_area = config.basement_area
+            b.z_basement = config.basement_floor_elevation
+            b.basement_ceiling_elevation = config.basement_ceiling_elevation
+        if basement_pathway is not None and config.basement_area > 0.0:
+            b.basement_ingress = basement_pathway
+        if config.sumppump is not None and config.basement_area > 0.0:
+            b.sump_pump = _copy.deepcopy(config.sumppump)
+        return b
+
+    return run_fragility_montecarlo(
+        building_factory=_building_factory,
+        paths=paths,
+        membranes=membranes or [],
+        basement_fragility=basement_frag,
+        external_times=hydro.times,
+        external_levels=hydro.levels,
+        n_replicates=config.n_replicates,
+        dt=config.dt,
+        external_vel_times=hydro.vel_times,
+        external_velocities=hydro.velocities,
+        seed=config.random_seed,
+        percentile_values=config.output_percentiles,
+    )

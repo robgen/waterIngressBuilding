@@ -1,6 +1,0 @@
-# Example membrane protecting group_id 1 in example_fragility_ingress_paths.csv.
-# group_id, height_m, area_m2, Cd, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1
-#
-# Base state: low leakage through the temporary perimeter barrier.
-# State 1: overtopped, after which grouped paths are restored to their own base parameters.
-1, 0.00, 1.0e-5, 0.60, overtopped, 0.60, 0.07, 1.0e-9, 0.60

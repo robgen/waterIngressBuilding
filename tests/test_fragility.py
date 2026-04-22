@@ -28,8 +28,8 @@ from fragility import (
     Membrane,
     BasementFragility,
     SampledThresholds,
-    parse_ingress_fragility_file,
-    parse_membrane_file,
+    parse_pathway_file,
+    fragile_path_to_membrane,
     parse_membrane_args,
     merge_membrane_source,
     parse_basement_fragility_args,
@@ -43,7 +43,7 @@ from fragility import (
     make_basement_step_resolver,
     run_fragility_montecarlo,
 )
-from main import Building, IngressPathway, Simulation
+from engine import Building, IngressPathway, Simulation
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ def test_get_conductance_no_fragility_any_state():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Parsing — ingress fragility file
+# Parsing — pathway file (unified format)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _write_temp_csv(content: str) -> str:
@@ -180,14 +180,14 @@ def _write_temp_csv(content: str) -> str:
     return path
 
 
-def test_parse_ingress_fragility_deterministic_paths():
+def test_parse_pathway_deterministic_paths():
     path = _write_temp_csv(
-        "# name, height_m, area_m2, Cd, group_id\n"
-        "crack, 0.00, 5.0e-4, 0.60, 0\n"
-        "vent,  0.10, 8.0e-3, 0.60, 0\n"
+        "name, height_m, area_m2, Cd\n"
+        "crack, 0.00, 5.0e-4, 0.60\n"
+        "vent,  0.10, 8.0e-3, 0.60\n"
     )
     try:
-        paths = parse_ingress_fragility_file(path)
+        paths = parse_pathway_file(path)
         assert len(paths) == 2
         assert paths[0].name == 'crack'
         assert paths[0].fragility is None
@@ -197,12 +197,13 @@ def test_parse_ingress_fragility_deterministic_paths():
         os.remove(path)
 
 
-def test_parse_ingress_fragility_one_state():
+def test_parse_pathway_one_fragility_state():
     path = _write_temp_csv(
+        "name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n"
         "flood_door, 0.00, 4.0e-7, 0.60, 0, baseline, 0.70, 0.35, 3.0e-2, 0.60\n"
     )
     try:
-        paths = parse_ingress_fragility_file(path)
+        paths = parse_pathway_file(path)
         assert len(paths) == 1
         p = paths[0]
         assert p.fragility is not None
@@ -213,12 +214,15 @@ def test_parse_ingress_fragility_one_state():
         os.remove(path)
 
 
-def test_parse_ingress_fragility_two_states():
+def test_parse_pathway_two_fragility_states():
     path = _write_temp_csv(
+        "name, height_m, area_m2, Cd, group_id,"
+        " state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1,"
+        " state_name_2, median_m_2, beta_ln_2, area_m2_2, Cd_2\n"
         "door, 0.00, 4e-7, 0.6, 0, s1, 0.4, 0.3, 1e-2, 0.6, s2, 0.8, 0.3, 3e-2, 0.6\n"
     )
     try:
-        paths = parse_ingress_fragility_file(path)
+        paths = parse_pathway_file(path)
         frag = paths[0].fragility
         assert len(frag.states) == 2
         assert frag.states[0].median_m < frag.states[1].median_m
@@ -226,53 +230,61 @@ def test_parse_ingress_fragility_two_states():
         os.remove(path)
 
 
-def test_parse_ingress_fragility_rejects_non_monotonic():
+def test_validate_rejects_non_monotonic():
     path = _write_temp_csv(
+        "name, height_m, area_m2, Cd, group_id,"
+        " state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1,"
+        " state_name_2, median_m_2, beta_ln_2, area_m2_2, Cd_2\n"
         "door, 0.00, 4e-7, 0.6, 0, s1, 0.8, 0.3, 1e-2, 0.6, s2, 0.4, 0.3, 3e-2, 0.6\n"
     )
     try:
+        paths = parse_pathway_file(path)
         with pytest.raises(ValueError, match="Non-monotonic"):
-            parse_ingress_fragility_file(path)
+            validate_fragility_inputs(paths, [])
     finally:
         os.remove(path)
 
 
-def test_parse_ingress_fragility_grouped_path_no_fragility():
+def test_parse_pathway_grouped_path_no_fragility():
     path = _write_temp_csv(
+        "name, height_m, area_m2, Cd, group_id\n"
         "airbrick, 0.10, 8e-3, 0.60, 1\n"
     )
     try:
-        paths = parse_ingress_fragility_file(path)
+        paths = parse_pathway_file(path)
         assert paths[0].group_id == 1
         assert paths[0].fragility is None
     finally:
         os.remove(path)
 
 
-def test_parse_ingress_fragility_rejects_grouped_with_fragility():
+def test_validate_rejects_grouped_ingress_with_fragility():
     path = _write_temp_csv(
+        "name, height_m, area_m2, Cd, group_id,"
+        " state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n"
         "airbrick, 0.10, 8e-3, 0.60, 1, s1, 0.4, 0.3, 1e-2, 0.6\n"
     )
     try:
+        paths = parse_pathway_file(path)
         with pytest.raises(ValueError, match="membrane-protected"):
-            parse_ingress_fragility_file(path)
+            validate_fragility_inputs(paths, [])
     finally:
         os.remove(path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Parsing — membrane file
+# Parsing — membrane file (unified format + fragile_path_to_membrane)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_parse_membrane_file_single_row():
+def test_parse_membrane_unified_format():
     path = _write_temp_csv(
-        "# group_id, height_m, area_m2, Cd, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n"
-        "1, 0.00, 1.0e-5, 0.60, overtopped, 0.60, 0.07, 1e-9, 0.6\n"
+        "name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n"
+        "perimeter_barrier, 0.00, 1.0e-5, 0.60, 1, overtopped, 0.60, 0.07, 1e-9, 0.6\n"
     )
     try:
-        membranes = parse_membrane_file(path)
-        assert len(membranes) == 1
-        m = membranes[0]
+        fps = parse_pathway_file(path)
+        assert len(fps) == 1
+        m = fragile_path_to_membrane(fps[0])
         assert m.group_id == 1
         assert m.height_m == pytest.approx(0.0)
         assert m.fragility.states[0].median_m == pytest.approx(0.60)
