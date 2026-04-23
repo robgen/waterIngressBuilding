@@ -79,9 +79,17 @@ Two-column CSV: `time` and `level`. Times in simulation time units (default: min
 
 ---
 
-### External velocity hydrograph (`--external-velocity`)
+### Velocity mode (`--velocity-mode`)
 
-Optional two-column CSV: `time` and `velocity` (m/s). Same time units as the level hydrograph. If omitted, a conservative constant default velocity is used (`--external-velocity-default`, default 0.2 m/s).
+Three options control how external flood velocity $v_{ext}(t)$ is computed:
+
+| Mode | Description |
+|------|-------------|
+| `zero` | $v_{ext} = 0$ at all times. No hydrodynamic contribution to ingress or forces. **Default.** |
+| `power_law` | $v_{ext}(t) = a \cdot h_{ext}(t)^{b}$, derived from the depth hydrograph. Coefficients set with `--velocity-power-law-a` (default 1.5) and `--velocity-power-law-b` (default 0.5). |
+| `file` | Time series read from `--external-velocity` (two-column CSV: `time`, `velocity`). |
+
+**Velocity file format** (used with `--velocity-mode=file`):
 
 ```csv
 0,   0.0
@@ -98,7 +106,7 @@ Rows represent exterior-to-ground-floor pathways. Uses the unified pathway forma
 
 ---
 
-### Basement perimeter opening (`--basement-opening`)
+### Basement perimeter opening (`--basement-ingress`)
 
 Represents the lumped exterior-to-basement perimeter opening. Uses the **same** unified pathway format. Typically a single-row file. May include fragility states.
 
@@ -133,15 +141,26 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 
 ### CLI flags
 
+**Velocity**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--velocity-mode STR` | `zero` | `zero`, `power_law`, or `file` |
+| `--external-velocity PATH` | — | Velocity CSV (required with `--velocity-mode=file`) |
+| `--velocity-power-law-a FLOAT` | 1.5 | Coefficient $a$ in $v = a \cdot h^b$ |
+| `--velocity-power-law-b FLOAT` | 0.5 | Exponent $b$ in $v = a \cdot h^b$ |
+
 **Building geometry**
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--floor FLOAT` | required | Ground-floor plan area (m²) |
-| `--dt FLOAT` | 1 | Simulation timestep in `time_units` |
+| `--dt FLOAT` | 1 | Simulation timestep in `--time-units` |
 | `--time-units STR` | `minutes` | `seconds`, `minutes`, or `hours` |
-| `--outdir PATH` | required | Output directory |
-| `--animate` | off | Write a GIF animation |
+| `--outdir PATH` | `.` | Output directory |
+| `--temp-output` | off | Write to a temp directory, removed on exit |
+| `--animate` | off | Write a GIF animation (slow) |
+| `--verbose` | off | Print progress to stdout |
 
 **Basement**
 
@@ -150,8 +169,8 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 | `--basement-area FLOAT` | Basement plan area (m²) |
 | `--basement-floor-elevation FLOAT` | Basement floor elevation relative to datum (m, negative = below datum) |
 | `--basement-ceiling-elevation FLOAT` | Optional ceiling elevation cap (m); water above this spills to ground floor |
-| `--basement-connection-height FLOAT` | Sill of the ground-floor ↔ basement bypass connection (m) |
-| `--basement-connection-area FLOAT` | Area of the ground-floor ↔ basement bypass (m²) |
+| `--basement-bypass-height FLOAT` | Sill of the ground-floor ↔ basement bypass connection (m) |
+| `--basement-bypass-area FLOAT` | Area of the ground-floor ↔ basement bypass (m²) |
 
 **Sump and pump** (`--sumppump-*`, always used together)
 
@@ -191,8 +210,10 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 |------|-------------|
 | `--depth-dir PATH` | Folder of depth CSV files (one per hydrograph) |
 | `--velocity-dir PATH` | Optional matching folder of velocity CSV files |
-| `--contents-vulnerability PATH` | CSV with `height_m` and a loss column |
-| `--contents-loss-column NAME` | Loss column name (default `mean_repair_loss_GBP`) |
+| `--building-vulnerability PATH` | CSV mapping ground-floor peak depth to building contents loss |
+| `--basement-vulnerability PATH` | CSV mapping basement peak depth to basement contents loss |
+| `--contents-loss-column NAME` | Loss column to read from vulnerability CSVs (default `mean_repair_loss_GBP`) |
+| `--thresholds FLOAT ...` | Interior depth thresholds (m) for exceedance duration columns |
 
 ---
 
@@ -247,21 +268,26 @@ All outputs are written to `--outdir`. The files produced depend on the run mode
 |------|-------------|
 | `batch_results.csv` | One row per hydrograph: peak depths, durations, loss estimate |
 | `batch_summary.csv` | Percentile statistics (P10, P50, P90) across the ensemble |
-| `peak_exterior_vs_interior.png` | Scatter: peak external vs peak interior depth |
-| `peak_exterior_vs_aggregate_loss.png` | Scatter: peak external depth vs loss (only with `--contents-vulnerability`) |
+| `peak_exterior_vs_peak_interior.png` | Scatter: peak exterior vs peak interior depth, coloured by peak velocity |
+| `peak_exterior_vs_peak_basement.png` | Scatter: peak exterior vs peak basement depth (only when basement active) |
+| `peak_exterior_vs_aggregate_loss.png` | Scatter: peak exterior depth vs aggregate loss (only with `--building-vulnerability`) |
 
 **`batch_results.csv` columns**
 
 | Column | Description |
 |--------|-------------|
-| `case` | Hydrograph file name (without extension) |
-| `peak_h_ext` | Peak external depth (m) |
-| `peak_h_in` | Peak interior ground-floor depth (m) |
-| `peak_h_basement` | Peak basement depth (m), if basement configured |
-| `dur_h<XXX>cm_<tu>` | Duration above threshold XXX cm, in time units |
-| `aggregate_loss_GBP` | Interpolated loss from vulnerability curve, if provided |
-
-With `--n-replicates > 1`, depth columns become percentile sets (e.g. `peak_h_in_p50`).
+| `case_id` | Numeric case index |
+| `depth_file` | Depth hydrograph filename |
+| `velocity_file` | Velocity hydrograph filename (empty if not supplied) |
+| `h_peak_ext` | Peak exterior depth (m) |
+| `h_peak_int` | Peak interior ground-floor depth (m) |
+| `h_peak_basement` | Peak basement depth (m) |
+| `h_peak_sump` | Peak sump depth (m), only when sump configured |
+| `v_peak_ext` | Peak exterior velocity (m/s) |
+| `dur_h<XXX>cm_<tu>` | Duration above threshold XXX cm, in selected time units |
+| `building_content_loss` | Ground-floor contents loss (GBP), only with `--building-vulnerability` |
+| `basement_content_loss` | Basement contents loss (GBP), only with `--basement-vulnerability` |
+| `aggregate_content_loss` | Sum of building and basement content losses (GBP) |
 
 ### Force outputs (only with `--compute-forces`)
 

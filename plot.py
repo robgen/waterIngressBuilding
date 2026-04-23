@@ -236,230 +236,6 @@ def save_velocity_preview(times, velocities, outpath, time_unit=None,
     plt.close(fig)
 
 
-# ── ingress preview (area bar chart) ──────────────────────────────────────────
-
-def save_ingress_preview(ingress_list, outpath):
-    if not ingress_list:
-        fig, ax = plt.subplots(figsize=(6, 3))
-        ax.text(0.5, 0.5, 'No ingress pathways', transform=ax.transAxes,
-                ha='center', va='center', fontsize=11, color='#888')
-        fig.tight_layout(); fig.savefig(outpath); plt.close(fig)
-        return
-
-    items = sorted(ingress_list, key=lambda i: i.area, reverse=True)
-    names = [getattr(i, 'name', None) or f'sill {i.height:.2f} m' for i in items]
-    areas = [i.area for i in items]
-    coeffs = [i.coeff for i in items]
-
-    import matplotlib.cm as cm
-    c_lo = min(coeffs); c_hi = max(coeffs)
-    if c_lo == c_hi:
-        c_lo, c_hi = max(0.0, c_lo - 0.15), c_hi + 0.15
-    cmap = matplotlib.colormaps.get_cmap('plasma')
-    norm = plt.Normalize(c_lo, c_hi)
-    colours = [cmap(norm(c)) for c in coeffs]
-
-    fig_h = max(3.0, 0.45 * len(items) + 1.2)
-    fig, ax = plt.subplots(figsize=(8, fig_h))
-
-    bars = ax.barh(range(len(items)), areas, color=colours,
-                   edgecolor='white', linewidth=0.6, zorder=3)
-    ax.set_yticks(range(len(items)))
-    ax.set_yticklabels(names, fontsize=8.5)
-    ax.set_xlabel('Opening area  (m²)')
-    ax.set_title('Ingress pathway areas')
-    ax.invert_yaxis()
-    ax.grid(True, axis='x', alpha=0.4)
-    ax.grid(False, axis='y')
-
-    for bar, area, item in zip(bars, areas, items):
-        ax.text(area + max(areas) * 0.01,
-                bar.get_y() + bar.get_height() / 2,
-                f'{area:.4f} m²   sill {item.height:.2f} m',
-                va='center', fontsize=7.5, color='#333')
-
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cb = fig.colorbar(sm, ax=ax, shrink=0.7, pad=0.02)
-    cb.set_label('Discharge coefficient  $C_d$', fontsize=8)
-    cb.ax.tick_params(labelsize=7.5)
-
-    fig.tight_layout()
-    fig.savefig(outpath)
-    plt.close(fig)
-
-
-# ── ingress locations (building facade schematic) ─────────────────────────────
-
-def save_ingress_locations(ingress_list, outpath, building_width=1.0):
-    if not ingress_list:
-        raise ValueError('No ingress points provided')
-
-    import matplotlib.cm as cm
-
-    items_sorted = sorted(ingress_list, key=lambda ig: ig.height)
-    MAX_H = max((ing.height for ing in ingress_list), default=1.0)
-
-    # spread labels vertically so they never overlap
-    MIN_SEP = 0.30
-    label_ys, last_y = [], -999.0
-    for ing in items_sorted:
-        y_lbl = max(ing.height, last_y + MIN_SEP)
-        label_ys.append(y_lbl)
-        last_y = y_lbl
-
-    max_label_y   = max(label_ys) if label_ys else 0.0
-    building_h    = max(3.0, MAX_H * 1.35 + 0.3, max_label_y + 0.4)
-    y_top         = building_h * 1.22
-    y_bot         = -0.3
-    fig_h         = max(5.5, min(14.0, (y_top - y_bot) * 1.6))
-    fig, ax       = plt.subplots(figsize=(9, fig_h))
-
-    bx  = 0.55
-    bw  = 1.0
-    igx = bx + bw          # where ingress markers sit (wall surface)
-    lx0 = igx + 0.38       # left edge of label column
-    xR  = lx0 + 3.6        # right edge of the axes
-
-    ax.set_xlim(bx - 0.65, xR)
-    ax.set_ylim(y_bot, y_top)
-    ax.set_aspect('auto')
-    ax.axis('off')
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
-
-    # ── ground ────────────────────────────────────────────────────────────────
-    ax.axhspan(y_bot, 0.0, color='#d5b97b', alpha=0.28, zorder=0)
-    ax.hlines(0.0, bx - 0.65, xR, colors='#9a7b3e', lw=1.8, zorder=1)
-    ax.fill_between([bx - 0.65, xR], y_bot, 0.0,
-                    color='#c4a05a', alpha=0.10, zorder=0)
-
-    # ── building walls ────────────────────────────────────────────────────────
-    wall = patches.FancyBboxPatch(
-        (bx, 0), bw, building_h,
-        boxstyle='square,pad=0', linewidth=1.5,
-        edgecolor='#6a7280', facecolor='#f3ede2', zorder=2)
-    ax.add_patch(wall)
-
-    # subtle brick texture: horizontal mortar lines every 0.25 m
-    for hy in np.arange(0.25, building_h, 0.25):
-        ax.hlines(hy, bx, bx + bw, colors='#d8cfc3', lw=0.35, zorder=3)
-
-    # ── roof ─────────────────────────────────────────────────────────────────
-    rh = building_h * 0.17
-    roof = patches.Polygon(
-        [(bx - 0.08, building_h),
-         (bx + bw / 2, building_h + rh),
-         (bx + bw + 0.08, building_h)],
-        closed=True, facecolor='#7b3600', edgecolor='#5c2900', lw=1.3, zorder=4)
-    ax.add_patch(roof)
-    # ridge cap
-    ax.plot([bx + bw / 2 - 0.02, bx + bw / 2 + 0.02],
-            [building_h + rh, building_h + rh],
-            color='#4a1e00', lw=2.0, zorder=5)
-
-    # ── manual y-axis (left of building) ─────────────────────────────────────
-    tick_step = 0.5 if building_h <= 4.0 else 1.0
-    tick_val  = 0.0
-    while tick_val <= building_h + 0.01:
-        ax.hlines(tick_val, bx - 0.22, bx - 0.08,
-                  colors='#8a8f9b', lw=0.8, zorder=5)
-        ax.text(bx - 0.26, tick_val, f'{tick_val:.1f}',
-                ha='right', va='center', fontsize=7.5, color='#555')
-        tick_val = round(tick_val + tick_step, 6)
-    ax.text(bx - 0.48, building_h / 2,
-            'Height above\nground floor  (m)',
-            ha='center', va='center', fontsize=8, color='#555', rotation=90)
-
-    # ── colour + size maps ────────────────────────────────────────────────────
-    coeffs = [ing.coeff for ing in ingress_list]
-    c_lo, c_hi = min(coeffs), max(coeffs)
-    if c_lo == c_hi:
-        c_lo, c_hi = max(0.0, c_lo - 0.15), c_hi + 0.15
-    cmap = matplotlib.colormaps.get_cmap('plasma')
-    norm = plt.Normalize(c_lo, c_hi)
-
-    areas = [ing.area for ing in ingress_list]
-    a_lo, a_hi = min(areas), max(areas)
-
-    def _ms(a):
-        if a_hi == a_lo:
-            return 90
-        return 30 + 160 * (a - a_lo) / (a_hi - a_lo)
-
-    # ── draw pathways ─────────────────────────────────────────────────────────
-    for ing, y_lbl in zip(items_sorted, label_ys):
-        y     = ing.height
-        col   = cmap(norm(ing.coeff))
-
-        # wall slot
-        slot = patches.FancyBboxPatch(
-            (igx - 0.055, y - 0.022), 0.055, 0.045,
-            boxstyle='round,pad=0.005',
-            facecolor=col, edgecolor='white', lw=0.5, zorder=6)
-        ax.add_patch(slot)
-
-        # circle at slot exit
-        ax.scatter([igx + 0.012], [y], s=_ms(ing.area),
-                   color=col, edgecolors='white', lw=0.8, zorder=7,
-                   clip_on=False)
-
-        # connector
-        con_style = 'arc3,rad=0.15' if abs(y_lbl - y) > 0.05 else 'arc3,rad=0'
-        ax.annotate('',
-                    xy=(lx0 - 0.04, y_lbl),
-                    xytext=(igx + 0.06, y),
-                    arrowprops=dict(arrowstyle='-', color='#cccccc',
-                                   connectionstyle=con_style,
-                                   linestyle='dashed', lw=0.9))
-
-        # label
-        safe = ing.name.replace('_', r'\_') if hasattr(ing, 'name') and ing.name else '?'
-        lbl  = (f'$\\bf{{{safe}}}$'
-                f'\n  $A = {ing.area:.5f}$ m²   '
-                f'$C_d = {ing.coeff:.2f}$   '
-                f'sill = {ing.height:.3f} m')
-        ax.text(lx0, y_lbl, lbl, va='center', ha='left', fontsize=8,
-                color='#1e2433', linespacing=1.55,
-                bbox=dict(boxstyle='round,pad=0.38', fc='white',
-                          ec=col, lw=1.1, alpha=0.96))
-
-    # ── total area annotation ──────────────────────────────────────────────────
-    total_A = sum(areas)
-    ax.text(bx + bw / 2, -0.18,
-            f'n = {len(ingress_list)} pathways   '
-            f'$\\Sigma A = {total_A:.5f}$ m²',
-            ha='center', va='top', fontsize=8, color='#444',
-            style='italic')
-
-    # ── colourbar ─────────────────────────────────────────────────────────────
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=ax, fraction=0.016, pad=0.01, aspect=32,
-                        location='right')
-    cbar.set_label('Discharge coefficient  $C_d$', fontsize=8)
-    cbar.ax.tick_params(labelsize=7.5)
-
-    # ── area size legend ──────────────────────────────────────────────────────
-    if a_hi > a_lo:
-        sz_vals = [a_lo, (a_lo + a_hi) / 2, a_hi]
-        handles = [plt.scatter([], [], s=_ms(a), color='#a0a0a0',
-                               edgecolors='white', lw=0.7,
-                               label=f'{a:.5f} m²')
-                   for a in sz_vals]
-        ax.legend(handles=handles, title='Opening area',
-                  title_fontsize=7.5, fontsize=7.5,
-                  loc='upper left', framealpha=0.93,
-                  edgecolor='#ccc', handletextpad=0.5)
-
-    ax.set_title('Ingress pathways — building facade',
-                 fontsize=12, fontweight='bold', pad=10,
-                 color='#1e2433')
-
-    fig.savefig(outpath, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-
-
 # ── simulation result ──────────────────────────────────────────────────────────
 
 def save_simulation_result(sim_times, sim_levels, external_levels, outpath,
@@ -1291,7 +1067,7 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds',
 
 # ── batch scatter ──────────────────────────────────────────────────────────────
 
-def save_batch_scatter(h_peak_ext, h_peak_int, outpath):
+def save_batch_scatter(h_peak_ext, h_peak_int, outpath, *, v_peak=None):
     h_e = list(h_peak_ext)
     h_i = list(h_peak_int)
     n   = len(h_e)
@@ -1301,16 +1077,14 @@ def save_batch_scatter(h_peak_ext, h_peak_int, outpath):
     lim = max(max(h_e, default=0), max(h_i, default=0)) * 1.08
     lim = max(lim, 0.1)
 
-    # hexbin for density when many points, scatter otherwise
-    if n > 60:
-        hb = ax.hexbin(h_e, h_i, gridsize=20, cmap='Blues',
-                       mincnt=1, linewidths=0.3, zorder=3)
-        cb = fig.colorbar(hb, ax=ax, pad=0.02)
-        cb.set_label('Count', fontsize=8)
-        cb.ax.tick_params(labelsize=7.5)
-    else:
-        ax.scatter(h_e, h_i, s=22, alpha=0.75,
-                   color=_C['external'], edgecolors='white', lw=0.4, zorder=3)
+    c_vals   = list(v_peak) if v_peak is not None else h_e
+    cb_label = ('Peak exterior velocity  (m/s)' if v_peak is not None
+                else 'Peak exterior depth  (m)')
+    sc = ax.scatter(h_e, h_i, s=22, alpha=0.80, zorder=3,
+                    c=c_vals, cmap='plasma', edgecolors='white', lw=0.4)
+    cb = fig.colorbar(sc, ax=ax, pad=0.02)
+    cb.set_label(cb_label, fontsize=8)
+    cb.ax.tick_params(labelsize=7.5)
 
     ax.plot([0, lim], [0, lim], color='#888', lw=1.2, ls='--',
             zorder=2, label='1 : 1  (perfect ingress)')
@@ -1338,50 +1112,1024 @@ def save_batch_scatter(h_peak_ext, h_peak_int, outpath):
     plt.close(fig)
 
 
+# ── basement scatter ──────────────────────────────────────────────────────────
+
+def save_basement_scatter(h_peak_ext, h_peak_basement, outpath, *, v_peak=None):
+    """Scatter of peak exterior depth vs peak basement depth.
+
+    Parameters
+    ----------
+    h_peak_ext      : sequence of float   Peak exterior depth per case (m).
+    h_peak_basement : sequence of float   Peak basement depth per case (m).
+    outpath         : str
+    v_peak          : sequence of float, optional
+        Peak exterior velocity (m/s).  Used for point colour when supplied;
+        falls back to colouring by peak exterior depth otherwise.
+    """
+    h_e = list(h_peak_ext)
+    h_b = list(h_peak_basement)
+    n   = len(h_e)
+
+    fig, ax = plt.subplots(figsize=(6, 5.5))
+
+    c_vals   = list(v_peak) if v_peak is not None else h_e
+    cb_label = ('Peak exterior velocity  (m/s)' if v_peak is not None
+                else 'Peak exterior depth  (m)')
+    sc = ax.scatter(h_e, h_b, s=22, alpha=0.80, zorder=3,
+                    c=c_vals, cmap='plasma', edgecolors='white', lw=0.4)
+    cb = fig.colorbar(sc, ax=ax, pad=0.02)
+    cb.set_label(cb_label, fontsize=8)
+    cb.ax.tick_params(labelsize=7.5)
+
+    if n > 2:
+        r = float(np.corrcoef(h_e, h_b)[0, 1])
+        ax.text(0.97, 0.07, f'Pearson  r = {r:.3f}',
+                transform=ax.transAxes, ha='right', va='bottom',
+                fontsize=8.5, color='#333',
+                bbox=dict(boxstyle='round,pad=0.30', fc='white',
+                          ec='#bbb', alpha=0.90))
+
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel('Peak exterior depth  $h_{ext}^{max}$  (m)')
+    ax.set_ylabel('Peak basement depth  $h_{bsmt}^{max}$  (m)')
+    ax.set_title(f'Batch run  —  {n} cases', pad=10)
+    ax.xaxis.set_major_formatter(mticker.FormatStrFormatter('%.2f'))
+    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.2f'))
+
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+
+
 # ── loss scatter ───────────────────────────────────────────────────────────────
 
-def save_loss_scatter(h_peak_ext, aggregate_losses, outpath):
-    h_e  = list(h_peak_ext)
-    loss = list(aggregate_losses)
-    n    = len(h_e)
+def _loss_scatter(x_vals, loss_vals, outpath, *, x_label, y_label, title, v_peak=None):
+    x    = list(x_vals)
+    loss = list(loss_vals)
+    n    = len(x)
 
     fig, ax = plt.subplots(figsize=(7, 5))
 
-    # colour dots by depth using a gradient
-    sc = ax.scatter(h_e, loss, s=28, alpha=0.80, zorder=4,
-                    c=h_e, cmap='YlOrRd', edgecolors='white', lw=0.4)
+    c_vals   = list(v_peak) if v_peak is not None else x
+    cb_label = ('Peak exterior velocity  (m/s)' if v_peak is not None
+                else x_label)
+    sc = ax.scatter(x, loss, s=28, alpha=0.80, zorder=4,
+                    c=c_vals, cmap='plasma', edgecolors='white', lw=0.4)
     cb = fig.colorbar(sc, ax=ax, pad=0.02)
-    cb.set_label('Peak exterior depth  (m)', fontsize=8)
+    cb.set_label(cb_label, fontsize=8)
     cb.ax.tick_params(labelsize=7.5)
 
     avg = sum(loss) / n if n > 0 else 0.0
     ax.axhline(avg, color='#c0392b', lw=1.5, ls='--', zorder=2,
                label=f'Mean  GBP {avg:,.0f}')
 
-    # non-parametric smoothed trend (running median in depth bins)
     if n > 10:
         try:
-            order = np.argsort(h_e)
-            h_s   = np.array(h_e)[order]
+            order = np.argsort(x)
+            x_s   = np.array(x)[order]
             l_s   = np.array(loss)[order]
             bin_w = max(3, n // 12)
             xs, ys = [], []
             for j in range(0, n, max(1, bin_w // 2)):
                 sl = slice(j, min(j + bin_w, n))
-                xs.append(float(np.mean(h_s[sl])))
+                xs.append(float(np.mean(x_s[sl])))
                 ys.append(float(np.median(l_s[sl])))
             ax.plot(xs, ys, color='#c0392b', lw=2.0, alpha=0.70,
                     label='Running median', zorder=3)
         except Exception:
             pass
 
-    ax.set_xlabel('Peak exterior depth  $h_{out}^{max}$  (m)')
-    ax.set_ylabel('Aggregate loss  (GBP)')
-    ax.set_title(f'Peak exterior depth vs aggregate loss  —  {n} cases', pad=10)
-    ax.yaxis.set_major_formatter(
-        mticker.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(f'{title}  —  {n} cases', pad=10)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f'{v:,.0f}'))
     ax.legend(fontsize=8.5, loc='upper left')
-
     fig.tight_layout()
     fig.savefig(outpath, dpi=150)
     plt.close(fig)
+
+
+def save_loss_scatter(h_peak_ext, aggregate_losses, outpath, *, v_peak=None):
+    """Peak exterior depth vs aggregate (combined) content loss."""
+    _loss_scatter(h_peak_ext, aggregate_losses, outpath,
+                  x_label='Peak exterior depth  $h_{ext}^{max}$  (m)',
+                  y_label='Aggregate loss  (GBP)',
+                  title='Peak exterior depth vs aggregate loss',
+                  v_peak=v_peak)
+
+
+def save_ground_loss_scatter(h_peak_int, building_losses, outpath, *, v_peak=None):
+    """Peak interior (ground-floor) depth vs ground-floor content loss."""
+    _loss_scatter(h_peak_int, building_losses, outpath,
+                  x_label='Peak interior depth  $h_{in}^{max}$  (m)',
+                  y_label='Ground-floor loss  (GBP)',
+                  title='Peak interior depth vs ground-floor loss',
+                  v_peak=v_peak)
+
+
+def save_basement_loss_scatter(h_peak_basement, basement_losses, outpath, *, v_peak=None):
+    """Peak basement depth vs basement content loss."""
+    _loss_scatter(h_peak_basement, basement_losses, outpath,
+                  x_label='Peak basement depth  $h_{bsmt}^{max}$  (m)',
+                  y_label='Basement loss  (GBP)',
+                  title='Peak basement depth vs basement loss',
+                  v_peak=v_peak)
+
+
+# ── fragility Monte Carlo result ───────────────────────────────────────────────
+
+def save_mc_result(peak_h_in, peak_h_ext, state_freq_rows, title, outpath):
+    """Scatter + empirical CDF + state-frequency bar chart for a MC run.
+
+    Parameters
+    ----------
+    peak_h_in : sequence of float
+        Peak interior depth per replicate (m).
+    peak_h_ext : sequence of float
+        Peak exterior depth per replicate (m).
+    state_freq_rows : list of dict
+        Rows from fragility_state_freq.csv — each dict has keys
+        ``element``, ``state_0_freq``, ``state_1_freq``, ...
+    title : str
+    outpath : str
+    """
+    import matplotlib as _mpl
+
+    peak_h  = np.asarray(peak_h_in,  dtype=float)
+    peak_ex = np.asarray(peak_h_ext, dtype=float)
+    n = len(peak_h)
+
+    threshold = float(peak_h.max()) * 0.05 if peak_h.max() > 0 else 0.01
+    low_mask  = peak_h < threshold
+    high_mask = ~low_mask
+    n_low, n_high = int(low_mask.sum()), int(high_mask.sum())
+
+    _BLUE   = '#2980b9'
+    _ORANGE = '#e67e22'
+    _RED    = '#c0392b'
+    PCT_COLOURS = {'P25': '#2980b9', 'P50': '#c0392b', 'P75': '#2980b9'}
+
+    fig = plt.figure(figsize=(14, 6.5))
+    fig.patch.set_facecolor('white')
+    gs = gridspec.GridSpec(1, 2, figure=fig, width_ratios=[2.8, 1],
+                           wspace=0.32, left=0.07, right=0.97,
+                           top=0.88, bottom=0.12)
+
+    ax_s = fig.add_subplot(gs[0, 0])
+
+    sc_handles = []
+    if n_high > 0 and n_low > 0:
+        sc1 = ax_s.scatter(peak_h[low_mask],  peak_ex[low_mask],
+                           color=_BLUE,   alpha=0.45, s=22, zorder=3,
+                           linewidths=0, label=f'Intact  (n = {n_low})')
+        sc2 = ax_s.scatter(peak_h[high_mask], peak_ex[high_mask],
+                           color=_ORANGE, alpha=0.55, s=22, zorder=4,
+                           linewidths=0, label=f'Degraded  (n = {n_high})')
+        sc_handles = [sc1, sc2]
+    else:
+        sc = ax_s.scatter(peak_h, peak_ex, color=_BLUE, alpha=0.45,
+                          s=22, zorder=3, linewidths=0, label=f'n = {n}')
+        sc_handles = [sc]
+
+    ax_s.set_xlabel('Peak interior depth  $h_{in}^{max}$  (m)')
+    ax_s.set_ylabel('Peak exterior depth  $h_{ext}^{max}$  (m)')
+    ax_s.set_xlim(left=0)
+    ext_range = float(peak_ex.max() - peak_ex.min())
+    if ext_range < 1e-4:
+        mid = float(peak_ex.mean())
+        ax_s.set_ylim(mid * 0.7, mid * 1.3)
+    else:
+        ax_s.set_ylim(bottom=0)
+
+    ax_cdf = ax_s.twinx()
+    ax_cdf.spines['right'].set_visible(True)
+    ax_cdf.spines['right'].set_color('#c8cdd2')
+    ax_cdf.spines['right'].set_linewidth(0.8)
+    h_sort  = np.sort(peak_h)
+    cdf_pct = np.linspace(100.0 / n, 100.0, n)
+    ax_cdf.fill_between(h_sort, cdf_pct, step='post', color=_RED, alpha=0.06)
+    cdf_line, = ax_cdf.step(h_sort, cdf_pct, color=_RED, lw=1.8,
+                             where='post', zorder=5, label='Empirical CDF')
+    ax_cdf.set_ylim(0, 108)
+    ax_cdf.set_ylabel('Cumulative probability  (%)', color=_RED)
+    ax_cdf.tick_params(axis='y', labelcolor=_RED)
+    ax_cdf.yaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, _: f'{x:.0f}%'))
+    ax_cdf.grid(False)
+    for pname, pct_val in [('P25', 25), ('P50', 50), ('P75', 75)]:
+        pv = float(np.percentile(peak_h, pct_val))
+        ax_cdf.plot([pv, pv], [0, pct_val],
+                    color=PCT_COLOURS[pname], lw=0.8, ls=':', alpha=0.6)
+        ax_cdf.plot([0, pv], [pct_val, pct_val],
+                    color=PCT_COLOURS[pname], lw=0.8, ls=':', alpha=0.6)
+    ax_s.legend(handles=sc_handles + [cdf_line], fontsize=8, loc='upper right')
+    ax_s.set_title('Peak $h_{ext}$ vs peak $h_{in}$ — scatter and empirical CDF')
+
+    ax_sf = fig.add_subplot(gs[0, 1])
+    if state_freq_rows:
+        state_cols = sorted(
+            [k for k in state_freq_rows[0] if k.startswith('state_')],
+            key=lambda c: int(c.split('_')[1]))
+        elems = [r['element'] for r in state_freq_rows]
+        n_el, n_st = len(elems), len(state_cols)
+        x  = np.arange(n_el)
+        bw = 0.75 / max(n_st, 1)
+        blues = _mpl.colormaps.get_cmap('Blues_r')
+        for si, col in enumerate(state_cols):
+            freqs  = [float(r.get(col, 0) or 0) for r in state_freq_rows]
+            colour = blues(0.15 + 0.60 * si / max(n_st - 1, 1))
+            b = ax_sf.bar(x + si * bw, freqs, bw, label=f'State {si}',
+                          color=colour, edgecolor='white', lw=0.4, zorder=3)
+            ax_sf.bar_label(b, fmt='%.2f', fontsize=7, padding=2, color='#333')
+        ax_sf.set_xticks(x + bw * (n_st - 1) / 2)
+        ax_sf.set_xticklabels(
+            [e.replace('membrane:', 'mem:')[:16] for e in elems],
+            rotation=30, ha='right', fontsize=7.5)
+        ax_sf.set_ylabel('Fraction of replicates')
+        ax_sf.set_title('Element state frequencies')
+        ax_sf.set_ylim(0, 1.30)
+        ax_sf.legend(fontsize=7.5, loc='upper right')
+        ax_sf.yaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _: f'{x:.0%}'))
+        expl = ('Each bar: fraction of replicates\n'
+                'in exactly that state.\n\n'
+                'State 0  base state (not degraded)\n'
+                'State k  degraded to state k\n\n'
+                'Bars sum to 100 % per element.')
+        ax_sf.text(0.04, 0.60, expl, transform=ax_sf.transAxes,
+                   fontsize=7.2, va='top', ha='left', color='#444',
+                   bbox=dict(boxstyle='round,pad=0.4', fc='white',
+                             ec='#d0d5dd', alpha=0.95))
+    else:
+        ax_sf.text(0.5, 0.5, 'No state data', transform=ax_sf.transAxes,
+                   ha='center', va='center', fontsize=10, color='#888')
+
+    fig.suptitle(title, fontsize=13, fontweight='bold', color='#1e2433', y=0.97)
+    if n_low > 0 and n_high > 0:
+        split_txt = (f'{n_low}/{n} replicates at near-zero ({100*n_low/n:.1f}%)\n'
+                     f'{n_high}/{n} replicates with significant ingress ({100*n_high/n:.1f}%)')
+        fig.text(0.42, 0.935, split_txt, ha='center', va='top',
+                 fontsize=8.5, color='#444', style='italic',
+                 bbox=dict(boxstyle='round,pad=0.35', fc='#f4f6f9',
+                           ec='#d0d5dd', alpha=0.95))
+
+    fig.savefig(outpath, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+
+
+# ── batch deterministic ────────────────────────────────────────────────────────
+
+def save_batch_deterministic(h_ext, h_int, title, outpath, *, v_peak=None):
+    """Scatter h_ext vs h_int + attenuation ratio for a deterministic batch run.
+
+    Parameters
+    ----------
+    h_ext  : sequence of float   Peak exterior depths (m).
+    h_int  : sequence of float   Peak interior depths (m).
+    title  : str
+    outpath: str
+    v_peak : sequence of float, optional
+        Peak exterior velocity (m/s) per case.  When supplied, points are
+        coloured by velocity; otherwise coloured by peak exterior depth.
+    """
+    _ORANGE = '#e67e22'
+    _GREY   = '#7f8c8d'
+
+    h_e = np.asarray(h_ext, dtype=float)
+    h_i = np.asarray(h_int, dtype=float)
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
+    fig.patch.set_facecolor('white')
+
+    ax = axes[0]
+    lim = max(h_e.max(), h_i.max()) * 1.08
+    c_vals   = np.asarray(v_peak, dtype=float) if v_peak is not None else h_e
+    cb_label = ('Peak exterior velocity  (m/s)' if v_peak is not None
+                else 'Peak exterior depth  (m)')
+    sc0 = ax.scatter(h_e, h_i, s=55, alpha=0.85, zorder=4,
+                     c=c_vals, cmap='plasma', edgecolors='white', lw=0.5)
+    cb0 = fig.colorbar(sc0, ax=ax, pad=0.02)
+    cb0.set_label(cb_label, fontsize=8)
+    cb0.ax.tick_params(labelsize=7.5)
+    ax.plot([0, lim], [0, lim], color=_GREY, lw=1.0, ls='--', alpha=0.5,
+            label='$h_{in}$ = $h_{ext}$  (no attenuation)')
+    ax.set_xlim(0, lim); ax.set_ylim(0, lim)
+    ax.set_xlabel('Peak exterior depth  $h_{ext}^{max}$  (m)')
+    ax.set_ylabel('Peak interior depth  $h_{in}^{max}$  (m)')
+    ax.set_title('Peak $h_{ext}$ vs peak $h_{in}$')
+    ax.legend(fontsize=8)
+
+    ax2 = axes[1]
+    ratio = np.where(h_e > 1e-6, h_i / h_e, np.nan)
+    ax2.scatter(h_e, ratio, color=_ORANGE, alpha=0.7, s=55, zorder=4,
+                edgecolors='white', lw=0.5)
+    ax2.axhline(1.0, color=_GREY, lw=1.0, ls='--', alpha=0.5)
+    ax2.set_xlim(0)
+    ax2.set_ylim(0, min(1.5, float(np.nanmax(ratio)) * 1.15))
+    ax2.set_xlabel('Peak exterior depth  $h_{ext}^{max}$  (m)')
+    ax2.set_ylabel('Attenuation ratio  $h_{in} / h_{ext}$')
+    ax2.set_title('Interior / exterior attenuation ratio')
+    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{x:.2f}'))
+
+    fig.suptitle(title, fontsize=12, fontweight='bold', color='#1e2433', y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(outpath, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+
+
+# ── batch fragility MC ─────────────────────────────────────────────────────────
+
+def save_batch_mc_fragility(h_ext_all, h_int_all, title, outpath,
+                             membrane_median_m=None):
+    """Replicate scatter + P10/P50/P90 bands + fragility curve.
+
+    Parameters
+    ----------
+    h_ext_all : sequence of float   Peak exterior depth per replicate (m).
+    h_int_all : sequence of float   Peak interior depth per replicate (m).
+    title : str
+    outpath : str
+    membrane_median_m : float, optional
+        If given, draws a vertical reference line at this depth on the
+        fragility curve panel.
+    """
+    from collections import defaultdict
+
+    _BLUE   = '#2980b9'
+    _ORANGE = '#e67e22'
+    _RED    = '#c0392b'
+    _GREY   = '#7f8c8d'
+
+    h_e = np.asarray(h_ext_all, dtype=float)
+    h_i = np.asarray(h_int_all, dtype=float)
+
+    by_level = defaultdict(list)
+    for he, hi in zip(h_e, h_i):
+        by_level[round(float(he), 4)].append(float(hi))
+
+    levels  = np.array(sorted(by_level))
+    p10_arr = np.array([np.percentile(by_level[lv], 10) for lv in levels])
+    p50_arr = np.array([np.percentile(by_level[lv], 50) for lv in levels])
+    p90_arr = np.array([np.percentile(by_level[lv], 90) for lv in levels])
+    threshold = float(h_i.max()) * 0.05 if h_i.max() > 0 else 0.01
+    p_fail  = np.array([np.mean(np.array(by_level[lv]) > threshold)
+                        for lv in levels])
+
+    fig = plt.figure(figsize=(14, 5.5))
+    fig.patch.set_facecolor('white')
+    gs = gridspec.GridSpec(1, 2, figure=fig, wspace=0.34,
+                           left=0.07, right=0.97, top=0.88, bottom=0.12)
+
+    ax_s = fig.add_subplot(gs[0, 0])
+    sc_s = ax_s.scatter(h_e, h_i, alpha=0.30, s=14, zorder=2, linewidths=0,
+                        c=h_e, cmap='plasma')
+    cb_s = fig.colorbar(sc_s, ax=ax_s, pad=0.02)
+    cb_s.set_label('Peak exterior depth  (m)', fontsize=8)
+    cb_s.ax.tick_params(labelsize=7.5)
+    ax_s.fill_between(levels, p10_arr, p90_arr, alpha=0.20, color=_ORANGE)
+    ax_s.plot(levels, p10_arr, color=_ORANGE, lw=1.0, ls='--', alpha=0.8,
+              label='P10 / P90')
+    ax_s.plot(levels, p90_arr, color=_ORANGE, lw=1.0, ls='--', alpha=0.8)
+    ax_s.plot(levels, p50_arr, color=_RED, lw=2.0, ls='-', zorder=5,
+              label='P50 (median)')
+    ax_s.set_xlim(0); ax_s.set_ylim(bottom=0)
+    ax_s.set_xlabel('Peak exterior depth  $h_{ext}^{max}$  (m)')
+    ax_s.set_ylabel('Peak interior depth  $h_{in}^{max}$  (m)')
+    ax_s.set_title('Replicate scatter + P10 / P50 / P90 bands')
+    ax_s.legend(fontsize=8, loc='upper left', handles=[
+        plt.Line2D([0], [0], color=_ORANGE, lw=1.0, ls='--', label='P10 / P90'),
+        plt.Line2D([0], [0], color=_RED,    lw=2.0, ls='-',  label='P50 (median)'),
+    ])
+
+    ax_f = fig.add_subplot(gs[0, 1])
+    ax_f.fill_between(levels, p_fail * 100, alpha=0.15, color=_RED, step='mid')
+    ax_f.step(levels, p_fail * 100, color=_RED, lw=2.0, where='mid',
+              label='Failure probability')
+    ax_f.set_xlim(0); ax_f.set_ylim(0, 108)
+    ax_f.set_xlabel('Peak exterior depth  $h_{ext}^{max}$  (m)')
+    ax_f.set_ylabel('P(significant ingress)  (%)')
+    ax_f.set_title('Fragility curve\n'
+                   r'(fraction of replicates with $h_{in} > 5\%\,h_{in}^{max}$)')
+    ax_f.yaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, _: f'{x:.0f}%'))
+    if membrane_median_m is not None:
+        ax_f.axvline(membrane_median_m, color=_GREY, lw=0.9, ls=':', alpha=0.6,
+                     label=f'Membrane median  {membrane_median_m} m')
+    ax_f.legend(fontsize=8, loc='upper left')
+
+    n_hydros = len(levels)
+    n_reps   = len(h_e) // n_hydros if n_hydros else 0
+    fig.suptitle(f'{title}\n'
+                 f'({n_hydros} hydrographs × {n_reps} replicates = {len(h_e)} total)',
+                 fontsize=12, fontweight='bold', color='#1e2433', y=0.99)
+
+    fig.savefig(outpath, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+
+
+# ── building schematics ────────────────────────────────────────────────────────
+
+import matplotlib.patches as _mpatches  # noqa: E402 — late import avoids circular
+
+_SCH_BLACK    = '#1c2027'
+_SCH_RED      = '#c0392b'
+_SCH_BLUE     = '#2980b9'
+_SCH_EARTH_FC = '#c8b89a'
+_SCH_EARTH_EC = '#a09070'
+_SCH_INT_GF   = '#f5f6f7'
+_SCH_INT_BS   = '#edf0f2'
+
+_SCH_W       = 1.0
+_SCH_EXT_W   = 0.45
+_SCH_LW_WALL = 1.8
+_SCH_LW_THIN = 0.9
+_SCH_TICK    = 0.13
+_SCH_SUMP_W  = 0.22
+_SCH_SUMP_D  = 0.28
+
+SCHEMATIC_CASES = [
+    dict(label='Case 01', subtitle='Single opening\nsill = 0 m',
+         floor_h=2.5, bsmt_d=None, sump=False, pump=False,
+         gf_paths=[dict(sill=0.0, name='door gap', style='det')],
+         bsmt_paths=[], membrane=None),
+    dict(label='Case 02', subtitle='Raised sill\nsill = 0.3 m',
+         floor_h=2.5, bsmt_d=None, sump=False, pump=False,
+         gf_paths=[dict(sill=0.3, name='door gap', style='det')],
+         bsmt_paths=[], membrane=None),
+    dict(label='Case 03', subtitle='Two openings\nsills 0 m and 0.3 m',
+         floor_h=2.5, bsmt_d=None, sump=False, pump=False,
+         gf_paths=[dict(sill=0.0, name='crack', style='det'),
+                   dict(sill=0.3, name='door gap', style='det')],
+         bsmt_paths=[], membrane=None),
+    dict(label='Case 04', subtitle='Basement\n(no pump)',
+         floor_h=2.5, bsmt_d=2.5, sump=False, pump=False,
+         gf_paths=[],
+         bsmt_paths=[dict(sill=0.0, name='bsmt crack', style='det')],
+         membrane=None),
+    dict(label='Case 05', subtitle='Basement + pump\n(keeps up)',
+         floor_h=2.5, bsmt_d=2.5, sump=True, pump=True,
+         gf_paths=[],
+         bsmt_paths=[dict(sill=0.0, name='bsmt crack', style='det')],
+         membrane=None),
+    dict(label='Case 06', subtitle='Basement + pump\n(overwhelmed)',
+         floor_h=2.5, bsmt_d=2.5, sump=True, pump=True,
+         gf_paths=[],
+         bsmt_paths=[dict(sill=0.0, name='bsmt crack', style='det')],
+         membrane=None),
+    dict(label='Case 07', subtitle='Probabilistic seal\n(MC fragility)',
+         floor_h=2.5, bsmt_d=None, sump=False, pump=False,
+         gf_paths=[dict(sill=0.0, name='seal door', style='prob')],
+         bsmt_paths=[], membrane=None),
+    dict(label='Case 08', subtitle='Membrane group\n(probabilistic)',
+         floor_h=2.5, bsmt_d=None, sump=False, pump=False,
+         gf_paths=[dict(sill=0.0, name='door gap', style='behind'),
+                   dict(sill=0.1, name='airbrick', style='behind')],
+         bsmt_paths=[],
+         membrane=dict(sill=0.0, capacity=0.5, style='prob')),
+    dict(label='Case 09', subtitle='Membrane\n(deterministic)',
+         floor_h=2.5, bsmt_d=None, sump=False, pump=False,
+         gf_paths=[dict(sill=0.0, name='door gap', style='behind'),
+                   dict(sill=0.1, name='airbrick', style='behind')],
+         bsmt_paths=[],
+         membrane=dict(sill=0.0, capacity=0.6, style='det')),
+]
+
+
+def draw_schematic(ax, cfg):
+    """Draw one building cross-section schematic on *ax*.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to draw on (axis is turned off inside this function).
+    cfg : dict
+        Case configuration dict.  Required keys: ``label``, ``subtitle``,
+        ``floor_h``, ``gf_paths``, ``bsmt_paths``.  Optional: ``bsmt_d``,
+        ``sump``, ``pump``, ``membrane``.  See ``SCHEMATIC_CASES`` for
+        worked examples.
+    """
+    floor_h       = cfg['floor_h']
+    bsmt_d        = cfg.get('bsmt_d') or 0.0
+    has_sump      = cfg.get('sump', False) and bsmt_d > 0
+    has_pump      = cfg.get('pump', False) and bsmt_d > 0
+    membrane      = cfg.get('membrane')
+    bypass_height = cfg.get('bypass_height', 0.0) or 0.0
+
+    y_gnd  = 0.0
+    y_top  = floor_h
+    y_bsmt = -bsmt_d
+    y_sump = y_bsmt - _SCH_SUMP_D
+    # when bypass_height > 0 the GF slab sits at that elevation above datum
+    y_slab = bypass_height if (bsmt_d > 0 and bypass_height > 0) else y_gnd
+    # GF is drawn solid only up to y_clip_gf; dotted above (break indicator)
+    y_clip_gf = float(cfg.get('y_clip_gf') or floor_h)
+
+    x_lo = -(_SCH_EXT_W + 0.15)
+    x_hi = _SCH_W + _SCH_EXT_W + 0.40
+    y_lo = (y_sump - 0.20) if has_sump else ((y_bsmt - 0.20) if bsmt_d else -0.35)
+    y_hi = y_top + 0.30
+
+    ax.set_xlim(x_lo, x_hi)
+    ax.set_ylim(y_lo, y_hi)
+    ax.axis('off')
+
+    soil_bot = y_lo
+    for x0f, wf in [(-_SCH_EXT_W, _SCH_EXT_W), (_SCH_W, _SCH_EXT_W)]:
+        ax.add_patch(_mpatches.Rectangle(
+            (x0f, soil_bot), wf, y_gnd - soil_bot,
+            fc=_SCH_EARTH_FC, ec=_SCH_EARTH_EC, lw=0.35, hatch='//////', zorder=1))
+    ax.plot([-(_SCH_EXT_W + 0.10), _SCH_W + _SCH_EXT_W + 0.10],
+            [y_gnd, y_gnd], color=_SCH_BLACK, lw=_SCH_LW_THIN, zorder=4)
+
+    y_fill_top = min(y_clip_gf, y_top)
+    ax.add_patch(_mpatches.Rectangle(
+        (0, y_slab), _SCH_W, y_fill_top - y_slab, fc=_SCH_INT_GF, ec='none', zorder=2))
+    if bsmt_d > 0:
+        ax.add_patch(_mpatches.Rectangle(
+            (0, y_bsmt), _SCH_W, bsmt_d + y_slab, fc=_SCH_INT_BS, ec='none', zorder=2))
+
+    wall_bot = y_bsmt if bsmt_d > 0 else y_gnd
+    for xw in (0.0, _SCH_W):
+        ax.plot([xw, xw], [wall_bot, y_clip_gf],
+                color=_SCH_BLACK, lw=_SCH_LW_WALL, zorder=5)
+        if y_clip_gf < y_top:
+            ax.plot([xw, xw], [y_clip_gf, y_top],
+                    color=_SCH_BLACK, lw=_SCH_LW_WALL * 0.7,
+                    ls=(0, (3, 2)), zorder=5)
+            # break marks
+            for dx in (-0.03, 0.03):
+                ax.plot([xw + dx, xw - dx],
+                        [y_clip_gf - 0.04, y_clip_gf + 0.04],
+                        color=_SCH_BLACK, lw=0.8, zorder=6)
+    ax.plot([0, _SCH_W], [y_top, y_top],    color=_SCH_BLACK, lw=_SCH_LW_WALL, zorder=5)
+    ax.plot([0, _SCH_W], [wall_bot, wall_bot], color=_SCH_BLACK, lw=_SCH_LW_WALL, zorder=5)
+    if bsmt_d > 0:
+        ax.plot([0, _SCH_W], [y_slab, y_slab],
+                color=_SCH_BLACK, lw=_SCH_LW_THIN, ls=(0, (4, 3)), alpha=0.55, zorder=4)
+
+    sump_cx = _SCH_W * 0.75
+    sump_cy = y_bsmt
+    if has_sump:
+        sx0 = _SCH_W - 0.08 - _SCH_SUMP_W
+        sx1 = _SCH_W - 0.08
+        sy_top, sy_bot = y_bsmt, y_sump
+        ax.add_patch(_mpatches.Rectangle(
+            (sx0, sy_bot), _SCH_SUMP_W, _SCH_SUMP_D,
+            fc='white', ec='none', zorder=3))
+        ax.plot([0, sx0],   [sy_top, sy_top], color=_SCH_BLACK, lw=_SCH_LW_WALL, zorder=6)
+        ax.plot([sx0, sx0], [sy_top, sy_bot], color=_SCH_BLACK, lw=_SCH_LW_WALL, zorder=6)
+        ax.plot([sx0, sx1], [sy_bot, sy_bot], color=_SCH_BLACK, lw=_SCH_LW_WALL, zorder=6)
+        ax.plot([sx1, sx1], [sy_bot, sy_top], color=_SCH_BLACK, lw=_SCH_LW_WALL, zorder=6)
+        ax.plot([sx1, _SCH_W], [sy_top, sy_top], color=_SCH_BLACK, lw=_SCH_LW_WALL, zorder=6)
+        sump_cx = (sx0 + sx1) / 2
+        sump_cy = (sy_top + sy_bot) / 2
+
+    if has_pump:
+        arrow_y = sump_cy
+        x_tip = _SCH_W + _SCH_EXT_W - 0.05
+        ax.plot([sump_cx, x_tip], [arrow_y, arrow_y],
+                color=_SCH_BLUE, lw=1.6, ls=(0, (4, 2.5)),
+                solid_capstyle='butt', zorder=6)
+        ax.annotate('', xy=(x_tip, arrow_y), xytext=(x_tip - 0.001, arrow_y),
+                    arrowprops=dict(arrowstyle='-|>', color=_SCH_BLUE,
+                                   lw=1.6, mutation_scale=11), zorder=7)
+        ax.text(x_tip + 0.04, arrow_y + 0.07, r'$Q_p$',
+                color=_SCH_BLUE, fontsize=6.5, ha='left', va='bottom', zorder=7)
+
+    def _path(sill_y, style, name):
+        if style == 'det':
+            ax.plot([-_SCH_TICK, _SCH_TICK], [sill_y, sill_y],
+                    color=_SCH_RED, lw=2.4, solid_capstyle='round', zorder=8)
+            ax.text(-_SCH_TICK - 0.05, sill_y, name,
+                    ha='right', va='center', fontsize=6.0, color=_SCH_RED)
+        elif style == 'prob':
+            bh = 0.13
+            ax.add_patch(_mpatches.FancyBboxPatch(
+                (-0.045, sill_y - bh), 0.09, 2 * bh,
+                boxstyle='round,pad=0.01',
+                fc=_SCH_BLUE, ec=_SCH_BLUE, lw=0.5, alpha=0.80, zorder=8))
+            ax.plot([-_SCH_TICK, _SCH_TICK], [sill_y, sill_y],
+                    color=_SCH_RED, lw=1.0, ls='--', alpha=0.45, zorder=7)
+            ax.text(-_SCH_TICK - 0.05, sill_y, name,
+                    ha='right', va='center', fontsize=6.0, color=_SCH_BLUE)
+        elif style == 'behind':
+            ax.plot([-_SCH_TICK * 0.55, _SCH_TICK * 0.55], [sill_y, sill_y],
+                    color=_SCH_RED, lw=1.4, alpha=0.32,
+                    solid_capstyle='round', zorder=7)
+            ax.text(-_SCH_TICK * 0.55 - 0.05, sill_y, name,
+                    ha='right', va='center', fontsize=5.5,
+                    color=_SCH_RED, alpha=0.38)
+
+    for p in cfg.get('gf_paths', []):
+        _path(p['sill'], p['style'], p.get('name', ''))
+    for p in cfg.get('bsmt_paths', []):
+        _path(p['sill'], p['style'], p.get('name', ''))
+
+    if membrane is not None:
+        y_m  = membrane.get('sill', 0.0)
+        cap  = membrane.get('capacity', 0.5)
+        ls_m = (0, (5, 3)) if membrane.get('style') == 'prob' else '-'
+        x_m0 = -(_SCH_EXT_W - 0.05)
+        ax.plot([x_m0, 0.0], [y_m, y_m],
+                color=_SCH_BLUE, lw=2.2, ls=ls_m,
+                solid_capstyle='butt', zorder=8)
+        x_cap = x_m0 + 0.06
+        ax.plot([x_cap, x_cap], [y_m, y_m + cap],
+                color=_SCH_BLUE, lw=0.9, ls=':', alpha=0.65, zorder=7)
+        ax.plot([x_cap - 0.04, x_cap + 0.04], [y_m + cap, y_m + cap],
+                color=_SCH_BLUE, lw=0.9, alpha=0.65, zorder=7)
+        prob_tag = ' (prob.)' if membrane.get('style') == 'prob' else ''
+        ax.text(x_m0 - 0.03, y_m + cap / 2,
+                f'membrane\n{cap:.1f} m{prob_tag}',
+                ha='right', va='center', fontsize=5.5, color=_SCH_BLUE,
+                style='italic' if membrane.get('style') == 'prob' else 'normal',
+                zorder=8)
+
+    ax.text(0.05, y_top - 0.12, cfg['label'],
+            ha='left', va='top', fontsize=7.5, fontweight='bold',
+            color='#1e2433', zorder=9)
+    ax.text(0.05, y_top - 0.32, cfg['subtitle'],
+            ha='left', va='top', fontsize=6.2, color='#3a4254',
+            linespacing=1.35, zorder=9)
+    ax.text(-(_SCH_EXT_W / 2), y_hi - 0.05, 'exterior',
+            ha='center', va='top', fontsize=5.5, color='#888', style='italic')
+    ax.plot([_SCH_W + 0.04, _SCH_W + 0.10], [y_gnd, y_gnd],
+            color='#aaa', lw=0.7, zorder=4)
+    ax.text(_SCH_W + 0.13, y_gnd, '0 m',
+            ha='left', va='center', fontsize=5.0, color='#999')
+
+
+def save_all_schematics(outpath, cases=None):
+    """Draw all case-study schematics in a 3 × 3 grid and save to *outpath*.
+
+    Parameters
+    ----------
+    outpath : str
+        Destination path for the PNG.
+    cases : list of dict, optional
+        Case configs to draw.  Defaults to ``SCHEMATIC_CASES`` (Cases 01–09).
+    """
+    if cases is None:
+        cases = SCHEMATIC_CASES
+
+    plt.rcParams.update({'font.family': 'sans-serif',
+                         'font.sans-serif': ['Helvetica Neue', 'Arial',
+                                             'DejaVu Sans']})
+    fig, axes = plt.subplots(
+        3, 3, figsize=(13, 13),
+        gridspec_kw={'height_ratios': [1.0, 1.9, 1.0],
+                     'hspace': 0.14, 'wspace': 0.10})
+    fig.patch.set_facecolor('white')
+
+    for ax, cfg in zip(axes.flat, cases):
+        draw_schematic(ax, cfg)
+
+    legend_items = [
+        _mpatches.Patch(fc=_SCH_RED,  ec=_SCH_RED,  lw=0,
+                        label='Deterministic ingress path (red tick)'),
+        _mpatches.Patch(fc=_SCH_BLUE, ec=_SCH_BLUE, lw=0,
+                        label='Probabilistic seal — fragility element (blue bar)'),
+        _mpatches.Patch(fc='none', ec=_SCH_BLUE, lw=0,
+                        label='Protected path (faint tick — behind membrane)'),
+        Line2D([0], [0], color=_SCH_BLUE, lw=2, ls=(0, (5, 3)),
+               label='Probabilistic membrane (blue dashed)'),
+        Line2D([0], [0], color=_SCH_BLUE, lw=2, ls='-',
+               label='Deterministic membrane (blue solid)'),
+        Line2D([0], [0], color=_SCH_BLUE, lw=1.6, ls=(0, (4, 2.5)),
+               marker='>', markersize=5, markevery=[-1],
+               label='Pump discharge (dashed arrow)'),
+    ]
+    fig.legend(handles=legend_items, loc='lower center', ncol=3,
+               fontsize=7.5, framealpha=0.95, edgecolor='#d0d5dd',
+               bbox_to_anchor=(0.5, 0.01))
+    fig.suptitle('Case study building schematics — cross-section',
+                 fontsize=13, fontweight='bold', color='#1e2433', y=0.995)
+
+    fig.savefig(outpath, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+    return outpath
+
+
+def save_run_schematic(outpath, *,
+                       gf_pathways=(),
+                       bsmt_pathways=(),
+                       membranes=(),
+                       basement_depth=None,
+                       has_sump=False,
+                       has_pump=False,
+                       floor_h=2.5,
+                       bypass_height=0.0,
+                       label='',
+                       subtitle=''):
+    """Save a single building cross-section schematic with embedded pathway table.
+
+    Replaces the separate ingress_preview and ingress_locations plots.
+
+    Parameters
+    ----------
+    outpath         : str   Destination PNG path.
+    gf_pathways     : iterable of FragilePath or IngressPathway
+    bsmt_pathways   : iterable of FragilePath or IngressPathway
+    membranes       : iterable of Membrane
+    basement_depth  : float or None  Absolute basement depth below datum (m).
+    has_sump        : bool
+    has_pump        : bool
+    floor_h         : float  Floor-to-ceiling height for display (m).
+    label           : str
+    subtitle        : str
+    """
+    def _sill(p):
+        v = getattr(p, 'height_m', None)
+        return v if v is not None else float(getattr(p, 'height', 0.0))
+
+    def _area(p):
+        # prefer fragility state area (the opened area) when available
+        frag = getattr(p, 'fragility', None)
+        if frag is not None:
+            states = getattr(frag, 'states', [])
+            if states:
+                st_a = getattr(states[0], 'area_m2', None)
+                if st_a is not None and st_a > 0:
+                    return float(st_a)
+        v = getattr(p, 'area_m2', None)
+        return v if v is not None else float(getattr(p, 'area', 0.0))
+
+    def _cd(p):
+        v = getattr(p, 'Cd', None)
+        return v if v is not None else float(getattr(p, 'coeff', 0.6))
+
+    def _style(p):
+        if getattr(p, 'group_id', 0):
+            return 'behind'
+        if getattr(p, 'fragility', None) is not None:
+            return 'prob'
+        return 'det'
+
+    def _path_dict(p):
+        return {'sill': _sill(p), 'name': getattr(p, 'name', ''), 'style': _style(p)}
+
+    mem_cfg = None
+    for m in membranes:
+        states = m.fragility.states if m.fragility else []
+        if states:
+            cap   = states[0].median_m
+            style = 'prob' if states[0].beta_ln > 0 else 'det'
+        else:
+            cap, style = _sill(m), 'det'
+        mem_cfg = {'sill': _sill(m), 'capacity': cap, 'style': style}
+        break
+
+    y_visible_hi = floor_h + 0.3
+    y_visible_lo = -(basement_depth or 0.0) - 0.25
+
+    def _in_view(pd):
+        return y_visible_lo <= pd['sill'] <= y_visible_hi
+
+    import math as _math
+
+    # ── fragility uncertainty range helper ────────────────────────────────────
+    def _frag_range(p):
+        frag = getattr(p, 'fragility', None)
+        if frag is None:
+            return None
+        states = getattr(frag, 'states', [])
+        if not states:
+            return None
+        s = states[0]
+        beta = getattr(s, 'beta_ln', 0.0)
+        med  = getattr(s, 'median_m', _sill(p))
+        if beta <= 0:
+            return None
+        return (med * _math.exp(-beta), med * _math.exp(beta))
+
+    # ── collect all_pw with fragility range ───────────────────────────────────
+    all_pw = []
+    for p in gf_pathways:
+        pd = _path_dict(p)
+        if _in_view(pd):
+            all_pw.append({'name': getattr(p, 'name', ''), 'sill': _sill(p),
+                           'area': _area(p), 'cd': _cd(p),
+                           'style': _style(p), 'is_bsmt': False,
+                           'frag_range': _frag_range(p)})
+    for p in bsmt_pathways:
+        pd = _path_dict(p)
+        if _in_view(pd):
+            all_pw.append({'name': getattr(p, 'name', ''), 'sill': _sill(p),
+                           'area': _area(p), 'cd': _cd(p),
+                           'style': 'det', 'is_bsmt': True,
+                           'frag_range': None})
+
+    bsmt_d  = float(basement_depth or 0.0)
+    y_slab  = float(bypass_height or 0.0) if bsmt_d > 0 else 0.0
+
+    # ── zoom y-range: all sill heights + fragility ranges + bypass slab ─────
+    all_sills = [pw['sill'] for pw in all_pw]
+    if bsmt_d > 0:
+        all_sills.append(y_slab)
+    # include fragility range extents so uncertainty bars are always visible
+    for pw in all_pw:
+        fr = pw.get('frag_range')
+        if fr:
+            all_sills.extend(fr)
+    _zm = 0.20
+    if all_sills:
+        zoom_ylo = min(all_sills) - _zm
+        zoom_yhi = max(all_sills) + _zm
+    else:
+        zoom_ylo, zoom_yhi = -0.15, 0.35
+
+    # ── GF clip height ────────────────────────────────────────────────────────
+    gf_sills = [pw['sill'] for pw in all_pw if not pw['is_bsmt']]
+    y_clip_gf = float(floor_h)
+    if gf_sills:
+        y_clip_gf = min(float(floor_h), max(gf_sills) + 0.55)
+    y_clip_gf = max(y_clip_gf, zoom_yhi + 0.25, 0.4)
+    y_clip_gf = min(y_clip_gf, float(floor_h))
+
+    cfg = {
+        'label':         label,
+        'subtitle':      subtitle,
+        'floor_h':       floor_h,
+        'bsmt_d':        basement_depth,
+        'sump':          has_sump,
+        'pump':          has_pump,
+        'gf_paths':      [],
+        'bsmt_paths':    [],
+        'membrane':      mem_cfg,
+        'bypass_height': y_slab,
+        'y_clip_gf':     y_clip_gf,
+    }
+
+    # ── figure: single schematic axes ─────────────────────────────────────────
+    total_h = float(floor_h) + bsmt_d
+    sch_h   = max(4.5, 1.5 * total_h)
+    fig, ax_sch = plt.subplots(figsize=(8.5, sch_h), facecolor='white')
+    fig.patch.set_facecolor('white')
+
+    draw_schematic(ax_sch, cfg)
+
+    # ── colormap shared across all pathways ───────────────────────────────────
+    cds  = [pw['cd'] for pw in all_pw] if all_pw else [0.6]
+    c_lo, c_hi = min(cds), max(cds)
+    if c_lo == c_hi:
+        c_lo, c_hi = max(0.0, c_lo - 0.15), c_hi + 0.15
+    _cmap_pw = matplotlib.colormaps.get_cmap('plasma')
+    _norm_pw = plt.Normalize(c_lo, c_hi)
+
+    areas = [pw['area'] for pw in all_pw] if all_pw else [0.001]
+    a_lo, a_hi = min(areas), max(areas)
+
+    def _ms(a):
+        if a_hi == a_lo:
+            return 60
+        return 25 + 110 * (a - a_lo) / (a_hi - a_lo)
+
+    # ── inset zoom axes: position inside building above clip line ─────────────
+    xlo_ax, xhi_ax = ax_sch.get_xlim()
+    ylo_ax, yhi_ax = ax_sch.get_ylim()
+    xr = xhi_ax - xlo_ax
+    yr = yhi_ax - ylo_ax
+
+    # inset occupies the building interior space above the clip
+    _pad = 0.04
+    ins_xd0 = 0.05
+    ins_xd1 = _SCH_W - 0.05
+    ins_yd0 = y_clip_gf + _pad
+    ins_yd1 = yhi_ax - _pad
+
+    ins_x0 = (ins_xd0 - xlo_ax) / xr
+    ins_y0 = (ins_yd0 - ylo_ax) / yr
+    ins_w  = (ins_xd1 - ins_xd0) / xr
+    ins_h  = (ins_yd1 - ins_yd0) / yr
+
+    # ensure minimum inset size; fall back to right-side placement
+    if ins_h < 0.12 or ins_w < 0.15:
+        ins_x0, ins_y0, ins_w, ins_h = 0.54, 0.55, 0.40, 0.38
+
+    axins = ax_sch.inset_axes([ins_x0, ins_y0, ins_w, ins_h])
+
+    # zoom x: the wall strip (exterior to small interior depth)
+    zoom_xlo = -_SCH_EXT_W - 0.02
+    zoom_xhi =  0.18
+    axins.set_xlim(zoom_xlo, zoom_xhi)
+    axins.set_ylim(zoom_ylo, zoom_yhi)
+
+    axins.set_facecolor('#f8f9fa')
+    for sp in axins.spines.values():
+        sp.set_edgecolor('#bbb')
+        sp.set_linewidth(0.6)
+    axins.tick_params(left=True, labelleft=True, bottom=False, labelbottom=False,
+                      labelsize=5.5, length=2, width=0.5, color='#999')
+    axins.set_ylabel('elevation (m)', fontsize=5.5, color='#666', labelpad=3)
+    axins.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f'{v:.2f}'))
+
+    # wall line in inset
+    axins.plot([0, 0], [zoom_ylo - 0.05, zoom_yhi + 0.05],
+               color=_SCH_BLACK, lw=1.2, zorder=5, clip_on=False)
+    # ground datum
+    if zoom_ylo < 0 < zoom_yhi:
+        axins.axhline(0.0, color='#888', lw=0.6, ls='-', alpha=0.6, zorder=3)
+        axins.text(zoom_xhi - 0.01, 0.005, '±0 m', fontsize=4.5,
+                   color='#999', ha='right', va='bottom')
+    # bypass slab marker in inset (always at y_slab when basement present)
+    if bsmt_d > 0 and zoom_ylo <= y_slab <= zoom_yhi:
+        axins.plot([zoom_xlo, zoom_xhi], [y_slab, y_slab],
+                   color=_SCH_BLACK, lw=0.8, ls=(0, (4, 3)), alpha=0.5, zorder=3)
+        slab_lbl = f'GF slab  ({y_slab:+.2f} m)' if abs(y_slab) > 0.005 else 'GF slab  (±0 m)'
+        axins.text(0.02, y_slab + 0.01, slab_lbl, fontsize=4.5,
+                   color='#777', va='bottom')
+
+    # ── draw pathways in inset ────────────────────────────────────────────────
+    all_pw_sorted = sorted(all_pw, key=lambda x: x['sill'])
+
+    for pw in all_pw_sorted:
+        y   = pw['sill']
+        col = _cmap_pw(_norm_pw(pw['cd']))
+        is_frag = pw['style'] == 'prob'
+
+        # coloured slot on external wall face
+        slot_lw = 1.4 if is_frag else 0.4
+        slot_ec = col  if is_frag else 'white'
+        slot_ls = '--' if is_frag else 'solid'
+        axins.add_patch(_mpatches.FancyBboxPatch(
+            (-0.038, y - 0.022), 0.038, 0.044,
+            boxstyle='round,pad=0.003',
+            facecolor=col, edgecolor=slot_ec, lw=slot_lw,
+            linestyle=slot_ls, zorder=8))
+
+        # fragility uncertainty bar (option B)
+        fr = pw.get('frag_range')
+        if is_frag and fr:
+            xb = -0.019
+            axins.plot([xb, xb], [fr[0], fr[1]],
+                       color=col, lw=1.8, solid_capstyle='round', alpha=0.75, zorder=9)
+            for yb in fr:
+                axins.plot([xb - 0.012, xb + 0.012], [yb, yb],
+                           color=col, lw=1.0, alpha=0.75, zorder=9)
+
+        # area circle on interior face
+        axins.scatter([0.035], [y], s=_ms(pw['area']),
+                      color=col, edgecolors='white', lw=0.5, zorder=9)
+
+        # callout label (exterior side, clip_on=False)
+        tag = '~' if is_frag else ('(B) ' if pw['is_bsmt'] else '')
+        safe = pw['name'].replace('_', '-')
+        lbl  = (f"{tag}$\\bf{{{safe}}}$\n"
+                f"  sill={y:.3f} m   $A={pw['area']:.4f}$ m²   $C_d={pw['cd']:.2f}$")
+        axins.text(-0.055, y, lbl, va='center', ha='right',
+                   fontsize=5.5, color='#1e2433', linespacing=1.35,
+                   bbox=dict(boxstyle='round,pad=0.25', fc='white',
+                             ec=col, lw=0.9, alpha=0.95),
+                   clip_on=False, zorder=10)
+
+    # indicate_inset_zoom: connect inset to zoom region in main axes
+    ax_sch.indicate_inset_zoom(axins, edgecolor='#999', alpha=0.6, lw=0.8)
+
+    # footnote: total area
+    if all_pw:
+        ax_sch.text(
+            _SCH_W / 2, ylo_ax + 0.05,
+            f'n = {len(all_pw)}   $\\Sigma A = {sum(areas):.4f}$ m²',
+            ha='center', va='bottom', fontsize=6.5, color='#555',
+            style='italic', clip_on=False)
+
+    # Cd colorbar
+    _sm = plt.cm.ScalarMappable(cmap=_cmap_pw, norm=_norm_pw)
+    _sm.set_array([])
+    _cb = fig.colorbar(_sm, ax=ax_sch, fraction=0.018, pad=0.01,
+                       aspect=25, location='right', shrink=0.55)
+    _cb.set_label('Discharge coefficient  $C_d$', fontsize=7)
+    _cb.ax.tick_params(labelsize=6.5)
+
+    # ── dimension annotations ─────────────────────────────────────────────────
+    x_dim = _SCH_W + _SCH_EXT_W + 0.15
+
+    def _dim_line(y_bot, y_top_d, label_str, side_label=''):
+        ax_sch.plot([x_dim - 0.04, x_dim + 0.04], [y_bot, y_bot],
+                    color='#888', lw=0.7, clip_on=False, zorder=10)
+        ax_sch.plot([x_dim - 0.04, x_dim + 0.04], [y_top_d, y_top_d],
+                    color='#888', lw=0.7, clip_on=False, zorder=10)
+        ax_sch.annotate('', xy=(x_dim, y_top_d), xytext=(x_dim, y_bot),
+                        arrowprops=dict(arrowstyle='<->', color='#666',
+                                       lw=0.9, mutation_scale=8),
+                        clip_on=False, zorder=10)
+        mid = (y_bot + y_top_d) / 2
+        ax_sch.text(x_dim + 0.10, mid, label_str,
+                    ha='left', va='center', fontsize=6.5, color='#444',
+                    clip_on=False, zorder=10)
+        if side_label:
+            ax_sch.text(x_dim + 0.10, mid - 0.22, side_label,
+                        ha='left', va='center', fontsize=5.2, color='#888',
+                        clip_on=False, zorder=10)
+
+    _dim_line(0.0, floor_h, f'{floor_h:.1f} m', 'floor ht.')
+    if basement_depth:
+        _dim_line(-basement_depth, 0.0, f'{basement_depth:.1f} m', 'bsmt. depth')
+
+    xlo2, xhi2 = ax_sch.get_xlim()
+    ax_sch.set_xlim(xlo2, max(xhi2, x_dim + 0.65))
+
+    fig.savefig(outpath, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+    return outpath

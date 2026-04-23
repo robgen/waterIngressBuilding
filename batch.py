@@ -63,6 +63,7 @@ from engine import (
     Building,
     IngressPathway,
     Simulation,
+    SimResult,
     parse_external_file,
     parse_velocity_file,
     sample_with_zero_padding,
@@ -152,7 +153,7 @@ def _parse_depth_file_maybe_combined(filepath):
 # ── single simulation run ─────────────────────────────────────────────────────
 
 def _run_case(depth_path, vel_path, ingress_list, floor_area,
-              dt_s, mul, default_velocity,
+              dt_s, mul, velocity_mode='zero', vel_a=1.5, vel_b=0.5,
               basement_area=0.0, basement_floor_elev=None,
               basement_ceiling_elev=0.0,
               basement_ingress=None,
@@ -171,15 +172,14 @@ def _run_case(depth_path, vel_path, ingress_list, floor_area,
     times_raw, depths, inline_vel = _parse_depth_file_maybe_combined(depth_path)
     times_s = [t * mul for t in times_raw]
 
-    if vel_path:
-        v_times_raw, v_vals = parse_velocity_file(vel_path)
-        v_times_s = [t * mul for t in v_times_raw]
-    elif inline_vel is not None:
-        v_times_s = list(times_s)
-        v_vals = inline_vel
-    else:
-        v_times_s = list(times_s)
-        v_vals = [float(default_velocity)] * len(times_s)
+    v_times_s, v_vals = None, None
+    if velocity_mode == 'file':
+        if vel_path:
+            v_times_raw, v_vals = parse_velocity_file(vel_path)
+            v_times_s = [t * mul for t in v_times_raw]
+        elif inline_vel is not None:
+            v_times_s = list(times_s)
+            v_vals = inline_vel
 
     building = Building(floor_area)
     if basement_area and basement_area > 0.0:
@@ -210,7 +210,8 @@ def _run_case(depth_path, vel_path, ingress_list, floor_area,
         ))
 
     sim = Simulation(building, ing, times_s, depths, dt=dt_s,
-                     external_vel_times=v_times_s, external_velocities=v_vals)
+                     external_vel_times=v_times_s, external_velocities=v_vals,
+                     velocity_mode=velocity_mode, vel_a=vel_a, vel_b=vel_b)
     result = sim.run()
 
     if len(result) == 4:
@@ -228,9 +229,32 @@ def _run_case(depth_path, vel_path, ingress_list, floor_area,
     h_peak_int      = max(sim_levels)    if sim_levels    else 0.0
     h_peak_basement = max(sim_basement)  if sim_basement  else 0.0
     h_peak_sump     = max(sim_sump)      if sim_sump      else 0.0
+    if velocity_mode == 'file' and v_times_s and v_vals:
+        sampled_vel = sample_with_zero_padding(sim_times, v_times_s, v_vals)
+        v_peak_ext = max(sampled_vel) if sampled_vel else 0.0
+    elif velocity_mode == 'power_law':
+        v_peak_ext = vel_a * (h_peak_ext ** vel_b) if h_peak_ext > 0 else 0.0
+    else:
+        v_peak_ext = 0.0
 
-    return (sim_times, sim_levels, sim_basement, sim_sump,
-            h_peak_ext, h_peak_int, h_peak_basement, h_peak_sump)
+    total_volume_in = sum(
+        (sim_levels[i] - sim_levels[i - 1]) * floor_area
+        for i in range(1, len(sim_levels))
+        if sim_levels[i] > sim_levels[i - 1]
+    )
+
+    return SimResult(
+        times=sim_times,
+        h_in=sim_levels,
+        h_basement=sim_basement or [],
+        h_sump=sim_sump or [],
+        peak_h_in=h_peak_int,
+        peak_h_basement=h_peak_basement,
+        peak_h_sump=h_peak_sump,
+        peak_h_ext=h_peak_ext,
+        v_peak_ext=v_peak_ext,
+        total_volume_in=total_volume_in,
+    )
 
 
 # ── duration calculation ──────────────────────────────────────────────────────
@@ -306,7 +330,7 @@ _DEFAULT_THRESHOLDS = [round(0.10 * i, 2) for i in range(1, 16)]  # 0.10 … 1.5
 
 
 def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
-              time_units, dt, thresholds, default_velocity,
+              time_units, dt, thresholds,
               building_content_vulnerability,
               outdir, verbose=True,
               basement_content_vulnerability=None,
@@ -316,7 +340,8 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
               basement_conn_height=None, basement_conn_area=0.0,
               sump_pump=None,
               frag_paths=None, membranes=None,
-              n_replicates=1, random_seed=None):
+              n_replicates=1, random_seed=None,
+              velocity_mode='zero', vel_a=1.5, vel_b=0.5):
     """
     Run the full batch ensemble and write results.
 
@@ -334,7 +359,8 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
     dt              : simulation timestep in the selected time units
     thresholds      : list of absolute interior depth thresholds (m) at which
                       exceedance duration is reported (e.g. [0.10, 0.30, 1.00])
-    default_velocity: fallback velocity (m/s) when no velocity data available
+    velocity_mode   : 'zero', 'power_law', or 'file'
+    vel_a / vel_b   : power-law coefficients (used when velocity_mode='power_law')
     building_content_vulnerability : optional VulnerabilityCurve mapping h_peak_int
                       (ground-floor peak depth) to building contents loss
     basement_content_vulnerability : optional VulnerabilityCurve mapping h_peak_basement
@@ -385,15 +411,14 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
             times_raw, depths, inline_vel = _parse_depth_file_maybe_combined(depth_path)
             times_s = [t * mul for t in times_raw]
 
-            if vel_path:
-                v_times_raw, v_vals = parse_velocity_file(vel_path)
-                v_times_s = [t * mul for t in v_times_raw]
-            elif inline_vel is not None:
-                v_times_s = list(times_s)
-                v_vals = inline_vel
-            else:
-                v_times_s = list(times_s)
-                v_vals = [float(default_velocity)] * len(times_s)
+            v_times_s, v_vals = None, None
+            if velocity_mode == 'file':
+                if vel_path:
+                    v_times_raw, v_vals = parse_velocity_file(vel_path)
+                    v_times_s = [t * mul for t in v_times_raw]
+                elif inline_vel is not None:
+                    v_times_s = list(times_s)
+                    v_vals = inline_vel
 
             if use_mc:
                 _ba = float(basement_area) if basement_area else 0.0
@@ -424,6 +449,9 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
                     external_vel_times = v_times_s,
                     external_velocities= v_vals,
                     seed               = random_seed,
+                    velocity_mode      = velocity_mode,
+                    vel_a              = vel_a,
+                    vel_b              = vel_b,
                 )
                 for rep in mc.replicates:
                     row = {
@@ -437,10 +465,9 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
                     results.append(row)
 
             else:
-                (sim_times, sim_levels, sim_basement, sim_sump,
-                 h_peak_ext, h_peak_int, h_peak_basement, h_peak_sump) = _run_case(
+                res = _run_case(
                     depth_path, vel_path, ingress_list,
-                    floor_area, dt_s, mul, default_velocity,
+                    floor_area, dt_s, mul, velocity_mode, vel_a, vel_b,
                     basement_area=basement_area,
                     basement_floor_elev=basement_floor_elev,
                     basement_ceiling_elev=basement_ceiling_elev,
@@ -449,23 +476,24 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
                     basement_conn_area=basement_conn_area,
                     sump_pump=sump_pump,
                 )
-                durations = _compute_durations(sim_levels, thresholds, dt_s, mul)
+                durations = _compute_durations(res.h_in, thresholds, dt_s, mul)
                 row = {
                     'case_id':         case_id,
                     'depth_file':      os.path.basename(depth_path),
                     'velocity_file':   os.path.basename(vel_path) if vel_path else '',
-                    'h_peak_ext':      round(h_peak_ext, 4),
-                    'h_peak_int':      round(h_peak_int, 4),
-                    'h_peak_basement': round(h_peak_basement, 4),
+                    'h_peak_ext':      round(res.peak_h_ext, 4),
+                    'h_peak_int':      round(res.peak_h_in, 4),
+                    'h_peak_basement': round(res.peak_h_basement, 4),
+                    'v_peak_ext':      round(res.v_peak_ext, 4),
                 }
                 if sump_pump is not None:
-                    row['h_peak_sump'] = round(h_peak_sump, 4)
+                    row['h_peak_sump'] = round(res.peak_h_sump, 4)
                 building_loss = (
-                    round(building_content_vulnerability.interpolate_loss(h_peak_int), 2)
+                    round(building_content_vulnerability.interpolate_loss(res.peak_h_in), 2)
                     if building_content_vulnerability is not None else None
                 )
                 basement_loss = (
-                    round(basement_content_vulnerability.interpolate_loss(h_peak_basement), 2)
+                    round(basement_content_vulnerability.interpolate_loss(res.peak_h_basement), 2)
                     if basement_content_vulnerability is not None else None
                 )
                 if building_loss is not None:
@@ -506,34 +534,85 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
     summary_path = _write_summary(results, time_units, outdir) if not use_mc else None
 
     # ── write batch figures ───────────────────────────────────────────────────
-    ingress_plot_path = os.path.join(outdir, 'ingress_paths.png')
-    viz.save_ingress_locations(ingress_list, ingress_plot_path)
+    try:
+        _bsmt_d = (abs(float(basement_floor_elev))
+                   if basement_area and basement_floor_elev is not None else None)
+        _bsmt_pw = [basement_ingress] if basement_ingress is not None else []
+        viz.save_run_schematic(
+            os.path.join(outdir, 'schematic.png'),
+            gf_pathways=ingress_list,
+            bsmt_pathways=_bsmt_pw,
+            basement_depth=_bsmt_d,
+            has_sump=sump_pump is not None,
+            has_pump=sump_pump is not None,
+            bypass_height=float(basement_conn_height or 0.0),
+        )
+    except Exception:
+        pass
 
     peak_scatter_path = os.path.join(outdir, 'peak_exterior_vs_peak_interior.png')
+    _v_vals = [r.get('v_peak_ext') for r in results]
     viz.save_batch_scatter(
         [r['h_peak_ext'] for r in results],
         [r['h_peak_int'] for r in results],
         peak_scatter_path,
+        v_peak=_v_vals if all(v is not None for v in _v_vals) else None,
     )
+
+    if not use_mc and any(r.get('h_peak_basement', 0.0) > 1e-6 for r in results):
+        bsmt_scatter_path = os.path.join(outdir, 'peak_exterior_vs_peak_basement.png')
+        _v_bsmt = [r.get('v_peak_ext') for r in results]
+        viz.save_basement_scatter(
+            [r['h_peak_ext']      for r in results],
+            [r['h_peak_basement'] for r in results],
+            bsmt_scatter_path,
+            v_peak=_v_bsmt if all(v is not None for v in _v_bsmt) else None,
+        )
+        if verbose:
+            print(f'  Basement → {bsmt_scatter_path}')
 
     if verbose:
         print(f'  Results  → {results_path}')
         if summary_path:
             print(f'  Summary  → {summary_path}')
-        print(f'  Ingress  → {ingress_plot_path}')
+        print(f'  Schematic → {os.path.join(outdir, "schematic.png")}')
         print(f'  Peaks    → {peak_scatter_path}')
         if not use_mc:
             _print_summary_table(results, time_units)
 
     if not use_mc and 'aggregate_content_loss' in results[0]:
-        loss_plot_path = os.path.join(outdir, 'peak_exterior_vs_aggregate_loss.png')
-        viz.save_loss_scatter(
-            [r['h_peak_ext'] for r in results],
-            [r['aggregate_content_loss'] for r in results],
-            loss_plot_path,
-        )
-        if verbose:
-            print(f'  Loss plot → {loss_plot_path}')
+        _v_loss = [r.get('v_peak_ext') for r in results]
+        _vp     = _v_loss if all(v is not None for v in _v_loss) else None
+        has_basement_loss = any(r.get('basement_content_loss') for r in results)
+
+        if has_basement_loss:
+            gf_path   = os.path.join(outdir, 'ground_floor_loss.png')
+            bsmt_path = os.path.join(outdir, 'basement_loss.png')
+            agg_path  = os.path.join(outdir, 'aggregate_loss.png')
+            viz.save_ground_loss_scatter(
+                [r['h_peak_int']            for r in results],
+                [r['building_content_loss'] for r in results],
+                gf_path, v_peak=_vp)
+            viz.save_basement_loss_scatter(
+                [r['h_peak_basement']       for r in results],
+                [r['basement_content_loss'] for r in results],
+                bsmt_path, v_peak=_vp)
+            viz.save_loss_scatter(
+                [r['h_peak_ext']            for r in results],
+                [r['aggregate_content_loss'] for r in results],
+                agg_path, v_peak=_vp)
+            if verbose:
+                print(f'  Ground-floor loss → {gf_path}')
+                print(f'  Basement loss     → {bsmt_path}')
+                print(f'  Aggregate loss    → {agg_path}')
+        else:
+            loss_path = os.path.join(outdir, 'peak_exterior_vs_aggregate_loss.png')
+            viz.save_loss_scatter(
+                [r['h_peak_ext']             for r in results],
+                [r['aggregate_content_loss'] for r in results],
+                loss_path, v_peak=_vp)
+            if verbose:
+                print(f'  Loss plot → {loss_path}')
 
     return results
 
@@ -582,11 +661,10 @@ def _parse_args(argv=None):
     p.add_argument('--depth-dir',    required=True,
                    help='Directory containing depth CSV files.')
     p.add_argument('--velocity-dir', default=None,
-                   help='Directory containing matching velocity CSV files. '
-                        'Omit to use inline velocity (3rd column) or default constant.')
+                   help='Directory containing matching velocity CSV files (used with --velocity-mode=file).')
     p.add_argument('--ingress',      required=True,
                    help='Ingress pathways CSV (header-based unified format).')
-    p.add_argument('--basement-opening', default=None,
+    p.add_argument('--basement-ingress', default=None,
                    help='Single-row CSV defining the lumped exterior→basement perimeter opening.')
     p.add_argument('--membrane',     default=None,
                    help='Membrane CSV (header-based unified format). Enables fragility MC.')
@@ -604,8 +682,13 @@ def _parse_args(argv=None):
                    default=_DEFAULT_THRESHOLDS,
                    metavar='H',
                    help='Absolute interior depth thresholds (m) for exceedance duration.')
-    p.add_argument('--default-velocity', type=float, default=0.2,
-                   help='Fallback velocity (m/s) when no velocity data are available.')
+    p.add_argument('--velocity-mode', default='zero',
+                   choices=['zero', 'power_law', 'file'],
+                   help="Velocity mode: 'zero' (default), 'power_law' (v=a·h^b), or 'file' (CSV).")
+    p.add_argument('--velocity-power-law-a', type=float, default=1.5,
+                   help='Power-law coefficient a in v=a·h^b. Default: 1.5.')
+    p.add_argument('--velocity-power-law-b', type=float, default=0.5,
+                   help='Power-law exponent b in v=a·h^b. Default: 0.5.')
     p.add_argument('--building-vulnerability', default=None,
                    help='CSV vulnerability curve: peak ground-floor depth → loss.')
     p.add_argument('--basement-vulnerability', default=None,
@@ -618,9 +701,9 @@ def _parse_args(argv=None):
                    help='Basement floor elevation relative to ground-floor datum (m).')
     p.add_argument('--basement-ceiling-elevation', type=float, default=0.0,
                    help='Basement ceiling elevation on same datum (m).')
-    p.add_argument('--basement-connection-height', type=float, default=None,
+    p.add_argument('--basement-bypass-height', type=float, default=None,
                    help='Sill height of ground↔basement connection (m).')
-    p.add_argument('--basement-connection-area', type=float, default=0.0,
+    p.add_argument('--basement-bypass-area', type=float, default=0.0,
                    help='Area of ground↔basement connection (m²).')
     # Sump + pump (unified --sumppump-* prefix, matching cli.py)
     p.add_argument('--sumppump-area', type=float, default=0.0,
@@ -662,10 +745,10 @@ def main(argv=None):
             args.basement_vulnerability, loss_column=loss_col,
         )
 
-    # Lumped exterior perimeter opening (--basement-opening PATH)
+    # Lumped exterior perimeter opening (--basement-ingress PATH)
     basement_ingress = None
-    if args.basement_opening:
-        bsmt_paths = _frag.parse_pathway_file(args.basement_opening)
+    if args.basement_ingress:
+        bsmt_paths = _frag.parse_pathway_file(args.basement_ingress)
         if bsmt_paths:
             bp = bsmt_paths[0]
             basement_ingress = IngressPathway(
@@ -717,15 +800,17 @@ def main(argv=None):
         time_units                     = args.time_units,
         dt                             = args.dt,
         thresholds                     = args.thresholds,
-        default_velocity               = args.default_velocity,
+        velocity_mode                  = args.velocity_mode,
+        vel_a                          = args.velocity_power_law_a,
+        vel_b                          = args.velocity_power_law_b,
         building_content_vulnerability = building_content_vulnerability,
         basement_content_vulnerability = basement_content_vulnerability,
         basement_area                  = args.basement_area,
         basement_floor_elev            = args.basement_floor_elevation,
         basement_ceiling_elev          = args.basement_ceiling_elevation,
         basement_ingress               = basement_ingress,
-        basement_conn_height           = args.basement_connection_height,
-        basement_conn_area             = args.basement_connection_area,
+        basement_conn_height           = args.basement_bypass_height,
+        basement_conn_area             = args.basement_bypass_area,
         sump_pump                      = sump_pump,
         outdir                         = args.outdir,
         verbose                        = True,
@@ -778,7 +863,9 @@ def run(config, hydro_dir: str, pathways: list, *,
         time_units=config.time_units,
         dt=config.dt / {'seconds': 1.0, 'minutes': 60.0, 'hours': 3600.0}.get(config.time_units, 60.0),
         thresholds=thresholds,
-        default_velocity=config.default_velocity,
+        velocity_mode=config.velocity_mode,
+        vel_a=config.velocity_power_law_a,
+        vel_b=config.velocity_power_law_b,
         building_content_vulnerability=building_vulnerability,
         basement_content_vulnerability=basement_vulnerability,
         basement_area=config.basement_area,

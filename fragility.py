@@ -546,6 +546,9 @@ def run_fragility_montecarlo(
     seed: Optional[int] = None,
     percentile_values: Tuple[int, ...] = (10, 25, 50, 75, 90),
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    velocity_mode: str = 'zero',
+    vel_a: float = 1.5,
+    vel_b: float = 0.5,
 ) -> MonteCarloResult:
     """Run the Monte Carlo ensemble.
 
@@ -558,7 +561,9 @@ def run_fragility_montecarlo(
         external_times / external_levels: hydrograph (seconds internally).
         n_replicates: number of Monte Carlo replicates.
         dt: simulation timestep (seconds).
-        external_vel_times / external_velocities: optional velocity hydrograph.
+        external_vel_times / external_velocities: velocity time series (file mode only).
+        velocity_mode: 'zero', 'power_law', or 'file'.
+        vel_a / vel_b: power-law coefficients (used when velocity_mode='power_law').
         seed: random seed for reproducibility (None → non-deterministic).
         percentile_values: percentiles to report (default: 10, 25, 50, 75, 90).
         progress_callback: optional callable(replicate_idx, n_replicates).
@@ -610,6 +615,9 @@ def run_fragility_montecarlo(
             external_vel_times=external_vel_times,
             external_velocities=external_velocities,
             conductance_resolver=_full_resolver,
+            velocity_mode=velocity_mode,
+            vel_a=vel_a,
+            vel_b=vel_b,
         )
         ret = sim.run()
 
@@ -956,4 +964,7 @@ def run(config, hydro, paths: List[FragilePath],
         external_velocities=hydro.velocities,
         seed=config.random_seed,
         percentile_values=config.output_percentiles,
+        velocity_mode=config.velocity_mode,
+        vel_a=config.velocity_power_law_a,
+        vel_b=config.velocity_power_law_b,
     )

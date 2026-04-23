@@ -23,9 +23,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'examples'))
-from plot_schematics import draw_schematic
-
 from engine import (
     Building, IngressPathway, Simulation,
     parse_external_text, parse_ingress_file,
@@ -161,22 +158,24 @@ with st.sidebar:
 
         with st.expander('💨  External velocity  (optional)', expanded=False):
             vel_mode = st.radio(
-                'Velocity', ['None', 'Constant', 'Upload CSV', 'Manual table'],
+                'Velocity mode', ['Zero', 'Power law  (v = a · h^b)', 'File'],
                 key='vel_mode', horizontal=False)
             uploaded_velocity = None
             manual_vel_tbl    = None
-            default_velocity  = 0.0
-            if vel_mode == 'Constant':
-                default_velocity = st.number_input(
-                    'Velocity (m/s)', value=0.2, min_value=0.0, step=0.05, format='%.2f')
-            elif vel_mode == 'Upload CSV':
+            vel_pl_a = 1.5
+            vel_pl_b = 0.5
+            if vel_mode == 'Power law  (v = a · h^b)':
+                _vc1, _vc2 = st.columns(2)
+                vel_pl_a = _vc1.number_input('a', value=1.5, min_value=0.0, step=0.1, format='%.2f')
+                vel_pl_b = _vc2.number_input('b', value=0.5, min_value=0.0, step=0.05, format='%.2f')
+            elif vel_mode == 'File':
                 uploaded_velocity = st.file_uploader(
                     'Velocity CSV  (time, velocity)', type=['csv', 'txt'], key='vel_up',
                     label_visibility='collapsed')
-            elif vel_mode == 'Manual table':
-                manual_vel_tbl = _data_editor(
-                    [{'time': 0.0, 'velocity': 0.2}, {'time': 60.0, 'velocity': 0.0}],
-                    key='vel_tbl')
+                if not uploaded_velocity:
+                    manual_vel_tbl = _data_editor(
+                        [{'time': 0.0, 'velocity': 0.2}, {'time': 60.0, 'velocity': 0.0}],
+                        key='vel_tbl')
 
     # ── 3. Basement ──────────────────────────────────────────────────────────
     with st.expander('🏗️  Basement compartment', expanded=False):
@@ -324,16 +323,15 @@ with tab_setup:
         _show_ing = False
         if ing_mode == 'Upload file' and uploaded_ingress:
             try:
-                _tmp = _save_tmp(_read_bytes(uploaded_ingress), '.txt')
-                _il  = parse_ingress_file(_tmp)
-                _p   = os.path.join(tempfile.gettempdir(), 'prev_ing.png')
+                import fragility as _frag_ing
+                _tmp_ing2 = _save_tmp(_read_bytes(uploaded_ingress), '.csv')
                 try:
-                    viz.save_ingress_locations(_il, _p)
+                    _il2 = _frag_ing.parse_pathway_file(_tmp_ing2)
                 except Exception:
-                    viz.save_ingress_preview(_il, _p)
+                    _il2 = parse_ingress_file(_tmp_ing2)
+                _p = os.path.join(tempfile.gettempdir(), 'prev_ing.png')
+                viz.save_run_schematic(_p, gf_pathways=_il2)
                 st.image(_p, width="stretch")
-                st.caption(f'{len(_il)} pathway(s)  ·  total area '
-                           f'{sum(p.area for p in _il):.5f} m²')
                 _show_ing = True
             except Exception as _e:
                 st.error(f'Parse error: {_e}')
@@ -352,12 +350,13 @@ with tab_setup:
     with col_vel:
         st.markdown('**External velocity**')
         _show_vel = False
-        if vel_mode == 'Constant':
-            st.metric('Constant velocity', f'{default_velocity:.2f} m/s')
-            if default_velocity == 0.0:
-                st.caption('Hydrodynamic term disabled (v = 0).')
+        if vel_mode == 'Zero':
+            st.info('Velocity = 0 — hydrodynamic term disabled.')
             _show_vel = True
-        elif vel_mode == 'Upload CSV' and uploaded_velocity:
+        elif vel_mode == 'Power law  (v = a · h^b)':
+            st.caption(f'v = {vel_pl_a:.2f} · h^{vel_pl_b:.2f}')
+            _show_vel = True
+        elif vel_mode == 'File' and uploaded_velocity:
             try:
                 _vt, _vv = parse_velocity_text(_read_text(uploaded_velocity))
                 _p = os.path.join(tempfile.gettempdir(), 'prev_vel.png')
@@ -367,7 +366,7 @@ with tab_setup:
                 _show_vel = True
             except Exception as _e:
                 st.error(f'Parse error: {_e}')
-        elif vel_mode == 'Manual table' and manual_vel_tbl is not None:
+        elif vel_mode == 'File' and manual_vel_tbl is not None:
             try:
                 _vt, _vv = _tbl_to_pairs(manual_vel_tbl, 'time', 'velocity')
                 if _vt:
@@ -377,10 +376,8 @@ with tab_setup:
                     _show_vel = True
             except Exception:
                 pass
-        if not _show_vel and vel_mode == 'None':
-            st.info('No velocity — hydrodynamic term is zero.')
-        elif not _show_vel:
-            st.info('Upload a velocity CSV or choose a source above.')
+        if not _show_vel:
+            st.info('Upload a velocity CSV or enter values in the table above.')
 
     # ── Building schematic ────────────────────────────────────────────────────
     st.divider()
@@ -389,52 +386,41 @@ with tab_setup:
     with _col_sch:
         _bsmt_d_sch = (abs(float(basement_floor_elev))
                        if enable_basement and basement_area > 0 else None)
-        _path_style_sch = 'prob' if enable_mc else 'det'
-        _gf_paths_sch   = []
-        _bsmt_paths_sch = []
         try:
+            import fragility as _frag_sch
+            _gf_pw_sch = []
+            _mem_sch   = []
             if ing_mode == 'Upload file' and uploaded_ingress:
-                _tmp_sch = _save_tmp(_read_bytes(uploaded_ingress), '.txt')
-                for _p in parse_ingress_file(_tmp_sch):
-                    if getattr(_p, 'target', 'ground') == 'ground':
-                        _gf_paths_sch.append(dict(
-                            sill=_p.height, name=_p.name or 'path',
-                            style=_path_style_sch))
-            elif ing_mode == 'Manual table' and manual_ing_tbl is not None:
-                _recs_sch = (manual_ing_tbl.to_dict('records')
-                             if hasattr(manual_ing_tbl, 'to_dict') else list(manual_ing_tbl))
-                for _rs in _recs_sch:
-                    try:
-                        _gf_paths_sch.append(dict(
-                            sill=float(_rs.get('height', 0.0)),
-                            name=str(_rs.get('name', 'path')),
-                            style=_path_style_sch,
-                        ))
-                    except Exception:
-                        pass
+                _tmp_sch = _save_tmp(_read_bytes(uploaded_ingress), '.csv')
+                try:
+                    _gf_pw_sch = _frag_sch.parse_pathway_file(_tmp_sch)
+                except Exception:
+                    _gf_pw_sch = parse_ingress_file(_tmp_sch)
+            if enable_mc and uploaded_membrane:
+                try:
+                    _tmp_m = _save_tmp(_read_bytes(uploaded_membrane), '.csv')
+                    _raw_m = _frag_sch.parse_pathway_file(_tmp_m)
+                    _mem_sch = [_frag_sch.fragile_path_to_membrane(fp)
+                                for fp in _raw_m
+                                if fp.group_id > 0 and fp.fragility is not None]
+                except Exception:
+                    pass
+            _sch_p = os.path.join(tempfile.gettempdir(), 'preview_schematic.png')
+            viz.save_run_schematic(
+                _sch_p,
+                gf_pathways=_gf_pw_sch,
+                membranes=_mem_sch,
+                basement_depth=_bsmt_d_sch,
+                has_sump=enable_sump,
+                has_pump=enable_sump,
+                bypass_height=float(bsmt_conn_height or 0.0),
+                label='Current setup',
+                subtitle=('Basement' + (' + pump' if enable_sump else '')
+                          if enable_basement else 'Ground floor only'),
+            )
+            st.image(_sch_p, width="stretch")
         except Exception:
             pass
-        if enable_basement and basement_area > 0 and float(bsmt_ing_area) > 0:
-            _bsmt_paths_sch = [dict(
-                sill=float(bsmt_ing_height), name='bsmt ingress', style='det')]
-        _mem_cfg_sch = None
-        if enable_mc and uploaded_membrane is not None:
-            _mem_cfg_sch = dict(sill=0.0, capacity=0.5, style='prob')
-        _sch_subtitle = ('Basement' + (' + pump' if enable_sump else '')
-                         if enable_basement else 'Ground floor only')
-        _sch_cfg = dict(
-            label='Current setup', subtitle=_sch_subtitle,
-            floor_h=2.5, bsmt_d=_bsmt_d_sch,
-            sump=enable_sump, pump=enable_sump,
-            gf_paths=_gf_paths_sch, bsmt_paths=_bsmt_paths_sch,
-            membrane=_mem_cfg_sch,
-        )
-        _sch_fig, _sch_ax = plt.subplots(
-            figsize=(3.5, 5.0 if _bsmt_d_sch else 3.5))
-        _sch_fig.patch.set_facecolor('white')
-        draw_schematic(_sch_ax, _sch_cfg)
-        st.pyplot(_sch_fig, use_container_width=True)
-        plt.close(_sch_fig)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -487,17 +473,18 @@ if run_button:
                 ing_list = parse_ingress_text('\n'.join(_lines))
 
             # ── Velocity ─────────────────────────────────────────────────────
-            if vel_mode == 'Upload CSV' and uploaded_velocity:
+            v_times_s, v_vals = None, None
+            if vel_mode == 'File' and uploaded_velocity:
                 _vtr, _vvr = parse_velocity_text(_read_text(uploaded_velocity))
                 v_times_s  = [t * _mul for t in _vtr]
                 v_vals     = list(_vvr)
-            elif vel_mode == 'Manual table' and manual_vel_tbl is not None:
+            elif vel_mode == 'File' and manual_vel_tbl is not None:
                 _vtr, _vvr = _tbl_to_pairs(manual_vel_tbl, 'time', 'velocity')
                 v_times_s  = [t * _mul for t in _vtr]
                 v_vals     = _vvr
-            else:
-                v_times_s = list(times_s)
-                v_vals    = [float(default_velocity)] * len(times_s)
+            _vel_mode_key = ('file' if vel_mode == 'File'
+                             else 'power_law' if vel_mode == 'Power law  (v = a · h^b)'
+                             else 'zero')
 
             # ── Building ──────────────────────────────────────────────────────
             bld = Building(float(floor_area))
@@ -539,7 +526,10 @@ if run_button:
             sim = Simulation(bld, ing_list, times_s, _levels,
                              dt=dt_s,
                              external_vel_times=v_times_s,
-                             external_velocities=v_vals)
+                             external_velocities=v_vals,
+                             velocity_mode=_vel_mode_key,
+                             vel_a=float(vel_pl_a),
+                             vel_b=float(vel_pl_b))
 
             def _cb(p):
                 try:
@@ -573,7 +563,14 @@ if run_button:
             samp_ext = _samp(sim_t, times_s, _levels)
             samp_vel = None
             try:
-                samp_vel = sample_with_zero_padding(sim_t, v_times_s, v_vals)
+                if _vel_mode_key == 'file' and v_times_s and v_vals:
+                    samp_vel = sample_with_zero_padding(sim_t, v_times_s, v_vals)
+                elif _vel_mode_key == 'power_law':
+                    _samp_e = sample_with_zero_padding(sim_t, times_s, _levels)
+                    samp_vel = [float(vel_pl_a) * (max(0.0, h) ** float(vel_pl_b))
+                                for h in _samp_e]
+                else:
+                    samp_vel = [0.0] * len(sim_t)
             except Exception:
                 pass
 
@@ -591,6 +588,25 @@ if run_button:
             _prog.progress(80, 'Generating plots…')
             outdir   = tempfile.mkdtemp(prefix='sim_')
             sim_png  = os.path.join(outdir, 'simulation_result.png')
+
+            # ── Schematic ────────────────────────────────────────────────────
+            sch_bytes = None
+            try:
+                _sch_p = os.path.join(outdir, 'schematic.png')
+                _bsmt_d_sch = (abs(float(basement_floor_elev))
+                               if enable_basement and basement_area > 0 else None)
+                viz.save_run_schematic(
+                    _sch_p,
+                    gf_pathways=ing_list,
+                    basement_depth=_bsmt_d_sch,
+                    has_sump=enable_sump,
+                    has_pump=enable_sump,
+                    bypass_height=float(bsmt_conn_height or 0.0),
+                )
+                with open(_sch_p, 'rb') as _f:
+                    sch_bytes = _f.read()
+            except Exception:
+                pass
             _bsmt_max = (max(0.0, float(basement_ceiling_elev) - float(basement_floor_elev))
                          if enable_basement and basement_area > 0 else None)
             _sump_ov  = float(sump_ov_level) if enable_sump else None
@@ -692,6 +708,7 @@ if run_button:
                 time_unit=time_unit, mul=_mul,
                 has_basement=sim_b is not None, has_sump=sim_s is not None,
                 sim_png_bytes=sim_png_bytes,
+                sch_bytes=sch_bytes,
                 dash_bytes=dash_bytes, diag_csv=diag_csv,
                 narrative=narrative or [], ev_rows=ev_rows,
                 bldg_loss=bldg_loss, bsmt_loss=bsmt_loss,
@@ -772,6 +789,9 @@ if run_button:
                         external_vel_times=v_times_s, external_velocities=v_vals,
                         seed=_seed,
                         progress_callback=_mc_cb,
+                        velocity_mode=_vel_mode_key,
+                        vel_a=float(vel_pl_a),
+                        vel_b=float(vel_pl_b),
                     )
 
                     # Percentile table
@@ -868,6 +888,14 @@ with tab_results:
             if _r['bldg_loss'] is not None and _r['bsmt_loss'] is not None:
                 lc[2].metric('Total loss',
                              f'£{_r["bldg_loss"]+_r["bsmt_loss"]:,.0f}')
+
+        # ── Building schematic ────────────────────────────────────────────────
+        if _r.get('sch_bytes'):
+            st.divider()
+            _sc1, _sc2, _sc3 = st.columns([1, 1, 1])
+            with _sc1:
+                st.markdown('**Building schematic**')
+                st.image(_r['sch_bytes'], width="stretch")
 
         # ── Main simulation plot ──────────────────────────────────────────────
         st.divider()

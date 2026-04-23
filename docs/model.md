@@ -11,7 +11,7 @@ The building is represented as a network of up to three well-mixed compartments.
 ```
 exterior
    │  ← exterior-to-ground ingress paths (--ingress)
-   │  ← exterior-to-basement perimeter opening (--basement-opening)
+   │  ← exterior-to-basement perimeter opening (--basement-ingress)
    │
 ground floor ──── basement ──── sump
                ↑             ↑
@@ -71,13 +71,21 @@ Positive $Q_i$ denotes flow from source to target. The formula handles both infl
 
 ### Velocity correction
 
-When external velocity data are available, a dynamic-pressure head term is added to the external side:
+A dynamic-pressure head term is added to the external side of all exterior-facing openings:
 
 $$
 \Delta H_{i,\mathrm{eff}} = H_{ext} + \frac{v_{ext}^2}{2g} - H_{tgt}
 $$
 
-The submerged test still uses the raw $H_{ext}$ (not the augmented value) because the opening must be physically wetted to pass flow. When no velocity file is provided, a conservative constant default $v_0$ (default 0.2 m/s) is applied to all exterior-facing openings.
+The submerged test still uses the raw $H_{ext}$ (not the augmented value) because the opening must be physically wetted to pass flow.
+
+Three velocity modes are available (`--velocity-mode`):
+
+| Mode | $v_{ext}(t)$ |
+|------|-------------|
+| `zero` (default) | $0$ — purely hydrostatic, no hydrodynamic contribution |
+| `power_law` | $a \cdot h_{ext}(t)^{b}$ — Manning-style rating curve derived directly from the depth hydrograph; default $a = 1.5$, $b = 0.5$ |
+| `file` | linearly interpolated from a user-supplied time series (`--external-velocity`) |
 
 ---
 

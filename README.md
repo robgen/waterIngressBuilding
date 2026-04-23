@@ -63,7 +63,7 @@ python3 cli.py \
 python3 cli.py \
   --external                 hydro.csv \
   --ingress                  ingress.csv \
-  --basement-opening         basement_opening.csv \
+  --basement-ingress         basement_opening.csv \
   --basement-area            30 \
   --basement-floor-elevation -2.5 \
   --floor                    50 \
@@ -78,7 +78,7 @@ All sump and pump parameters share the `--sumppump-` prefix.
 python3 cli.py \
   --external                  hydro.csv \
   --ingress                   ingress.csv \
-  --basement-opening          basement_opening.csv \
+  --basement-ingress          basement_opening.csv \
   --basement-area             30 \
   --basement-floor-elevation  -2.5 \
   --floor                     50 \

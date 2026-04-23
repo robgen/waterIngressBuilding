@@ -12,8 +12,6 @@ import math
 import os
 import sys
 
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.ticker as mticker
@@ -23,47 +21,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
+import plot  # noqa: F401 — sets Agg backend and shared rcParams as side-effect
 from engine import Building, IngressPathway, Simulation, sample_with_zero_padding
-
-# ── shared rcParams (mirrors plot.py / plot_mc.py) ────────────────────────────
-plt.rcParams.update({
-    'figure.facecolor':    'white',
-    'axes.facecolor':      '#f9fafb',
-    'axes.edgecolor':      '#c8cdd2',
-    'axes.linewidth':      0.8,
-    'axes.grid':           True,
-    'axes.grid.axis':      'both',
-    'grid.color':          '#e4e8ed',
-    'grid.linewidth':      0.55,
-    'grid.linestyle':      '-',
-    'xtick.color':         '#4a5260',
-    'ytick.color':         '#4a5260',
-    'xtick.labelcolor':    '#4a5260',
-    'ytick.labelcolor':    '#4a5260',
-    'xtick.direction':     'out',
-    'ytick.direction':     'out',
-    'xtick.major.size':    3.5,
-    'ytick.major.size':    3.5,
-    'lines.linewidth':     2.0,
-    'font.family':         'sans-serif',
-    'font.sans-serif':     ['Helvetica Neue', 'Arial', 'DejaVu Sans'],
-    'font.size':           10,
-    'axes.titlesize':      11,
-    'axes.titleweight':    'bold',
-    'axes.titlepad':       8,
-    'axes.labelsize':      9.5,
-    'axes.labelcolor':     '#2c3140',
-    'xtick.labelsize':     8.5,
-    'ytick.labelsize':     8.5,
-    'legend.fontsize':     8.5,
-    'legend.framealpha':   0.93,
-    'legend.edgecolor':    '#d0d5dd',
-    'savefig.dpi':         150,
-    'savefig.bbox':        'tight',
-    'savefig.pad_inches':  0.12,
-    'axes.spines.top':     False,
-    'axes.spines.right':   False,
-})
 
 # ── problem parameters (Case 01) ──────────────────────────────────────────────
 FLOOR_AREA  = 50.0      # m²  — realistic small UK terraced house ground floor

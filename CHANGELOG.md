@@ -31,9 +31,9 @@ All notable changes to this project are documented in this file.
 
 ### Inputs
 
-- Unified pathway CSV format: a single header-based CSV format is used for all pathway inputs (ground-floor ingress, basement perimeter opening, membranes). One parser handles all three; routing is determined by CLI flag (`--ingress`, `--basement-opening`, `--membrane`).
+- Unified pathway CSV format: a single header-based CSV format is used for all pathway inputs (ground-floor ingress, basement perimeter opening, membranes). One parser handles all three; routing is determined by CLI flag (`--ingress`, `--basement-ingress`, `--membrane`).
 - Fragility state columns are optional extensions to the base pathway columns; omitting them gives a deterministic pathway. No separate "fragility format" is needed.
-- Basement perimeter opening (`--basement-opening`): previously configured via indexed CLI args (`--basement-ingress-*`, `--basement-state-name-1`, …). Now specified as a single-row CSV file using the same format as the ingress file.
+- Basement perimeter opening (`--basement-ingress`): previously configured via indexed CLI args (`--basement-ingress-*`, `--basement-state-name-1`, …). Now specified as a single-row CSV file using the same format as the ingress file.
 - Sump and pump flags unified under `--sumppump-*` prefix (previously split between `--sump-*` and `--pump-*`). The two components are always configured together; the prefix reflects this.
 - No backward compatibility with old ingress file formats. Existing input files must be updated to the header-based format.
 

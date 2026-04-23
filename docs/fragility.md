@@ -91,7 +91,7 @@ Protected pathways must not carry their own fragility states (validated at load 
 
 ## Basement perimeter opening
 
-The exterior-to-basement perimeter opening supports the same fragility logic as any ingress pathway. It is defined in a separate file (`--basement-opening`) using the same unified CSV format, and is sampled independently from ground-floor pathways and membranes.
+The exterior-to-basement perimeter opening supports the same fragility logic as any ingress pathway. It is defined in a separate file (`--basement-ingress`) using the same unified CSV format, and is sampled independently from ground-floor pathways and membranes.
 
 ---
 

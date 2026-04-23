@@ -38,6 +38,9 @@ HERE  = os.path.dirname(os.path.abspath(__file__))
 ROOT  = os.path.dirname(HERE)
 PY    = os.path.join(ROOT, '.venv', 'bin', 'python3')
 
+sys.path.insert(0, ROOT)
+import plot as viz  # noqa: E402 — must come after sys.path tweak
+
 _ap = argparse.ArgumentParser(add_help=False)
 _ap.add_argument('--animate', action='store_true', default=False,
                  help='Write GIF animations for each case (slow; off by default)')
@@ -129,6 +132,10 @@ def rel(path):
     """Relative path from examples/ for markdown image links."""
     return os.path.relpath(path, HERE)
 
+def _load_csv(path):
+    with open(path, newline='') as f:
+        return list(csv.DictReader(f))
+
 # ── create shared inputs ──────────────────────────────────────────────────────
 
 print('Creating shared inputs...')
@@ -206,7 +213,7 @@ print('\nEx 04 – basement compartment, no ground-floor opening')
 ex04 = mkdir(os.path.join(HERE, 'ex04'))
 run('ex04', [
     '--ingress', os.path.join(shared, 'no_gf_ingress.csv'),
-    '--basement-opening', os.path.join(shared, 'basement_opening.csv'),
+    '--basement-ingress', os.path.join(shared, 'basement_opening.csv'),
     '--floor', '50',
     '--basement-area',            '30',
     '--basement-floor-elevation', '-2.5',
@@ -221,7 +228,7 @@ print('\nEx 05 – basement + sump/pump (keeps up)')
 ex05 = mkdir(os.path.join(HERE, 'ex05'))
 run('ex05', [
     '--ingress', os.path.join(shared, 'no_gf_ingress.csv'),
-    '--basement-opening', os.path.join(shared, 'basement_opening.csv'),
+    '--basement-ingress', os.path.join(shared, 'basement_opening.csv'),
     '--floor', '50',
     '--basement-area',               '30',
     '--basement-floor-elevation',    '-2.5',
@@ -252,7 +259,7 @@ print('\nEx 06 – basement + sump/pump (overwhelmed)')
 ex06 = mkdir(os.path.join(HERE, 'ex06'))
 run('ex06', [
     '--ingress', os.path.join(shared, 'no_gf_ingress.csv'),
-    '--basement-opening', os.path.join(shared, 'basement_opening.csv'),
+    '--basement-ingress', os.path.join(shared, 'basement_opening.csv'),
     '--floor', '50',
     '--basement-area',               '30',
     '--basement-floor-elevation',    '-2.5',
@@ -333,9 +340,23 @@ run('ex09', [
 
 # Generate MC result figures for ex07, ex08, ex09
 print('\nGenerating fragility MC figures ...')
-subprocess.run([PY, os.path.join(HERE, 'plot_mc.py')],
-               capture_output=True, text=True, cwd=ROOT)
-print('  OK  ex07 + ex08 + ex09 mc_result.png')
+for _case_dir, _title in [
+    (os.path.join(HERE, 'ex07'),
+     'Case 07 — Fragility MC: single probabilistic seal  (n = 500, seed = 42)'),
+    (os.path.join(HERE, 'ex08'),
+     'Case 08 — Fragility MC: membrane-protected group  (n = 500, seed = 42)'),
+    (os.path.join(HERE, 'ex09'),
+     'Case 09 — Deterministic membrane: design capacity above flood peak  (n = 500, seed = 42)'),
+]:
+    _reps  = _load_csv(os.path.join(_case_dir, 'out', 'fragility_replicates.csv'))
+    _sfreq = _load_csv(os.path.join(_case_dir, 'out', 'fragility_state_freq.csv'))
+    _out   = os.path.join(_case_dir, 'out', 'mc_result.png')
+    viz.save_mc_result(
+        [float(r['peak_h_in_m'])           for r in _reps],
+        [float(r.get('peak_h_ext_m', 0.5)) for r in _reps],
+        _sfreq, _title, _out,
+    )
+    print(f'  OK  {_out}')
 
 # ── batch hydrograph ensemble ─────────────────────────────────────────────────
 print('\nCreating batch hydrograph ensemble ...')
@@ -378,9 +399,32 @@ run_batch_case('ex11', [
 
 # Generate batch figures
 print('\nGenerating batch figures ...')
-subprocess.run([PY, os.path.join(HERE, 'plot_batch.py')],
-               capture_output=True, text=True, cwd=ROOT)
-print('  OK  ex10 + ex11 batch figures')
+_rows10 = _load_csv(os.path.join(HERE, 'ex10', 'out', 'batch_results.csv'))
+_out10  = os.path.join(HERE, 'ex10', 'out', 'batch_result.png')
+viz.save_batch_deterministic(
+    [float(r['h_peak_ext']) for r in _rows10],
+    [float(r['h_peak_int']) for r in _rows10],
+    'Case 10 — Batch deterministic: 20 hydrographs, single ground-floor opening',
+    _out10,
+    v_peak=[float(r['v_peak_ext']) for r in _rows10] if 'v_peak_ext' in _rows10[0] else None,
+)
+print(f'  OK  {_out10}')
+
+_rows11 = _load_csv(os.path.join(HERE, 'ex11', 'out', 'batch_results.csv'))
+_out11  = os.path.join(HERE, 'ex11', 'out', 'batch_mc_result.png')
+viz.save_batch_mc_fragility(
+    [float(r['h_peak_ext']) for r in _rows11],
+    [float(r['h_peak_int']) for r in _rows11],
+    'Case 11 — Batch + fragility MC: 20 hydrographs × 50 replicates, membrane',
+    _out11,
+    membrane_median_m=0.5,
+)
+print(f'  OK  {_out11}')
+
+# ── generate building schematics ─────────────────────────────────────────────
+print('\nGenerating building schematics ...')
+_sch_path = viz.save_all_schematics(os.path.join(HERE, 'schematics.png'))
+print(f'  OK  {_sch_path}')
 
 # ── generate report ───────────────────────────────────────────────────────────
 print('\nGenerating report.md ...')

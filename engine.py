@@ -100,7 +100,8 @@ class IngressPathway:
 class Simulation:
     def __init__(self, building, ingress_list, external_times, external_levels,
                  dt=60.0, external_vel_times=None, external_velocities=None,
-                 conductance_resolver=None):
+                 conductance_resolver=None,
+                 velocity_mode='zero', vel_a=1.5, vel_b=0.5):
         self.building = building
         self.ingress_list = ingress_list
         self._conductance_resolver = conductance_resolver
@@ -109,6 +110,9 @@ class Simulation:
         self.v_t = external_vel_times if external_vel_times is not None else []
         self.v_vals = external_velocities if external_velocities is not None else []
         self.dt = float(dt) if dt is not None else 60.0
+        self.velocity_mode = velocity_mode
+        self.vel_a = vel_a
+        self.vel_b = vel_b
         self._last_trace = None
         self._initial_h_in = building.h_in
         self._initial_h_basement = building.h_basement
@@ -171,7 +175,7 @@ class Simulation:
             H_sump_abs = (sp.sump_base_elevation + sp.h_sump) if sp is not None else 0.0
 
             v_out = 0.0
-            if self.v_t and self.v_vals:
+            if self.velocity_mode == 'file' and self.v_t and self.v_vals:
                 j_v = self._vel_index
                 while j_v < len(self.v_t) - 1 and t >= self.v_t[j_v + 1]:
                     j_v += 1
@@ -182,6 +186,8 @@ class Simulation:
                     v_out = vv1 + (vv2 - vv1) * (t - vt1) / (vt2 - vt1) if vt2 != vt1 else vv1
                 else:
                     v_out = 0.0 if t > self.v_t[-1] else (self.v_vals[-1] if self.v_vals else 0.0)
+            elif self.velocity_mode == 'power_law':
+                v_out = self.vel_a * (max(0.0, h_out) ** self.vel_b)
 
             flow_og = 0.0
             flow_gb = 0.0
@@ -411,7 +417,9 @@ class SimConfig:
     n_replicates: int = 1
     random_seed: Optional[int] = None
     output_percentiles: Tuple[int, ...] = (10, 25, 50, 75, 90)
-    default_velocity: float = 0.2
+    velocity_mode: str = 'zero'                # 'zero' | 'power_law' | 'file'
+    velocity_power_law_a: float = 1.5
+    velocity_power_law_b: float = 0.5
     time_units: str = 'minutes'               # for display only
     compute_forces: bool = False
     building_width: float = 10.0
@@ -442,6 +450,7 @@ class SimResult:
     peak_h_basement: float
     peak_h_sump: float
     peak_h_ext: float
+    v_peak_ext: float
     total_volume_in: float
     trace: dict = field(default_factory=dict)
 
@@ -493,6 +502,9 @@ def run(config: SimConfig, hydro: Hydrograph, pathways: list, *,
         external_vel_times=hydro.vel_times,
         external_velocities=hydro.velocities,
         conductance_resolver=conductance_resolver,
+        velocity_mode=config.velocity_mode,
+        vel_a=config.velocity_power_law_a,
+        vel_b=config.velocity_power_law_b,
     )
     raw = sim.run()
 
@@ -512,6 +524,15 @@ def run(config: SimConfig, hydro: Hydrograph, pathways: list, *,
     peak_h_basement = max(h_basement, default=0.0) if h_basement else 0.0
     peak_h_sump = max(h_sump, default=0.0) if h_sump else 0.0
 
+    if config.velocity_mode == 'file' and hydro.vel_times and hydro.velocities:
+        sampled_vel = sample_with_zero_padding(times, hydro.vel_times, hydro.velocities)
+        v_peak_ext = max(sampled_vel) if sampled_vel else 0.0
+    elif config.velocity_mode == 'power_law':
+        v_peak_ext = (config.velocity_power_law_a * (max(sampled_ext) ** config.velocity_power_law_b)
+                      if sampled_ext else 0.0)
+    else:
+        v_peak_ext = 0.0
+
     total_volume_in = 0.0
     for idx in range(1, len(h_in)):
         dh = h_in[idx] - h_in[idx - 1]
@@ -527,6 +548,7 @@ def run(config: SimConfig, hydro: Hydrograph, pathways: list, *,
         peak_h_basement=peak_h_basement,
         peak_h_sump=peak_h_sump,
         peak_h_ext=peak_h_ext,
+        v_peak_ext=v_peak_ext,
         total_volume_in=total_volume_in,
         trace=sim._last_trace or {},
     )

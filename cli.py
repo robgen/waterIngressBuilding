@@ -6,7 +6,7 @@ pathway lists, then delegates all computation to engine, fragility, or batch.
 
 Key differences from the old main.py CLI:
   • --sumppump-*     : unified prefix for sump + pump flags (was --sump-* / --pump-*)
-  • --basement-opening PATH : replaces indexed --basement-ingress-* flags
+  • --basement-ingress PATH : replaces indexed --basement-ingress-* flags
   • --ingress        : unified header-based CSV format only (no legacy positional format)
   • Plotting imported from plot (not viz) internally; viz is still available as alias
 """
@@ -32,14 +32,19 @@ def _build_argparser():
     p.add_argument('--external', '-e', required=True,
                    help='External depth hydrograph CSV (time, level).')
     p.add_argument('--external-velocity', default=None,
-                   help='Optional external velocity hydrograph CSV (time, velocity).')
-    p.add_argument('--external-velocity-default', type=float, default=0.2,
-                   help='Fallback velocity (m/s) when no velocity file is supplied.')
+                   help='Velocity hydrograph CSV (time, velocity); used with --velocity-mode=file.')
+    p.add_argument('--velocity-mode', default='zero',
+                   choices=['zero', 'power_law', 'file'],
+                   help="Velocity mode: 'zero' (default), 'power_law' (v=a·h^b), or 'file' (CSV).")
+    p.add_argument('--velocity-power-law-a', type=float, default=1.5,
+                   help='Power-law coefficient a in v=a·h^b. Default: 1.5.')
+    p.add_argument('--velocity-power-law-b', type=float, default=0.5,
+                   help='Power-law exponent b in v=a·h^b. Default: 0.5.')
 
     # ── ingress pathways ──────────────────────────────────────────────────────
     p.add_argument('--ingress', '-i', required=True,
                    help='Ground-floor ingress pathways CSV (unified format).')
-    p.add_argument('--basement-opening', default=None,
+    p.add_argument('--basement-ingress', default=None,
                    help='Exterior→basement perimeter opening CSV (unified format, '
                         'typically one row).')
     p.add_argument('--membrane', default=None,
@@ -49,17 +54,6 @@ def _build_argparser():
     # ── building geometry ─────────────────────────────────────────────────────
     p.add_argument('--floor', '-f', type=float, required=True,
                    help='Ground-floor plan area (m²).')
-    p.add_argument('--dt', type=float, default=None,
-                   help='Simulation timestep (in --time-units). Default: 1 unit.')
-    p.add_argument('--time-units', '-u', default='minutes',
-                   choices=['seconds', 'minutes', 'hours'])
-    p.add_argument('--outdir', '-o', default='.',
-                   help='Output directory.')
-    p.add_argument('--temp-output', action='store_true',
-                   help='Write to a temporary directory removed on exit.')
-    p.add_argument('--animate', action='store_true',
-                   help='Write a GIF animation (slow).')
-    p.add_argument('--verbose', '-v', action='store_true')
 
     # ── basement ──────────────────────────────────────────────────────────────
     p.add_argument('--basement-area', type=float, default=0.0,
@@ -68,9 +62,9 @@ def _build_argparser():
                    help='Basement floor elevation relative to datum (m, negative = below).')
     p.add_argument('--basement-ceiling-elevation', type=float, default=0.0,
                    help='Basement ceiling elevation on the datum (m). Default: 0.')
-    p.add_argument('--basement-connection-height', type=float, default=None,
+    p.add_argument('--basement-bypass-height', type=float, default=None,
                    help='Sill of the ground↔basement bypass connection (m).')
-    p.add_argument('--basement-connection-area', type=float, default=0.0,
+    p.add_argument('--basement-bypass-area', type=float, default=0.0,
                    help='Area of the ground↔basement bypass (m²).')
 
     # ── sump + pump (always used together, --sumppump-* prefix) ──────────────
@@ -87,6 +81,19 @@ def _build_argparser():
     p.add_argument('--sumppump-pipe-loss-coeff', type=float, default=0.0)
     p.add_argument('--sumppump-availability', type=float, default=1.0)
 
+    # ── simulation parameters ─────────────────────────────────────────────────
+    p.add_argument('--dt', type=float, default=None,
+                   help='Simulation timestep (in --time-units). Default: 1 unit.')
+    p.add_argument('--time-units', '-u', default='minutes',
+                   choices=['seconds', 'minutes', 'hours'])
+    p.add_argument('--outdir', '-o', default='.',
+                   help='Output directory.')
+    p.add_argument('--temp-output', action='store_true',
+                   help='Write to a temporary directory removed on exit.')
+    p.add_argument('--animate', action='store_true',
+                   help='Write a GIF animation (slow).')
+    p.add_argument('--verbose', '-v', action='store_true')
+
     # ── Monte Carlo ───────────────────────────────────────────────────────────
     p.add_argument('--n-replicates', type=int, default=1,
                    help='Number of Monte Carlo replicates. >1 triggers fragility mode.')
@@ -94,7 +101,7 @@ def _build_argparser():
     p.add_argument('--output-percentiles', nargs='+', type=int,
                    default=[10, 25, 50, 75, 90])
 
-    # ── forces ────────────────────────────────────────────────────────────────
+    # ── parameters related to forces ──────────────────────────────────────────
     p.add_argument('--compute-forces', action='store_true')
     p.add_argument('--building-width', type=float, default=10.0)
     p.add_argument('--drag-coeff', type=float, default=1.0)
@@ -137,13 +144,15 @@ def _build_config(args) -> engine.SimConfig:
         basement_area=getattr(args, 'basement_area', 0.0) or 0.0,
         basement_floor_elevation=getattr(args, 'basement_floor_elevation', None) or 0.0,
         basement_ceiling_elevation=getattr(args, 'basement_ceiling_elevation', 0.0) or 0.0,
-        basement_connection_height=getattr(args, 'basement_connection_height', None),
-        basement_connection_area=getattr(args, 'basement_connection_area', 0.0) or 0.0,
+        basement_connection_height=getattr(args, 'basement_bypass_height', None),
+        basement_connection_area=getattr(args, 'basement_bypass_area', 0.0) or 0.0,
         sumppump=sumppump,
         n_replicates=args.n_replicates,
         random_seed=args.random_seed,
         output_percentiles=tuple(args.output_percentiles),
-        default_velocity=args.external_velocity_default,
+        velocity_mode=args.velocity_mode,
+        velocity_power_law_a=args.velocity_power_law_a,
+        velocity_power_law_b=args.velocity_power_law_b,
         time_units=args.time_units,
         compute_forces=args.compute_forces,
         building_width=args.building_width,
@@ -160,30 +169,29 @@ def _build_hydro(args, config: engine.SimConfig) -> engine.Hydrograph:
     times_s = [t * mul for t in raw_times]
 
     v_times_s, velocities = None, None
-    if args.external_velocity:
-        try:
-            vt_raw, v_vals = engine.parse_velocity_file(args.external_velocity)
-            v_times_s = [t * mul for t in vt_raw]
-            velocities = v_vals
-        except Exception as exc:
-            print(f'WARNING: failed to read velocity file: {exc}. Using default.')
-
-    if v_times_s is None:
-        v_times_s = times_s
-        velocities = [config.default_velocity] * len(times_s)
+    if config.velocity_mode == 'file':
+        if args.external_velocity:
+            try:
+                vt_raw, v_vals = engine.parse_velocity_file(args.external_velocity)
+                v_times_s = [t * mul for t in vt_raw]
+                velocities = v_vals
+            except Exception as exc:
+                print(f'WARNING: failed to read velocity file: {exc}. Using zero velocity.')
+        else:
+            print('WARNING: --velocity-mode=file but no --external-velocity supplied. Using zero.')
 
     return engine.Hydrograph(times=times_s, levels=levels,
                              vel_times=v_times_s, velocities=velocities)
 
 
 def _build_pathways(args):
-    """Parse --ingress, --basement-opening, --membrane and return (paths, membranes, basement_pathway)."""
+    """Parse --ingress, --basement-ingress, --membrane and return (paths, membranes, basement_pathway)."""
     paths = _frag.parse_pathway_file(args.ingress)
     _frag.validate_fragility_inputs(paths, [])
 
     basement_pathway = None
-    if args.basement_opening:
-        bsmt_paths = _frag.parse_pathway_file(args.basement_opening)
+    if args.basement_ingress:
+        bsmt_paths = _frag.parse_pathway_file(args.basement_ingress)
         if bsmt_paths:
             bp = bsmt_paths[0]
             basement_pathway = engine.IngressPathway(
@@ -219,21 +227,29 @@ def main(argv=None):
     hydro = _build_hydro(args, config)
     paths, membranes, basement_pathway = _build_pathways(args)
 
-    # Convert fragility paths to plain IngressPathway for deterministic preview
-    ingress_preview_list = [
-        engine.IngressPathway(height=p.height_m, area=p.area_m2, coeff=p.Cd, name=p.name)
-        for p in paths
-    ]
+    # Building schematic (replaces ingress_preview + ingress_locations)
+    try:
+        bsmt_d = (abs(config.basement_floor_elevation)
+                  if config.basement_area > 0 else None)
+        _bsmt_paths_sch = [basement_pathway] if basement_pathway is not None else []
+        _plot.save_run_schematic(
+            os.path.join(outdir, 'schematic.png'),
+            gf_pathways=paths,
+            bsmt_pathways=_bsmt_paths_sch,
+            membranes=membranes,
+            basement_depth=bsmt_d,
+            has_sump=config.sumppump is not None,
+            has_pump=config.sumppump is not None,
+            bypass_height=float(config.basement_connection_height or 0.0),
+            label=os.path.splitext(os.path.basename(args.ingress))[0],
+        )
+    except Exception as exc:
+        if args.verbose:
+            print(f'Schematic skipped: {exc}')
 
     # Plots that don't depend on simulation results
     orig_times = [t / mul for t in hydro.times]
     _plot.save_external_preview(orig_times, hydro.levels, os.path.join(outdir, 'external_preview.png'))
-    _plot.save_ingress_preview(ingress_preview_list, os.path.join(outdir, 'ingress_preview.png'))
-    try:
-        _plot.save_ingress_locations(ingress_preview_list, os.path.join(outdir, 'ingress_locations.png'))
-    except Exception as exc:
-        if args.verbose:
-            print(f'ingress_locations skipped: {exc}')
 
     # ── Monte Carlo path ──────────────────────────────────────────────────────
     if config.n_replicates > 1:
@@ -275,8 +291,13 @@ def main(argv=None):
 
     sim_times_display = [t / mul for t in result.times]
     sampled_ext = engine.sample_with_zero_padding(result.times, hydro.times, hydro.levels)
-    sampled_vel = engine.sample_with_zero_padding(result.times, hydro.vel_times or hydro.times,
-                                                   hydro.velocities or [])
+    if config.velocity_mode == 'file' and hydro.vel_times and hydro.velocities:
+        sampled_vel = engine.sample_with_zero_padding(result.times, hydro.vel_times, hydro.velocities)
+    elif config.velocity_mode == 'power_law':
+        sampled_vel = [config.velocity_power_law_a * (max(0.0, h) ** config.velocity_power_law_b)
+                       for h in sampled_ext]
+    else:
+        sampled_vel = [0.0] * len(result.times)
 
     # velocity preview
     try:
@@ -309,7 +330,11 @@ def main(argv=None):
         _save_forces(result, sampled_ext, sampled_vel, config, mul, outdir)
 
     if config.animate:
-        _save_animation(result, ingress_preview_list, sampled_ext, sampled_vel,
+        _anim_paths = [
+            engine.IngressPathway(height=p.height_m, area=p.area_m2, coeff=p.Cd, name=p.name)
+            for p in paths
+        ]
+        _save_animation(result, _anim_paths, sampled_ext, sampled_vel,
                         config, mul, outdir)
 
     print('Done.')
@@ -322,7 +347,7 @@ def _save_forces(result, sampled_ext, sampled_vel, config, mul, outdir):
     for i, t in enumerate(result.times):
         h_out_i = sampled_ext[i]
         h_in_i = result.h_in[i]
-        v_i = sampled_vel[i] if i < len(sampled_vel) else config.default_velocity
+        v_i = sampled_vel[i] if i < len(sampled_vel) else 0.0
         H_net = max(0.0, h_out_i - h_in_i)
         H_wet = max(0.0, h_out_i)
         res = forces.compute_combined_forces(
