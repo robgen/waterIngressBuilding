@@ -1,78 +1,47 @@
 #!/usr/bin/env python3
-"""
-Generate 100 synthetic flood hydrographs (depth + velocity).
+"""Generate synthetic flood hydrographs as a deterministic parameter-space sweep.
 
-Physical basis
---------------
-Hydrograph shape: gamma-type rising limb + exponential recession (SCS-like).
+Hydrograph shape: gamma-type rising limb + exponential recession.
 
-  Rising  : h(t) = h_peak * (t/T_p)^α * exp(α*(1 - t/T_p))
-            → zero at t=0, monotonically increasing, peaks exactly at T_p
-  Recession: h(t) = h_peak * exp(-k*(t - T_p))
-            → k chosen so h drops to 1 % of peak at t = T_p + T_rec
+  Rising   : h(t) = h_peak * (t/T_p)^α * exp(α*(1 − t/T_p))
+             → zero at t=0, peaks exactly at T_p
+  Recession: h(t) = h_peak * exp(−k*(t − T_p))
+             k chosen so h drops to 1 % of peak at t = T_p + T_rec
 
-Three flood types (Brunner et al. 2017, WRR doi:10.1002/2016WR019535):
-  40 flash/urban  T_peak  30 – 240 min   dt = 5 min
-  40 short-rain   T_peak 240 – 1440 min  dt = 15 min
-  20 prolonged    T_peak 1440 – 7200 min dt = 60 min
+Velocity is derived directly from depth at each timestep (no independent shaping):
+  v(t) = VEL_A * h(t)^VEL_B
 
-Peak depths: log-normal, median 0.5 m, σ_ln = 0.75
-  (DEFRA FD2320; EA Surface Water risk map thresholds 0.2–1.2 m)
+The full case list is the Cartesian product of all parameter grids.
+Output: one 3-column CSV per case (time, depth, velocity) written to
+<script_dir>/depth/.
 
-Velocities: V_peak = C · h_peak^β  (Manning-type scatter)
-  C  ~ Uniform(0.3, 1.5),  β ~ Uniform(0.40, 0.70)
-  (Kreibich et al. 2009, NHESS doi:10.5194/nhess-9-1679-2009)
-  Velocity peaks 0–20 % earlier than depth (lead_ratio).
-
-References
-----------
-Brunner MI et al. (2017) WRR 53:3427–3446
-DEFRA/EA (2003) Flood Hazard Ratings FD2320/FD2321
-Kreibich H et al. (2009) NHESS 9:1679–1692
-UK Surface Water risk map depth thresholds (Environment Agency)
+Edit the constants below to change coverage or resolution.
 """
 
 import csv
+import itertools
 import math
 import os
-import random
 
-SEED = 42
-random.seed(SEED)
+# ── Parameter grids ───────────────────────────────────────────────────────────
 
-try:
-    import numpy as np
-    np.random.seed(SEED)
-    _HAS_NP = True
-except ImportError:
-    _HAS_NP = False
+H_PEAK_VALUES    = [0.10, 0.35, 0.60, 0.85, 1.10, 1.50]   # m  — depth stripes
+T_PEAK_VALUES    = [60,   480,  2880]                        # minutes
+ALPHA_VALUES     = [1.5,  2.5,  4.0]                        # shape exponent
+RECESSION_RATIOS = [1.5,  2.5,  4.0]                        # T_rec / T_peak
 
+DT = 10   # minutes — fixed timestep for all cases
 
-# ── sampling helpers ──────────────────────────────────────────────────────────
-
-def _lognormal(median, sigma_ln):
-    if _HAS_NP:
-        return float(np.random.lognormal(math.log(median), sigma_ln))
-    u1 = max(1e-12, random.random())
-    u2 = random.random()
-    z = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
-    return math.exp(math.log(median) + sigma_ln * z)
+VEL_A = 1.0   # m/s per m^b  — coefficient in v = a * h^b
+VEL_B = 0.5   # depth exponent
 
 
-def _loguniform(lo, hi):
-    return math.exp(random.uniform(math.log(lo), math.log(hi)))
-
-
-def _u(lo, hi):
-    return random.uniform(lo, hi)
-
-
-# ── hydrograph constructors ───────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _depth_series(t_peak, h_peak, alpha, recession_ratio, dt):
-    """Return (times_min, depths_m) lists."""
+    """Return (times_min, depths_m) for one hydrograph."""
     t_rec = t_peak * recession_ratio
-    k = math.log(100.0) / max(t_rec, 1e-3)   # h → 1 % at t_peak + t_rec
+    k = math.log(100.0) / max(t_rec, 1e-3)   # h → 1 % of peak at T_p + T_rec
     t_end = t_peak + t_rec + 3 * dt
 
     times, depths = [], []
@@ -87,124 +56,72 @@ def _depth_series(t_peak, h_peak, alpha, recession_ratio, dt):
         depths.append(round(max(0.0, h), 4))
         t += dt
 
-    # guarantee leading and trailing zeros
+    # guarantee a leading zero
     if depths[0] > 1e-6:
         times.insert(0, 0.0)
         depths.insert(0, 0.0)
+    # trailing zero
     times.append(round(times[-1] + 5 * dt, 2))
     depths.append(0.0)
     return times, depths
 
 
-def _velocity_series(depth_times, depth_vals, v_peak, lead_ratio,
-                     alpha_v, recession_ratio_v):
-    """Return (times_min, velocities_m_s) on the same time-base as depth."""
-    t_depth_peak = depth_times[depth_vals.index(max(depth_vals))]
-    t_vel_peak = max(depth_times[1], t_depth_peak * (1.0 - lead_ratio))
-    t_rec = t_vel_peak * recession_ratio_v
-    k = math.log(100.0) / max(t_rec, 1e-3)
-
-    vels = []
-    for t in depth_times:
-        if t <= t_vel_peak:
-            tau = t / t_vel_peak if t_vel_peak > 0 else 1.0
-            v = v_peak * (tau ** alpha_v) * math.exp(alpha_v * (1.0 - tau))
-        else:
-            v = v_peak * math.exp(-k * (t - t_vel_peak))
-        vels.append(round(max(0.0, v), 4))
-    return depth_times, vels
-
-
-# ── parameter sampling ────────────────────────────────────────────────────────
-
-def _sample(flood_type):
-    if flood_type == 'flash':
-        t_peak          = _loguniform(30, 240)
-        recession_ratio = _u(1.2, 2.0)
-        dt              = 5
-    elif flood_type == 'short':
-        t_peak          = _loguniform(240, 1440)
-        recession_ratio = _u(1.5, 3.5)
-        dt              = 15
-    else:  # prolonged
-        t_peak          = _loguniform(1440, 7200)
-        recession_ratio = _u(2.0, 6.0)
-        dt              = 60
-
-    h_peak = max(0.05, min(2.50, _lognormal(0.50, 0.75)))
-    alpha  = _u(1.5, 4.0)
-
-    # velocity: Manning-type  V = C * h^beta
-    v_peak = max(0.05, min(5.0, _u(0.3, 1.5) * h_peak ** _u(0.40, 0.70)))
-
-    return dict(
-        flood_type      = flood_type,
-        t_peak          = round(t_peak,          2),
-        h_peak          = round(h_peak,          3),
-        alpha           = round(alpha,           3),
-        recession_ratio = round(recession_ratio, 3),
-        dt              = dt,
-        v_peak          = round(v_peak,          3),
-        lead_ratio      = round(_u(0.00, 0.20),  3),
-        alpha_v         = round(_u(1.2,  3.5),   3),
-        recession_ratio_v = round(recession_ratio * _u(0.8, 1.2), 3),
-    )
-
-
-# ── main ──────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    here     = os.path.dirname(os.path.abspath(__file__))
-    dep_dir  = os.path.join(here, 'depth')
-    vel_dir  = os.path.join(here, 'velocity')
+    here    = os.path.dirname(os.path.abspath(__file__))
+    dep_dir = os.path.join(here, 'generated')
     os.makedirs(dep_dir, exist_ok=True)
-    os.makedirs(vel_dir, exist_ok=True)
 
-    types = ['flash'] * 40 + ['short'] * 40 + ['prolonged'] * 20
-    random.shuffle(types)
+    grid = list(itertools.product(
+        H_PEAK_VALUES,
+        T_PEAK_VALUES,
+        ALPHA_VALUES,
+        RECESSION_RATIOS,
+    ))
 
     metadata = []
 
-    for idx, ftype in enumerate(types):
-        n   = idx + 1
-        p   = _sample(ftype)
-        metadata.append({'case': n, **p})
+    for idx, (h_peak, t_peak, alpha, rec_ratio) in enumerate(grid):
+        n = idx + 1
 
-        t_d, h_d = _depth_series(
-            p['t_peak'], p['h_peak'], p['alpha'], p['recession_ratio'], p['dt'])
+        times, depths = _depth_series(t_peak, h_peak, alpha, rec_ratio, DT)
+        velocities = [round(VEL_A * (h ** VEL_B) if h > 0.0 else 0.0, 4)
+                      for h in depths]
 
-        t_v, v_v = _velocity_series(
-            t_d, h_d, p['v_peak'], p['lead_ratio'],
-            p['alpha_v'], p['recession_ratio_v'])
+        fname = os.path.join(dep_dir, f'depth_{n:04d}.csv')
+        with open(fname, 'w', newline='') as f:
+            f.write(
+                f'# case {n:04d}'
+                f'  h_peak={h_peak:.2f} m'
+                f'  t_peak={t_peak} min'
+                f'  alpha={alpha}'
+                f'  rec_ratio={rec_ratio}\n'
+            )
+            f.write('# time (min), depth (m), velocity (m/s)\n')
+            csv.writer(f).writerows(zip(times, depths, velocities))
 
-        # depth file
-        with open(os.path.join(dep_dir, f'depth_{n:03d}.csv'), 'w', newline='') as f:
-            f.write(f'# Synthetic flood depth hydrograph — case {n:03d}\n')
-            f.write(f'# type={ftype}  T_peak={p["t_peak"]:.1f} min'
-                    f'  h_peak={p["h_peak"]:.3f} m'
-                    f'  alpha={p["alpha"]:.3f}'
-                    f'  recession_ratio={p["recession_ratio"]:.3f}\n')
-            f.write('# time (min), depth (m)\n')
-            csv.writer(f).writerows(zip(t_d, h_d))
+        metadata.append({
+            'case':            n,
+            'h_peak':          h_peak,
+            't_peak':          t_peak,
+            'alpha':           alpha,
+            'recession_ratio': rec_ratio,
+            'n_steps':         len(times),
+        })
 
-        # velocity file
-        with open(os.path.join(vel_dir, f'velocity_{n:03d}.csv'), 'w', newline='') as f:
-            f.write(f'# Synthetic flood velocity hydrograph — case {n:03d}\n')
-            f.write(f'# type={ftype}  V_peak={p["v_peak"]:.3f} m/s'
-                    f'  lead_ratio={p["lead_ratio"]:.3f}'
-                    f'  alpha_v={p["alpha_v"]:.3f}'
-                    f'  recession_ratio_v={p["recession_ratio_v"]:.3f}\n')
-            f.write('# time (min), velocity (m/s)\n')
-            csv.writer(f).writerows(zip(t_v, v_v))
-
-    # metadata
     fields = list(metadata[0].keys())
     with open(os.path.join(here, 'metadata.csv'), 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         w.writerows(metadata)
 
-    print(f'Generated {len(types)} cases → {here}')
+    print(f'Generated {len(grid)} cases  →  {dep_dir}')
+    print(f'  h_peak stripes : {H_PEAK_VALUES}')
+    print(f'  t_peak values  : {T_PEAK_VALUES} min')
+    print(f'  alpha          : {ALPHA_VALUES}')
+    print(f'  rec_ratio      : {RECESSION_RATIOS}')
+    print(f'  velocity       : v = {VEL_A} * h^{VEL_B}  (fixed)')
 
 
 if __name__ == '__main__':

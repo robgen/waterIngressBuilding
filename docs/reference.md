@@ -67,7 +67,14 @@ door_gap, 0.0,      2.0e-3,  0.6, 1
 
 ### External hydrograph (`--external`)
 
-Two-column CSV: `time` and `level`. Times in simulation time units (default: minutes). Levels in metres above the reference datum. Linearly interpolated to the simulation grid.
+Two- **or** three-column CSV. Times in simulation time units (default: minutes). Levels in metres above the reference datum. Linearly interpolated to the simulation grid.
+
+| Columns | Description |
+|---------|-------------|
+| `time, level` | 2-column format — velocity modes `zero` and `power_law` only |
+| `time, level, velocity` | 3-column format — all velocity modes available, including `file` |
+
+**2-column example**
 
 ```csv
 0,   0.00
@@ -77,26 +84,27 @@ Two-column CSV: `time` and `level`. Times in simulation time units (default: min
 360, 0.00
 ```
 
+**3-column example** (inline velocity)
+
+```csv
+0,   0.00, 0.00
+15,  0.25, 0.47
+30,  0.50, 0.61
+60,  0.00, 0.00
+360, 0.00, 0.00
+```
+
 ---
 
 ### Velocity mode (`--velocity-mode`)
 
 Three options control how external flood velocity $v_{ext}(t)$ is computed:
 
-| Mode | Description |
-|------|-------------|
-| `zero` | $v_{ext} = 0$ at all times. No hydrodynamic contribution to ingress or forces. **Default.** |
-| `power_law` | $v_{ext}(t) = a \cdot h_{ext}(t)^{b}$, derived from the depth hydrograph. Coefficients set with `--velocity-power-law-a` (default 1.5) and `--velocity-power-law-b` (default 0.5). |
-| `file` | Time series read from `--external-velocity` (two-column CSV: `time`, `velocity`). |
-
-**Velocity file format** (used with `--velocity-mode=file`):
-
-```csv
-0,   0.0
-15,  0.3
-30,  0.5
-60,  0.0
-```
+| Mode | Requires | Description |
+|------|----------|-------------|
+| `zero` | 2- or 3-column depth CSV | $v_{ext} = 0$ at all times. No hydrodynamic contribution to ingress or forces. **Default.** |
+| `power_law` | 2- or 3-column depth CSV | $v_{ext}(t) = a \cdot h_{ext}(t)^{b}$, derived from the depth hydrograph. Coefficients set with `--velocity-power-law-a` (default 1.5) and `--velocity-power-law-b` (default 0.5). |
+| `file` | **3-column depth CSV only** | Velocity time series read from the third column of the depth CSV (`--external`). Raises an error if the file has only 2 columns. |
 
 ---
 
@@ -146,9 +154,10 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--velocity-mode STR` | `zero` | `zero`, `power_law`, or `file` |
-| `--external-velocity PATH` | — | Velocity CSV (required with `--velocity-mode=file`) |
 | `--velocity-power-law-a FLOAT` | 1.5 | Coefficient $a$ in $v = a \cdot h^b$ |
 | `--velocity-power-law-b FLOAT` | 0.5 | Exponent $b$ in $v = a \cdot h^b$ |
+
+> **Note:** `--velocity-mode=file` reads velocity from the **3rd column** of `--external`. No separate velocity file is accepted.
 
 **Building geometry**
 
@@ -208,8 +217,7 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 
 | Flag | Description |
 |------|-------------|
-| `--depth-dir PATH` | Folder of depth CSV files (one per hydrograph) |
-| `--velocity-dir PATH` | Optional matching folder of velocity CSV files |
+| `--depth-dir PATH` | Folder of depth CSV files (one per hydrograph); files may be 2- or 3-column |
 | `--building-vulnerability PATH` | CSV mapping ground-floor peak depth to building contents loss |
 | `--basement-vulnerability PATH` | CSV mapping basement peak depth to basement contents loss |
 | `--contents-loss-column NAME` | Loss column to read from vulnerability CSVs (default `mean_repair_loss_GBP`) |
@@ -277,8 +285,7 @@ All outputs are written to `--outdir`. The files produced depend on the run mode
 | Column | Description |
 |--------|-------------|
 | `case_id` | Numeric case index |
-| `depth_file` | Depth hydrograph filename |
-| `velocity_file` | Velocity hydrograph filename (empty if not supplied) |
+| `depth_file` | Depth hydrograph filename (2- or 3-column) |
 | `h_peak_ext` | Peak exterior depth (m) |
 | `h_peak_int` | Peak interior ground-floor depth (m) |
 | `h_peak_basement` | Peak basement depth (m) |

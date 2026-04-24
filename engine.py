@@ -15,7 +15,7 @@ Low-level classes (also used by fragility.py and batch.py):
     Building, IngressPathway, Simulation
 
 I/O helpers:
-    parse_external_file, parse_velocity_file, sample_with_zero_padding
+    parse_combined_file, parse_combined_text, parse_external_text, sample_with_zero_padding
 """
 
 import copy
@@ -303,73 +303,72 @@ class Simulation:
 
 # ── I/O helpers ───────────────────────────────────────────────────────────────
 
-def parse_external_file(filepath):
-    times, levels = [], []
+def parse_combined_file(filepath):
+    """Parse a 2- or 3-column CSV (time, depth[, velocity]).
+
+    Returns (times, levels, velocities_or_None).  Inline comment lines
+    (starting with #) and malformed rows are silently skipped.
+    """
+    times, levels, velocities = [], [], []
+    has_velocity = None
     with open(filepath) as f:
-        for line in f:
-            s = line.strip()
-            if not s or s.startswith('#'):
+        for raw in f:
+            line = raw.split('#', 1)[0].strip()
+            if not line:
                 continue
-            parts = s.split(',')
+            parts = [p.strip() for p in line.split(',')]
             if len(parts) < 2:
                 continue
             try:
-                times.append(float(parts[0]))
-                levels.append(float(parts[1]))
+                t = float(parts[0])
+                d = float(parts[1])
             except ValueError:
                 continue
+            if has_velocity is None:
+                has_velocity = len(parts) >= 3
+            times.append(t)
+            levels.append(d)
+            if has_velocity:
+                velocities.append(float(parts[2]) if len(parts) >= 3 else 0.0)
     if not times:
         raise ValueError(f'No data found in external file: {filepath}')
-    return times, levels
+    return times, levels, velocities if has_velocity else None
 
 
-def parse_velocity_file(filepath):
-    times, vals = [], []
-    with open(filepath) as f:
-        for line in f:
-            s = line.strip()
-            if not s or s.startswith('#'):
-                continue
-            parts = s.split(',')
-            if len(parts) < 2:
-                continue
-            try:
-                times.append(float(parts[0]))
-                vals.append(float(parts[1]))
-            except ValueError:
-                continue
-    if not times:
-        raise ValueError(f'No data found in velocity file: {filepath}')
-    return times, vals
+def parse_combined_text(text):
+    """Parse a 2- or 3-column text block (time, depth[, velocity]).
 
-
-def parse_external_text(text):
-    """Parse external levels from a multi-line text string (same format as parse_external_file)."""
-    return _parse_text_common(text, 'external levels')
-
-
-def parse_velocity_text(text):
-    """Parse velocity time series from a multi-line text string."""
-    return _parse_text_common(text, 'velocity data')
-
-
-def _parse_text_common(text, label):
-    times, vals = [], []
-    for line in text.splitlines():
-        s = line.strip()
-        if not s or s.startswith('#'):
+    Returns (times, levels, velocities_or_None).
+    """
+    times, levels, velocities = [], [], []
+    has_velocity = None
+    for raw in text.splitlines():
+        line = raw.split('#', 1)[0].strip()
+        if not line:
             continue
-        parts = s.split(',')
+        parts = [p.strip() for p in line.split(',')]
         if len(parts) < 2:
             continue
         try:
-            times.append(float(parts[0]))
-            vals.append(float(parts[1]))
+            t = float(parts[0])
+            d = float(parts[1])
         except ValueError:
             continue
+        if has_velocity is None:
+            has_velocity = len(parts) >= 3
+        times.append(t)
+        levels.append(d)
+        if has_velocity:
+            velocities.append(float(parts[2]) if len(parts) >= 3 else 0.0)
     if not times:
-        raise ValueError(f'No data found in {label} text')
-    return times, vals
+        raise ValueError('No data found in hydrograph text')
+    return times, levels, velocities if has_velocity else None
+
+
+def parse_external_text(text):
+    """Parse a 2-column text block (time, level). Ignores any third column."""
+    times, levels, _ = parse_combined_text(text)
+    return times, levels
 
 
 def parse_ingress_file(filepath):

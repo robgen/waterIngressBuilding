@@ -31,8 +31,6 @@ def _build_argparser():
     # ── hydrograph ────────────────────────────────────────────────────────────
     p.add_argument('--external', '-e', required=True,
                    help='External depth hydrograph CSV (time, level).')
-    p.add_argument('--external-velocity', default=None,
-                   help='Velocity hydrograph CSV (time, velocity); used with --velocity-mode=file.')
     p.add_argument('--velocity-mode', default='zero',
                    choices=['zero', 'power_law', 'file'],
                    help="Velocity mode: 'zero' (default), 'power_law' (v=a·h^b), or 'file' (CSV).")
@@ -165,20 +163,19 @@ def _build_config(args) -> engine.SimConfig:
 
 def _build_hydro(args, config: engine.SimConfig) -> engine.Hydrograph:
     mul = _MUL.get(config.time_units, 60.0)
-    raw_times, levels = engine.parse_external_file(args.external)
+    raw_times, levels, inline_vel = engine.parse_combined_file(args.external)
     times_s = [t * mul for t in raw_times]
 
     v_times_s, velocities = None, None
     if config.velocity_mode == 'file':
-        if args.external_velocity:
-            try:
-                vt_raw, v_vals = engine.parse_velocity_file(args.external_velocity)
-                v_times_s = [t * mul for t in vt_raw]
-                velocities = v_vals
-            except Exception as exc:
-                print(f'WARNING: failed to read velocity file: {exc}. Using zero velocity.')
+        if inline_vel is not None:
+            v_times_s = times_s
+            velocities = inline_vel
         else:
-            print('WARNING: --velocity-mode=file but no --external-velocity supplied. Using zero.')
+            raise ValueError(
+                '--velocity-mode=file requires a 3-column hydrograph '
+                '(time, depth, velocity) but the supplied file has only 2 columns.'
+            )
 
     return engine.Hydrograph(times=times_s, levels=levels,
                              vel_times=v_times_s, velocities=velocities)

@@ -25,8 +25,8 @@ import streamlit as st
 
 from engine import (
     Building, IngressPathway, Simulation,
-    parse_external_text, parse_ingress_file,
-    parse_ingress_text, parse_velocity_text,
+    parse_combined_text, parse_ingress_file,
+    parse_ingress_text,
     sample_with_zero_padding,
 )
 from loss import load_vulnerability_curve
@@ -129,7 +129,7 @@ with st.sidebar:
         manual_ext_tbl    = None
         if ext_mode == 'Upload CSV':
             uploaded_external = st.file_uploader(
-                'Levels CSV  (time, level)', type=['csv', 'txt'], key='ext_up',
+                'Levels CSV  (time, level [, velocity])', type=['csv', 'txt'], key='ext_up',
                 label_visibility='collapsed')
         else:
             manual_ext_tbl = _data_editor(
@@ -160,8 +160,6 @@ with st.sidebar:
             vel_mode = st.radio(
                 'Velocity mode', ['Zero', 'Power law  (v = a · h^b)', 'File'],
                 key='vel_mode', horizontal=False)
-            uploaded_velocity = None
-            manual_vel_tbl    = None
             vel_pl_a = 1.5
             vel_pl_b = 0.5
             if vel_mode == 'Power law  (v = a · h^b)':
@@ -169,13 +167,8 @@ with st.sidebar:
                 vel_pl_a = _vc1.number_input('a', value=1.5, min_value=0.0, step=0.1, format='%.2f')
                 vel_pl_b = _vc2.number_input('b', value=0.5, min_value=0.0, step=0.05, format='%.2f')
             elif vel_mode == 'File':
-                uploaded_velocity = st.file_uploader(
-                    'Velocity CSV  (time, velocity)', type=['csv', 'txt'], key='vel_up',
-                    label_visibility='collapsed')
-                if not uploaded_velocity:
-                    manual_vel_tbl = _data_editor(
-                        [{'time': 0.0, 'velocity': 0.2}, {'time': 60.0, 'velocity': 0.0}],
-                        key='vel_tbl')
+                st.caption('Velocity is read from the **3rd column** of the depth CSV. '
+                           'The hydrograph must have columns: time, depth, velocity.')
 
     # ── 3. Basement ──────────────────────────────────────────────────────────
     with st.expander('🏗️  Basement compartment', expanded=False):
@@ -296,7 +289,7 @@ with tab_setup:
         _show_ext = False
         if ext_mode == 'Upload CSV' and uploaded_external:
             try:
-                _et, _el = parse_external_text(_read_text(uploaded_external))
+                _et, _el, _ = parse_combined_text(_read_text(uploaded_external))
                 _p = os.path.join(tempfile.gettempdir(), 'prev_ext.png')
                 viz.save_external_preview(_et, _el, _p, time_unit=time_unit)
                 st.image(_p, width="stretch")
@@ -349,35 +342,12 @@ with tab_setup:
 
     with col_vel:
         st.markdown('**External velocity**')
-        _show_vel = False
         if vel_mode == 'Zero':
-            st.info('Velocity = 0 — hydrodynamic term disabled.')
-            _show_vel = True
+            st.info('v = 0 — hydrodynamic term disabled.')
         elif vel_mode == 'Power law  (v = a · h^b)':
-            st.caption(f'v = {vel_pl_a:.2f} · h^{vel_pl_b:.2f}')
-            _show_vel = True
-        elif vel_mode == 'File' and uploaded_velocity:
-            try:
-                _vt, _vv = parse_velocity_text(_read_text(uploaded_velocity))
-                _p = os.path.join(tempfile.gettempdir(), 'prev_vel.png')
-                viz.save_velocity_preview(_vt, _vv, _p, time_unit=time_unit)
-                st.image(_p, width="stretch")
-                st.caption(f'Peak {max(_vv):.2f} m/s')
-                _show_vel = True
-            except Exception as _e:
-                st.error(f'Parse error: {_e}')
-        elif vel_mode == 'File' and manual_vel_tbl is not None:
-            try:
-                _vt, _vv = _tbl_to_pairs(manual_vel_tbl, 'time', 'velocity')
-                if _vt:
-                    _p = os.path.join(tempfile.gettempdir(), 'prev_vel.png')
-                    viz.save_velocity_preview(_vt, _vv, _p, time_unit=time_unit)
-                    st.image(_p, width="stretch")
-                    _show_vel = True
-            except Exception:
-                pass
-        if not _show_vel:
-            st.info('Upload a velocity CSV or enter values in the table above.')
+            st.caption(f'v(t) = {vel_pl_a:.2f} · h(t)^{vel_pl_b:.2f}')
+        else:
+            st.caption('Reads 3rd column of the depth CSV at run time.')
 
     # ── Building schematic ────────────────────────────────────────────────────
     st.divider()
@@ -446,9 +416,10 @@ if run_button:
         try:
             # ── External hydrograph ──────────────────────────────────────────
             if ext_mode == 'Upload CSV':
-                _times, _levels = parse_external_text(_read_text(uploaded_external))
+                _times, _levels, _inline_vel = parse_combined_text(_read_text(uploaded_external))
             else:
                 _times, _levels = _tbl_to_pairs(manual_ext_tbl, 'time', 'level')
+                _inline_vel = None
 
             times_s  = [t * _mul for t in _times]
             dt_s     = float(timestep) * _mul
@@ -474,14 +445,13 @@ if run_button:
 
             # ── Velocity ─────────────────────────────────────────────────────
             v_times_s, v_vals = None, None
-            if vel_mode == 'File' and uploaded_velocity:
-                _vtr, _vvr = parse_velocity_text(_read_text(uploaded_velocity))
-                v_times_s  = [t * _mul for t in _vtr]
-                v_vals     = list(_vvr)
-            elif vel_mode == 'File' and manual_vel_tbl is not None:
-                _vtr, _vvr = _tbl_to_pairs(manual_vel_tbl, 'time', 'velocity')
-                v_times_s  = [t * _mul for t in _vtr]
-                v_vals     = _vvr
+            if vel_mode == 'File':
+                if _inline_vel is None:
+                    raise ValueError(
+                        'Velocity mode "File" requires a 3-column hydrograph '
+                        '(time, depth, velocity). The uploaded file has only 2 columns.')
+                v_times_s = times_s
+                v_vals    = list(_inline_vel)
             _vel_mode_key = ('file' if vel_mode == 'File'
                              else 'power_law' if vel_mode == 'Power law  (v = a · h^b)'
                              else 'zero')

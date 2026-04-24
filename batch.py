@@ -56,7 +56,6 @@ import math
 import os
 import re
 import sys
-import warnings
 
 from loss import load_vulnerability_curve
 from engine import (
@@ -64,8 +63,7 @@ from engine import (
     IngressPathway,
     Simulation,
     SimResult,
-    parse_external_file,
-    parse_velocity_file,
+    parse_combined_file,
     sample_with_zero_padding,
 )
 from pump import SumpPump
@@ -87,72 +85,26 @@ def _numeric_suffix(filename):
     return int(m.group(1)) if m else 0
 
 
-def _discover_pairs(depth_dir, velocity_dir):
-    """
-    Return sorted list of (case_id, depth_path, velocity_path_or_None).
-
-    For layout A the velocity file is matched by identical trailing numeric suffix.
-    For layout B (combined files) velocity_dir is None and the third column
-    of each depth file is used if present.
-    """
-    pairs = []
+def _discover_cases(depth_dir):
+    """Return sorted list of (case_id, depth_path) from a directory of CSV files."""
+    cases = []
     for fname in sorted(os.listdir(depth_dir)):
         if not fname.endswith('.csv'):
             continue
-        suffix = _numeric_suffix(fname)
-        depth_path = os.path.join(depth_dir, fname)
-        vel_path = None
-        if velocity_dir:
-            for vname in os.listdir(velocity_dir):
-                if vname.endswith('.csv') and _numeric_suffix(vname) == suffix:
-                    vel_path = os.path.join(velocity_dir, vname)
-                    break
-        pairs.append((suffix, depth_path, vel_path))
-    return sorted(pairs, key=lambda x: x[0])
+        cases.append((_numeric_suffix(fname), os.path.join(depth_dir, fname)))
+    return sorted(cases, key=lambda x: x[0])
 
 
 # ── combined-file detection ───────────────────────────────────────────────────
 
 def _parse_depth_file_maybe_combined(filepath):
-    """
-    Parse a depth file that may be two-column (time, depth) or three-column
-    (time, depth, velocity).  Returns (times, depths, velocities_or_None).
-    """
-    times, depths, velocities = [], [], []
-    has_velocity = None
-    n_skipped = 0
-    with open(filepath) as f:
-        for raw in f:
-            line = raw.split('#', 1)[0].strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) < 2:
-                n_skipped += 1
-                continue
-            try:
-                t = float(parts[0])
-                d = float(parts[1])
-            except ValueError:
-                n_skipped += 1
-                continue
-            if has_velocity is None:
-                has_velocity = len(parts) >= 3
-            times.append(t)
-            depths.append(d)
-            if has_velocity:
-                velocities.append(float(parts[2]) if len(parts) >= 3 else 0.0)
-    if n_skipped:
-        warnings.warn(
-            f"{n_skipped} malformed line(s) skipped in {filepath}", stacklevel=2)
-    if not times:
-        raise ValueError(f'No data found in {filepath}')
-    return times, depths, velocities if has_velocity else None
+    """Delegates to engine.parse_combined_file."""
+    return parse_combined_file(filepath)
 
 
 # ── single simulation run ─────────────────────────────────────────────────────
 
-def _run_case(depth_path, vel_path, ingress_list, floor_area,
+def _run_case(depth_path, ingress_list, floor_area,
               dt_s, mul, velocity_mode='zero', vel_a=1.5, vel_b=0.5,
               basement_area=0.0, basement_floor_elev=None,
               basement_ceiling_elev=0.0,
@@ -174,12 +126,13 @@ def _run_case(depth_path, vel_path, ingress_list, floor_area,
 
     v_times_s, v_vals = None, None
     if velocity_mode == 'file':
-        if vel_path:
-            v_times_raw, v_vals = parse_velocity_file(vel_path)
-            v_times_s = [t * mul for t in v_times_raw]
-        elif inline_vel is not None:
+        if inline_vel is not None:
             v_times_s = list(times_s)
             v_vals = inline_vel
+        else:
+            raise ValueError(
+                f'velocity_mode=file but {depth_path} has only 2 columns (no inline velocity).'
+            )
 
     building = Building(floor_area)
     if basement_area and basement_area > 0.0:
@@ -329,7 +282,7 @@ def _write_summary(results, time_units, outdir):
 _DEFAULT_THRESHOLDS = [round(0.10 * i, 2) for i in range(1, 16)]  # 0.10 … 1.50 m
 
 
-def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
+def run_batch(depth_dir, ingress_list, floor_area,
               time_units, dt, thresholds,
               building_content_vulnerability,
               outdir, verbose=True,
@@ -359,7 +312,7 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
     dt              : simulation timestep in the selected time units
     thresholds      : list of absolute interior depth thresholds (m) at which
                       exceedance duration is reported (e.g. [0.10, 0.30, 1.00])
-    velocity_mode   : 'zero', 'power_law', or 'file'
+    velocity_mode   : 'zero', 'power_law', or 'file' (file requires 3-column CSVs)
     vel_a / vel_b   : power-law coefficients (used when velocity_mode='power_law')
     building_content_vulnerability : optional VulnerabilityCurve mapping h_peak_int
                       (ground-floor peak depth) to building contents loss
@@ -381,7 +334,7 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
     dt_s = dt * mul
     os.makedirs(outdir, exist_ok=True)
 
-    pairs = _discover_pairs(depth_dir, velocity_dir)
+    pairs = _discover_cases(depth_dir)
     if not pairs:
         raise ValueError(f'No CSV files found in: {depth_dir}')
 
@@ -403,7 +356,7 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
               f'dt={dt} {time_units}  |  '
               f'thresholds={[round(h, 2) for h in thresholds]} m')
 
-    for idx, (case_id, depth_path, vel_path) in enumerate(pairs):
+    for idx, (case_id, depth_path) in enumerate(pairs):
         if verbose:
             print(f'  [{idx+1:3d}/{n_total}]  case {case_id:03d}  '
                   f'{os.path.basename(depth_path):<30s}', end='\r', flush=True)
@@ -413,12 +366,14 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
 
             v_times_s, v_vals = None, None
             if velocity_mode == 'file':
-                if vel_path:
-                    v_times_raw, v_vals = parse_velocity_file(vel_path)
-                    v_times_s = [t * mul for t in v_times_raw]
-                elif inline_vel is not None:
+                if inline_vel is not None:
                     v_times_s = list(times_s)
                     v_vals = inline_vel
+                else:
+                    raise ValueError(
+                        f'velocity_mode=file but {os.path.basename(depth_path)} '
+                        f'has only 2 columns (no inline velocity).'
+                    )
 
             if use_mc:
                 _ba = float(basement_area) if basement_area else 0.0
@@ -455,18 +410,17 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
                 )
                 for rep in mc.replicates:
                     row = {
-                        'case_id':       case_id,
-                        'replicate':     rep.replicate_id,
-                        'depth_file':    os.path.basename(depth_path),
-                        'velocity_file': os.path.basename(vel_path) if vel_path else '',
-                        'h_peak_ext':    round(rep.peak_h_ext, 4),
-                        'h_peak_int':    round(rep.peak_h_in, 4),
+                        'case_id':    case_id,
+                        'replicate':  rep.replicate_id,
+                        'depth_file': os.path.basename(depth_path),
+                        'h_peak_ext': round(rep.peak_h_ext, 4),
+                        'h_peak_int': round(rep.peak_h_in, 4),
                     }
                     results.append(row)
 
             else:
                 res = _run_case(
-                    depth_path, vel_path, ingress_list,
+                    depth_path, ingress_list,
                     floor_area, dt_s, mul, velocity_mode, vel_a, vel_b,
                     basement_area=basement_area,
                     basement_floor_elev=basement_floor_elev,
@@ -480,7 +434,6 @@ def run_batch(depth_dir, velocity_dir, ingress_list, floor_area,
                 row = {
                     'case_id':         case_id,
                     'depth_file':      os.path.basename(depth_path),
-                    'velocity_file':   os.path.basename(vel_path) if vel_path else '',
                     'h_peak_ext':      round(res.peak_h_ext, 4),
                     'h_peak_int':      round(res.peak_h_in, 4),
                     'h_peak_basement': round(res.peak_h_basement, 4),
@@ -660,8 +613,6 @@ def _parse_args(argv=None):
     )
     p.add_argument('--depth-dir',    required=True,
                    help='Directory containing depth CSV files.')
-    p.add_argument('--velocity-dir', default=None,
-                   help='Directory containing matching velocity CSV files (used with --velocity-mode=file).')
     p.add_argument('--ingress',      required=True,
                    help='Ingress pathways CSV (header-based unified format).')
     p.add_argument('--basement-ingress', default=None,
@@ -790,7 +741,6 @@ def main(argv=None):
 
     run_batch(
         depth_dir                      = args.depth_dir,
-        velocity_dir                   = args.velocity_dir,
         ingress_list                   = ingress_list,
         frag_paths                     = frag_paths,
         membranes                      = membranes,
@@ -824,7 +774,6 @@ if __name__ == '__main__':
 # ── high-level public run() ───────────────────────────────────────────────────
 
 def run(config, hydro_dir: str, pathways: list, *,
-        velocity_dir=None,
         basement_pathway=None,
         thresholds=None,
         building_vulnerability=None,
@@ -836,9 +785,8 @@ def run(config, hydro_dir: str, pathways: list, *,
     Parameters
     ----------
     config                : engine.SimConfig — building geometry and run parameters
-    hydro_dir             : path to directory of depth CSV files
+    hydro_dir             : path to directory of depth CSV files (2 or 3 columns)
     pathways              : List[IngressPathway] — ingress paths (fixed across all cases)
-    velocity_dir          : optional matching directory of velocity CSVs
     basement_pathway      : optional IngressPathway for exterior→basement perimeter
     thresholds            : list of depth thresholds (m) for duration reporting
     building_vulnerability: optional VulnerabilityCurve for ground-floor loss
@@ -857,7 +805,6 @@ def run(config, hydro_dir: str, pathways: list, *,
 
     return run_batch(
         depth_dir=hydro_dir,
-        velocity_dir=velocity_dir,
         ingress_list=pathways,
         floor_area=config.floor_area,
         time_units=config.time_units,
