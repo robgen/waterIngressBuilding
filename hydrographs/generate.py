@@ -25,12 +25,12 @@ import os
 
 # ── Parameter grids ───────────────────────────────────────────────────────────
 
-H_PEAK_VALUES    = [0.10, 0.35, 0.60, 0.85, 1.10, 1.50]   # m  — depth stripes
+H_PEAK_VALUES    = [0.01, 0.15, 0.30, 0.60, 0.90, 1.20, 1.50, 1.80, 2.10, 2.40]   # m  — depth stripes
 T_PEAK_VALUES    = [60,   480,  2880]                        # minutes
 ALPHA_VALUES     = [1.5,  2.5,  4.0]                        # shape exponent
 RECESSION_RATIOS = [1.5,  2.5,  4.0]                        # T_rec / T_peak
 
-DT = 10   # minutes — fixed timestep for all cases
+DT = 1   # minutes — fixed timestep for all cases
 
 VEL_A = 1.0   # m/s per m^b  — coefficient in v = a * h^b
 VEL_B = 0.5   # depth exponent
@@ -89,7 +89,7 @@ def main():
         velocities = [round(VEL_A * (h ** VEL_B) if h > 0.0 else 0.0, 4)
                       for h in depths]
 
-        fname = os.path.join(dep_dir, f'depth_{n:04d}.csv')
+        fname = os.path.join(dep_dir, f'{n:04d}.csv')
         with open(fname, 'w', newline='') as f:
             f.write(
                 f'# case {n:04d}'
