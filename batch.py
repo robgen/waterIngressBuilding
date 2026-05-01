@@ -110,7 +110,7 @@ def _run_case(depth_path, ingress_list, floor_area,
               basement_ceiling_elev=0.0,
               basement_ingress=None,
               basement_conn_height=None, basement_conn_area=0.0,
-              sump_pump=None):
+              sump_pump=None, floor_datum=0.0):
     """
     Run one simulation and return
     (sim_times_s, sim_levels, sim_basement, sim_sump,
@@ -164,7 +164,8 @@ def _run_case(depth_path, ingress_list, floor_area,
 
     sim = Simulation(building, ing, times_s, depths, dt=dt_s,
                      external_vel_times=v_times_s, external_velocities=v_vals,
-                     velocity_mode=velocity_mode, vel_a=vel_a, vel_b=vel_b)
+                     velocity_mode=velocity_mode, vel_a=vel_a, vel_b=vel_b,
+                     floor_datum=floor_datum)
     result = sim.run()
 
     if len(result) == 4:
@@ -294,7 +295,8 @@ def run_batch(depth_dir, ingress_list, floor_area,
               sump_pump=None,
               frag_paths=None, membranes=None,
               n_replicates=1, random_seed=None,
-              velocity_mode='zero', vel_a=1.5, vel_b=0.5):
+              velocity_mode='zero', vel_a=1.5, vel_b=0.5,
+              floor_datum=0.0):
     """
     Run the full batch ensemble and write results.
 
@@ -454,6 +456,7 @@ def run_batch(depth_dir, ingress_list, floor_area,
                     basement_conn_height=basement_conn_height,
                     basement_conn_area=basement_conn_area,
                     sump_pump=sump_pump,
+                    floor_datum=floor_datum,
                 )
                 durations = _compute_durations(res.h_in, thresholds, dt_s, mul)
                 row = {
@@ -675,8 +678,9 @@ def _parse_args(argv=None):
                    help='Basement floor area (m²). If >0, a basement zone is created.')
     p.add_argument('--basement-floor-elevation', type=float, default=None,
                    help='Basement floor elevation relative to ground-floor datum (m).')
-    p.add_argument('--basement-ceiling-elevation', type=float, default=0.0,
-                   help='Basement ceiling elevation on same datum (m).')
+    p.add_argument('--basement-ceiling-elevation', type=float, default=None,
+                   help='Basement ceiling elevation in the external-ground frame (m). '
+                        'Defaults to --floor-datum (ceiling flush with internal floor).')
     p.add_argument('--basement-bypass-height', type=float, default=None,
                    help='Sill height of ground↔basement connection (m).')
     p.add_argument('--basement-bypass-area', type=float, default=0.0,
@@ -694,6 +698,9 @@ def _parse_args(argv=None):
     p.add_argument('--sumppump-curve-coeff',        type=float, default=None)
     p.add_argument('--sumppump-pipe-loss-coeff',    type=float, default=0.0)
     p.add_argument('--sumppump-availability',       type=float, default=1.0)
+    p.add_argument('--floor-datum',  type=float, default=0.0,
+                   help='Internal floor elevation above external ground datum (m). '
+                        'Use 0.10 for a building with a 10 cm doorstep.')
     p.add_argument('--outdir',       default='batch_results',
                    help='Output directory for batch_results.csv and batch_summary.csv.')
     return p.parse_args(argv)
@@ -701,6 +708,8 @@ def _parse_args(argv=None):
 
 def main(argv=None):
     args = _parse_args(argv)
+    if args.basement_ceiling_elevation is None:
+        args.basement_ceiling_elevation = args.floor_datum
     import fragility as _frag
     frag_paths = _frag.parse_pathway_file(args.ingress)
     ingress_list = [
@@ -787,6 +796,7 @@ def main(argv=None):
         basement_conn_height           = args.basement_bypass_height,
         basement_conn_area             = args.basement_bypass_area,
         sump_pump                      = sump_pump,
+        floor_datum                    = args.floor_datum,
         outdir                         = args.outdir,
         verbose                        = True,
     )
@@ -847,6 +857,7 @@ def run(config, hydro_dir: str, pathways: list, *,
         basement_conn_height=config.basement_connection_height,
         basement_conn_area=config.basement_connection_area,
         sump_pump=sump_pump,
+        floor_datum=config.floor_datum,
         outdir=outdir,
         verbose=verbose,
     )

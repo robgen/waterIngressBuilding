@@ -101,7 +101,8 @@ class Simulation:
     def __init__(self, building, ingress_list, external_times, external_levels,
                  dt=60.0, external_vel_times=None, external_velocities=None,
                  conductance_resolver=None,
-                 velocity_mode='zero', vel_a=1.5, vel_b=0.5):
+                 velocity_mode='zero', vel_a=1.5, vel_b=0.5,
+                 floor_datum=0.0):
         self.building = building
         self.ingress_list = ingress_list
         self._conductance_resolver = conductance_resolver
@@ -113,6 +114,7 @@ class Simulation:
         self.velocity_mode = velocity_mode
         self.vel_a = vel_a
         self.vel_b = vel_b
+        self.floor_datum = float(floor_datum)
         self._last_trace = None
         self._initial_h_in = building.h_in
         self._initial_h_basement = building.h_basement
@@ -170,7 +172,7 @@ class Simulation:
                 h_out = self.h_ext[-1] if self.h_ext else 0.0
 
             H_out = h_out
-            H_in = current_h_in
+            H_in_abs = current_h_in + self.floor_datum
             H_basement = self.building.z_basement + current_h_basement
             H_sump_abs = (sp.sump_base_elevation + sp.h_sump) if sp is not None else 0.0
 
@@ -199,11 +201,11 @@ class Simulation:
                 src = getattr(ingress, 'source', 'outside')
                 tgt = getattr(ingress, 'target', 'ground')
                 if src == 'outside' and tgt == 'ground':
-                    flow_og += ingress.compute_flow(H_out, H_in, v_source=v_out)
+                    flow_og += ingress.compute_flow(H_out, H_in_abs, v_source=v_out)
                 elif src == 'ground' and tgt == 'basement':
-                    flow_gb += ingress.compute_flow(H_in, H_basement)
+                    flow_gb += ingress.compute_flow(H_in_abs, H_basement)
                 elif src == 'basement' and tgt == 'ground':
-                    flow_gb -= ingress.compute_flow(H_basement, H_in)
+                    flow_gb -= ingress.compute_flow(H_basement, H_in_abs)
 
             flow_ob = 0.0
             flow_os = 0.0
@@ -404,12 +406,17 @@ def sample_with_zero_padding(target_times, src_times, src_vals):
 
 @dataclass
 class SimConfig:
-    """All building geometry and run-control parameters for one simulation."""
+    """All building geometry and run-control parameters for one simulation.
+
+    All elevations are in the external-ground frame (z=0 = external ground).
+    `basement_ceiling_elevation` defaults to `floor_datum` (ceiling flush with
+    internal floor) — override only if the basement ceiling is not flush.
+    """
     floor_area: float
     dt: float = 60.0                          # seconds
     basement_area: float = 0.0
     basement_floor_elevation: float = 0.0
-    basement_ceiling_elevation: float = 0.0
+    basement_ceiling_elevation: Optional[float] = None
     basement_connection_height: Optional[float] = None
     basement_connection_area: float = 0.0
     sumppump: Optional[SumpPump] = None
@@ -426,6 +433,11 @@ class SimConfig:
     rho: float = 1000.0
     animate: bool = False
     verbose: bool = False
+    floor_datum: float = 0.0   # internal floor elevation above external ground (m)
+
+    def __post_init__(self):
+        if self.basement_ceiling_elevation is None:
+            self.basement_ceiling_elevation = self.floor_datum
 
 
 @dataclass
@@ -504,6 +516,7 @@ def run(config: SimConfig, hydro: Hydrograph, pathways: list, *,
         velocity_mode=config.velocity_mode,
         vel_a=config.velocity_power_law_a,
         vel_b=config.velocity_power_law_b,
+        floor_datum=config.floor_datum,
     )
     raw = sim.run()
 
