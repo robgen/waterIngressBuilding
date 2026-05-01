@@ -25,7 +25,7 @@ import streamlit as st
 
 from engine import (
     Building, IngressPathway, Simulation,
-    parse_combined_text, parse_ingress_file,
+    parse_combined_text,
     parse_ingress_text,
     sample_with_zero_padding,
 )
@@ -148,8 +148,8 @@ with st.sidebar:
         manual_ing_tbl   = None
         if ing_mode == 'Upload file':
             uploaded_ingress = st.file_uploader(
-                'Ingress file  (height, area, Cd [, name])',
-                type=['txt', 'csv'], key='ing_up',
+                'Ingress CSV  (name, height_m, area_m2, Cd[, group_id, ...])',
+                type=['csv'], key='ing_up',
                 label_visibility='collapsed')
         else:
             manual_ing_tbl = _data_editor(
@@ -318,10 +318,7 @@ with tab_setup:
             try:
                 import fragility as _frag_ing
                 _tmp_ing2 = _save_tmp(_read_bytes(uploaded_ingress), '.csv')
-                try:
-                    _il2 = _frag_ing.parse_pathway_file(_tmp_ing2)
-                except Exception:
-                    _il2 = parse_ingress_file(_tmp_ing2)
+                _il2 = _frag_ing.parse_pathway_file(_tmp_ing2)
                 _p = os.path.join(tempfile.gettempdir(), 'prev_ing.png')
                 viz.save_run_schematic(_p, gf_pathways=_il2)
                 st.image(_p, width="stretch")
@@ -361,11 +358,11 @@ with tab_setup:
             _gf_pw_sch = []
             _mem_sch   = []
             if ing_mode == 'Upload file' and uploaded_ingress:
-                _tmp_sch = _save_tmp(_read_bytes(uploaded_ingress), '.csv')
                 try:
+                    _tmp_sch = _save_tmp(_read_bytes(uploaded_ingress), '.csv')
                     _gf_pw_sch = _frag_sch.parse_pathway_file(_tmp_sch)
                 except Exception:
-                    _gf_pw_sch = parse_ingress_file(_tmp_sch)
+                    pass
             if enable_mc and uploaded_membrane:
                 try:
                     _tmp_m = _save_tmp(_read_bytes(uploaded_membrane), '.csv')
@@ -375,10 +372,17 @@ with tab_setup:
                                 if fp.group_id > 0 and fp.fragility is not None]
                 except Exception:
                     pass
+            _bsmt_pw_sch = []
+            if enable_basement and float(bsmt_ing_area) > 0:
+                _bsmt_pw_sch = [IngressPathway(
+                    height=float(bsmt_ing_height), area=float(bsmt_ing_area),
+                    coeff=float(bsmt_ing_coeff), name='ext-basement-perimeter',
+                    source='outside', target='basement')]
             _sch_p = os.path.join(tempfile.gettempdir(), 'preview_schematic.png')
             viz.save_run_schematic(
                 _sch_p,
                 gf_pathways=_gf_pw_sch,
+                bsmt_pathways=_bsmt_pw_sch,
                 membranes=_mem_sch,
                 basement_depth=_bsmt_d_sch,
                 has_sump=enable_sump,
@@ -426,8 +430,14 @@ if run_button:
 
             # ── Ingress pathways ─────────────────────────────────────────────
             if ing_mode == 'Upload file':
-                _tmp_ing  = _save_tmp(_read_bytes(uploaded_ingress), '.txt')
-                ing_list  = parse_ingress_file(_tmp_ing)
+                import fragility as _frag_io
+                _tmp_ing = _save_tmp(_read_bytes(uploaded_ingress), '.csv')
+                _frun_paths = _frag_io.parse_pathway_file(_tmp_ing)
+                ing_list = [
+                    IngressPathway(height=fp.height_m, area=fp.area_m2,
+                                   coeff=fp.Cd, name=fp.name)
+                    for fp in _frun_paths
+                ]
             else:
                 _recs = (manual_ing_tbl.to_dict('records')
                          if hasattr(manual_ing_tbl, 'to_dict') else list(manual_ing_tbl))
@@ -565,9 +575,12 @@ if run_button:
                 _sch_p = os.path.join(outdir, 'schematic.png')
                 _bsmt_d_sch = (abs(float(basement_floor_elev))
                                if enable_basement and basement_area > 0 else None)
+                _bsmt_pw_run = ([bld.basement_ingress]
+                                if bld.basement_ingress is not None else [])
                 viz.save_run_schematic(
                     _sch_p,
                     gf_pathways=ing_list,
+                    bsmt_pathways=_bsmt_pw_run,
                     basement_depth=_bsmt_d_sch,
                     has_sump=enable_sump,
                     has_pump=enable_sump,
@@ -1046,7 +1059,7 @@ with tab_batch:
     st.markdown(
         'Upload the output CSV from a batch parametric run to view aggregate plots. '
         'Required columns: `h_peak_ext`, `h_peak_int`. '
-        'Optional: `aggregate_content_loss`.')
+        'Optional: `h_peak_basement`, `v_peak_ext`, `aggregate_content_loss`.')
     st.divider()
 
     uploaded_batch = st.file_uploader(
@@ -1060,17 +1073,26 @@ with tab_batch:
             if not _brows:
                 st.warning('File is empty or has no data rows.')
             else:
-                _h_ext  = [float(r['h_peak_ext']) for r in _brows]
-                _h_int  = [float(r['h_peak_int']) for r in _brows]
+                _h_ext   = [float(r['h_peak_ext']) for r in _brows]
+                _h_int   = [float(r['h_peak_int']) for r in _brows]
+                _has_bsmt = 'h_peak_basement' in _brows[0]
+                _h_bsmt  = ([float(r['h_peak_basement']) for r in _brows]
+                            if _has_bsmt else None)
+                _has_vel = 'v_peak_ext' in _brows[0]
+                _v_peak  = ([float(r['v_peak_ext']) for r in _brows]
+                            if _has_vel else None)
                 _has_loss = 'aggregate_content_loss' in _brows[0]
-                _losses   = [float(r['aggregate_content_loss']) for r in _brows] if _has_loss else None
+                _losses   = ([float(r['aggregate_content_loss']) for r in _brows]
+                             if _has_loss else None)
 
-                _bs_col_l, _bs_col_r = st.columns(2) if _has_loss else (st.columns(1)[0], None)
+                _n_plots = 1 + (_has_bsmt) + (_has_loss)
+                _plot_cols = st.columns(min(_n_plots, 2))
+                _ci = 0
 
-                with _bs_col_l:
+                with _plot_cols[_ci % len(_plot_cols)]:
                     st.markdown('**Peak depth: exterior vs interior**')
                     _sc_p = os.path.join(tempfile.gettempdir(), 'batch_scatter.png')
-                    viz.save_batch_scatter(_h_ext, _h_int, _sc_p)
+                    viz.save_batch_scatter(_h_ext, _h_int, _sc_p, v_peak=_v_peak)
                     with open(_sc_p, 'rb') as _f:
                         _sc_b = _f.read()
                     st.image(_sc_b, width="stretch")
@@ -1078,12 +1100,28 @@ with tab_batch:
                         '📥  Scatter plot (PNG)', data=_sc_b,
                         file_name='batch_scatter.png', mime='image/png',
                         use_container_width=True)
+                _ci += 1
 
-                if _has_loss and _bs_col_r is not None:
-                    with _bs_col_r:
+                if _has_bsmt:
+                    with _plot_cols[_ci % len(_plot_cols)]:
+                        st.markdown('**Peak depth: exterior vs basement**')
+                        _bs_p = os.path.join(tempfile.gettempdir(), 'batch_basement.png')
+                        viz.save_basement_scatter(_h_ext, _h_bsmt, _bs_p,
+                                                  v_peak=_v_peak)
+                        with open(_bs_p, 'rb') as _f:
+                            _bs_b = _f.read()
+                        st.image(_bs_b, width="stretch")
+                        st.download_button(
+                            '📥  Basement scatter (PNG)', data=_bs_b,
+                            file_name='batch_basement_scatter.png', mime='image/png',
+                            use_container_width=True)
+                    _ci += 1
+
+                if _has_loss:
+                    with _plot_cols[_ci % len(_plot_cols)]:
                         st.markdown('**Aggregate loss vs exterior depth**')
                         _ls_p = os.path.join(tempfile.gettempdir(), 'batch_loss.png')
-                        viz.save_loss_scatter(_h_ext, _losses, _ls_p)
+                        viz.save_loss_scatter(_h_ext, _losses, _ls_p, v_peak=_v_peak)
                         with open(_ls_p, 'rb') as _f:
                             _ls_b = _f.read()
                         st.image(_ls_b, width="stretch")
@@ -1095,16 +1133,24 @@ with tab_batch:
                 # Summary stats
                 st.divider()
                 st.markdown('**Summary statistics**')
-                _stats_df = pd.DataFrame({
-                    'Metric': ['N runs', 'Peak ext depth (max)', 'Peak int depth (max)',
-                               'Fraction flooded (h_in > 0.001 m)'],
-                    'Value':  [
-                        str(len(_brows)),
-                        _fmt_m(max(_h_ext)),
-                        _fmt_m(max(_h_int)),
-                        _fmt_pct(sum(1 for h in _h_int if h > 0.001) / len(_h_int)),
-                    ],
-                })
+                _stat_metrics = [
+                    'N runs', 'Peak ext depth (max)', 'Peak int depth (max)',
+                    'Fraction flooded (h_in > 0.001 m)',
+                ]
+                _stat_values = [
+                    str(len(_brows)),
+                    _fmt_m(max(_h_ext)),
+                    _fmt_m(max(_h_int)),
+                    _fmt_pct(sum(1 for h in _h_int if h > 0.001) / len(_h_int)),
+                ]
+                if _has_bsmt:
+                    _stat_metrics.append('Peak basement depth (max)')
+                    _stat_values.append(_fmt_m(max(_h_bsmt)))
+                if _has_vel:
+                    _stat_metrics.append('Peak ext velocity (max)')
+                    _stat_values.append(f'{max(_v_peak):.3f} m/s')
+                _stats_df = pd.DataFrame(
+                    {'Metric': _stat_metrics, 'Value': _stat_values})
                 st.dataframe(_stats_df, use_container_width=True, hide_index=True)
 
         except KeyError as _ke:

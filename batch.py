@@ -338,7 +338,9 @@ def run_batch(depth_dir, ingress_list, floor_area,
     if not pairs:
         raise ValueError(f'No CSV files found in: {depth_dir}')
 
-    use_mc = bool(membranes) and frag_paths is not None and n_replicates > 1
+    has_fragile_paths = (frag_paths is not None
+                         and any(p.fragility is not None for p in frag_paths))
+    use_mc = (has_fragile_paths or bool(membranes)) and n_replicates > 1
     if use_mc:
         import fragility as _frag
 
@@ -410,12 +412,35 @@ def run_batch(depth_dir, ingress_list, floor_area,
                 )
                 for rep in mc.replicates:
                     row = {
-                        'case_id':    case_id,
-                        'replicate':  rep.replicate_id,
-                        'depth_file': os.path.basename(depth_path),
-                        'h_peak_ext': round(rep.peak_h_ext, 4),
-                        'h_peak_int': round(rep.peak_h_in, 4),
+                        'case_id':         case_id,
+                        'replicate':       rep.replicate_id,
+                        'depth_file':      os.path.basename(depth_path),
+                        'h_peak_ext':      round(rep.peak_h_ext, 4),
+                        'h_peak_int':      round(rep.peak_h_in, 4),
+                        'h_peak_basement': round(rep.peak_h_basement, 4),
+                        'v_peak_ext':      round(rep.v_peak_ext, 4),
                     }
+                    if sump_pump is not None:
+                        row['h_peak_sump'] = round(rep.peak_h_sump, 4)
+                    building_loss = (
+                        round(building_content_vulnerability.interpolate_loss(rep.peak_h_in), 2)
+                        if building_content_vulnerability is not None else None
+                    )
+                    basement_loss = (
+                        round(basement_content_vulnerability.interpolate_loss(rep.peak_h_basement), 2)
+                        if basement_content_vulnerability is not None else None
+                    )
+                    if building_loss is not None:
+                        row['building_content_loss'] = building_loss
+                    if basement_loss is not None:
+                        row['basement_content_loss'] = basement_loss
+                    if building_loss is not None or basement_loss is not None:
+                        row['aggregate_content_loss'] = round(
+                            (building_loss or 0.0) + (basement_loss or 0.0), 2
+                        )
+                    rep_durations = _compute_durations(rep.h_in, thresholds, dt_s, mul)
+                    for col, dur in zip(dur_cols, rep_durations):
+                        row[col] = dur
                     results.append(row)
 
             else:

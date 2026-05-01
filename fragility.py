@@ -520,8 +520,13 @@ class ReplicateRecord:
     peak_h_sump: float
     total_volume_in: float       # m³ ingressed to ground floor
     peak_h_ext: float            # peak exterior depth (same for all reps in fixed hydrograph)
+    v_peak_ext: float            # peak exterior velocity (same for all reps in fixed hydrograph)
     u_basement: Optional[float]
     basement_thresholds: Optional[List[float]]
+    h_in: List[float] = field(default_factory=list)
+    h_basement: List[float] = field(default_factory=list)
+    h_sump: List[float] = field(default_factory=list)
+    sim_times: List[float] = field(default_factory=list)
 
 
 @dataclass
@@ -575,6 +580,7 @@ def run_fragility_montecarlo(
 
     rng = np.random.default_rng(seed)
     records: List[ReplicateRecord] = []
+    v_peak_ext_shared = max(external_velocities, default=0.0) if external_velocities else 0.0
 
     for r in range(n_replicates):
         if progress_callback:
@@ -660,8 +666,13 @@ def run_fragility_montecarlo(
             peak_h_sump=peak_h_sump,
             total_volume_in=vol_in,
             peak_h_ext=peak_h_ext_val,
+            v_peak_ext=v_peak_ext_shared,
             u_basement=sampled.u_values.get('basement'),
             basement_thresholds=sampled.basement_thresholds,
+            h_in=list(sim_levels),
+            h_basement=list(sim_basement),
+            h_sump=list(sim_sump),
+            sim_times=list(sim_times),
         ))
 
     if progress_callback:
