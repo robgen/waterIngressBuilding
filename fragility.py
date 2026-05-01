@@ -79,6 +79,11 @@ class FragilePath:
     Deterministic paths have fragility=None and group_id=0.
     Probabilistic paths have fragility defined and group_id=0.
     Membrane-protected paths have group_id != 0 and fragility=None (validated).
+
+    `target` selects which compartment the pathway flows into ('ground' or
+    'basement'). The same `group_id` may be shared by ground-floor and basement
+    pathways, in which case a single membrane fragility governs both — they
+    overtop together for each replicate.
     """
     name: str
     height_m: float
@@ -86,6 +91,7 @@ class FragilePath:
     Cd: float               # base-state discharge coefficient
     group_id: int = 0
     fragility: Optional[FragilityDefinition] = None
+    target: str = 'ground'  # 'ground' or 'basement'
 
 
 @dataclass
@@ -389,6 +395,7 @@ def make_conductance_resolver(
     suppressed: Dict[str, IngressPathway] = {
         p.name: IngressPathway(
             height=p.height_m, area=1e-9, coeff=0.6, name=p.name,
+            source='outside', target=p.target,
         )
         for p in paths if p.group_id != 0
     }
@@ -415,7 +422,7 @@ def make_conductance_resolver(
                     if i == rep_idx:
                         result.append(IngressPathway(
                             height=m.height_m, area=m.area_m2, coeff=m.Cd,
-                            name=p.name,
+                            name=p.name, source='outside', target=p.target,
                         ))
                     else:
                         result.append(suppressed[p.name])
@@ -427,12 +434,12 @@ def make_conductance_resolver(
                         s2 = m.fragility.states[1]
                         result.append(IngressPathway(
                             height=p.height_m, area=s2.area_m2, coeff=s2.Cd,
-                            name=p.name,
+                            name=p.name, source='outside', target=p.target,
                         ))
                     else:
                         result.append(IngressPathway(
                             height=p.height_m, area=p.area_m2, coeff=p.Cd,
-                            name=p.name,
+                            name=p.name, source='outside', target=p.target,
                         ))
 
         # Non-membrane paths
@@ -442,6 +449,7 @@ def make_conductance_resolver(
             if p.fragility is None:
                 result.append(IngressPathway(
                     height=p.height_m, area=p.area_m2, coeff=p.Cd, name=p.name,
+                    source='outside', target=p.target,
                 ))
             else:
                 h_path = max(0.0, h_ext - p.height_m)
@@ -450,6 +458,7 @@ def make_conductance_resolver(
                 area, cd = get_conductance(p, state)
                 result.append(IngressPathway(
                     height=p.height_m, area=area, coeff=cd, name=p.name,
+                    source='outside', target=p.target,
                 ))
 
         return result
@@ -554,6 +563,7 @@ def run_fragility_montecarlo(
     velocity_mode: str = 'zero',
     vel_a: float = 1.5,
     vel_b: float = 0.5,
+    static_pathways: Optional[list] = None,
 ) -> MonteCarloResult:
     """Run the Monte Carlo ensemble.
 
@@ -594,33 +604,43 @@ def run_fragility_montecarlo(
 
         building = building_factory()
 
-        # Basement step resolver modifies building.basement_ingress conductance
-        # per timestep via a wrapper.  We patch it below via a resolver wrapper.
-        bsill = getattr(building.basement_ingress, 'height', 0.0) if building.basement_ingress else 0.0
-        barea = getattr(building.basement_ingress, 'area', 0.0) if building.basement_ingress else 0.0
-        bcd   = getattr(building.basement_ingress, 'coeff', 0.6) if building.basement_ingress else 0.6
-        bstep = make_basement_step_resolver(
-            basement_fragility, sampled, barea, bcd, bsill
-        )
+        # Static (deterministic) pathways supplied by the caller — typically the
+        # ground↔basement bypass connection.  Fragile and membrane-protected
+        # paths flow through the resolver; both are merged in the engine.
+        ingress_list = list(static_pathways or [])
 
-        # Wrap resolver to also update basement_ingress conductance each step
+        # Legacy basement-fragility hook: when supplied, mutate the building's
+        # singleton basement_ingress per-step.  Modern callers should instead
+        # express the basement perimeter as FragilePath rows with target='basement'
+        # and let the membrane logic protect them.
         bi = building.basement_ingress
+        if basement_fragility is not None and bi is not None:
+            bsill = float(getattr(bi, 'height', 0.0))
+            barea = float(getattr(bi, 'area', 0.0))
+            bcd   = float(getattr(bi, 'coeff', 0.6))
+            bstep = make_basement_step_resolver(
+                basement_fragility, sampled, barea, bcd, bsill
+            )
 
-        def _full_resolver(h_ext: float, _resolver=resolver, _bstep=bstep, _bi=bi) -> list:
-            if _bi is not None:
+            def _full_resolver(h_ext: float, _resolver=resolver, _bstep=bstep, _bi=bi) -> list:
                 new_area, new_cd = _bstep(h_ext)
                 _bi.area  = new_area
                 _bi.coeff = new_cd
-            return _resolver(h_ext)
+                return _resolver(h_ext)
 
-        ingress_list = []  # resolver supplies all paths per-step
+            active_resolver = _full_resolver
+            # legacy bi flow path — keep singleton in ingress_list so engine sees it
+            ingress_list.append(bi)
+        else:
+            active_resolver = resolver
+
         sim = Simulation(
             building, ingress_list,
             external_times, external_levels,
             dt=dt,
             external_vel_times=external_vel_times,
             external_velocities=external_velocities,
-            conductance_resolver=_full_resolver,
+            conductance_resolver=active_resolver,
             velocity_mode=velocity_mode,
             vel_a=vel_a,
             vel_b=vel_b,

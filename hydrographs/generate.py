@@ -25,7 +25,7 @@ import os
 
 # ── Parameter grids ───────────────────────────────────────────────────────────
 
-H_PEAK_VALUES    = [0.01, 0.15, 0.30, 0.60, 0.90, 1.20, 1.50, 1.80, 2.10, 2.40] # m  — depth stripes
+H_PEAK_VALUES    = [0.01, 0.15, 0.30, 0.45, 0.60, 0.90, 1.20, 1.50, 1.80, 2.10, 2.40] # m  — depth stripes
 T_PEAK_VALUES    = [60,   480,  960]                       # minutes
 ALPHA_VALUES     = [1.5,  2.5,  4.0]                        # shape exponent
 RECESSION_RATIOS = [1.5,  2.5,  4.0]                        # T_rec / T_peak

@@ -396,6 +396,21 @@ def run_batch(depth_dir, ingress_list, floor_area,
                             b.sump_pump = copy.deepcopy(sump_pump)
                     return b
 
+                # Bypass (ground↔basement) is a deterministic static pathway and
+                # must reach the simulation in MC mode too.  Pass it through
+                # static_pathways so it joins the resolver's per-step paths.
+                static_paths = []
+                if (_ba > 0.0
+                        and basement_conn_height is not None
+                        and basement_conn_area > 0.0):
+                    from engine import IngressPathway
+                    static_paths.append(IngressPathway(
+                        height=float(basement_conn_height),
+                        area=float(basement_conn_area),
+                        coeff=1.0, name='ground-basement-conn',
+                        source='ground', target='basement',
+                    ))
+
                 mc = _frag.run_fragility_montecarlo(
                     building_factory   = _building_factory,
                     paths              = frag_paths,
@@ -411,6 +426,7 @@ def run_batch(depth_dir, ingress_list, floor_area,
                     velocity_mode      = velocity_mode,
                     vel_a              = vel_a,
                     vel_b              = vel_b,
+                    static_pathways    = static_paths,
                 )
                 for rep in mc.replicates:
                     row = {
@@ -730,10 +746,23 @@ def main(argv=None):
             args.basement_vulnerability, loss_column=loss_col,
         )
 
-    # Lumped exterior perimeter opening (--basement-ingress PATH)
+    # Basement perimeter pathways (--basement-ingress PATH).
+    # Every row of the file is parsed as a FragilePath with target='basement'
+    # and merged into frag_paths so the conductance resolver and any matching
+    # membrane (by group_id) treat them like ground-floor paths.  The legacy
+    # building.basement_ingress slot still receives the first row for plotting
+    # and for the (deprecated) BasementFragility hook.
     basement_ingress = None
     if args.basement_ingress:
         bsmt_paths = _frag.parse_pathway_file(args.basement_ingress)
+        for fp in bsmt_paths:
+            fp.target = 'basement'
+        frag_paths = list(frag_paths) + bsmt_paths
+        ingress_list = [
+            IngressPathway(height=p.height_m, area=p.area_m2, coeff=p.Cd,
+                           name=p.name, target=p.target)
+            for p in frag_paths
+        ]
         if bsmt_paths:
             bp = bsmt_paths[0]
             basement_ingress = IngressPathway(

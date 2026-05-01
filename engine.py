@@ -142,7 +142,6 @@ class Simulation:
         current_h_basement = self.building.h_basement
 
         sp = self.building.sump_pump
-        bi = self.building.basement_ingress
 
         _trace = {
             'times': [], 'H_out': [], 'h_in': [], 'h_basement': [], 'h_sump': [],
@@ -193,10 +192,12 @@ class Simulation:
 
             flow_og = 0.0
             flow_gb = 0.0
+            flow_ob = 0.0
+            flow_os = 0.0
 
-            active_ingress = (self._conductance_resolver(H_out)
-                              if self._conductance_resolver is not None
-                              else self.ingress_list)
+            active_ingress = list(self.ingress_list)
+            if self._conductance_resolver is not None:
+                active_ingress.extend(self._conductance_resolver(H_out))
             for ingress in active_ingress:
                 src = getattr(ingress, 'source', 'outside')
                 tgt = getattr(ingress, 'target', 'ground')
@@ -206,14 +207,11 @@ class Simulation:
                     flow_gb += ingress.compute_flow(H_in_abs, H_basement)
                 elif src == 'basement' and tgt == 'ground':
                     flow_gb -= ingress.compute_flow(H_basement, H_in_abs)
-
-            flow_ob = 0.0
-            flow_os = 0.0
-            if bi is not None:
-                if sp is not None:
-                    flow_os = bi.compute_flow(H_out, H_sump_abs, v_source=v_out)
-                else:
-                    flow_ob = bi.compute_flow(H_out, H_basement, v_source=v_out)
+                elif src == 'outside' and tgt == 'basement':
+                    if sp is not None:
+                        flow_os += ingress.compute_flow(H_out, H_sump_abs, v_source=v_out)
+                    else:
+                        flow_ob += ingress.compute_flow(H_out, H_basement, v_source=v_out)
 
             vol_ground = (flow_og - flow_gb) * self.dt
             self.building.update_water_level(vol_ground, zone='ground')
@@ -496,6 +494,8 @@ def run(config: SimConfig, hydro: Hydrograph, pathways: list, *,
         building.sump_pump = copy.deepcopy(config.sumppump)
 
     ing = list(pathways)
+    if basement_pathway is not None and config.basement_area > 0.0:
+        ing.append(basement_pathway)
     if (config.basement_connection_height is not None
             and config.basement_connection_area > 0.0
             and config.basement_area > 0.0):
