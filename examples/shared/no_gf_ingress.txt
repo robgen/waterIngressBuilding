@@ -1,2 +1,0 @@
-# height, area, coeff, name
-10.0, 0.001, 0.6, never_reached

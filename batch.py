@@ -95,6 +95,44 @@ def _discover_cases(depth_dir):
     return sorted(cases, key=lambda x: x[0])
 
 
+def _discover_cases_from_files(patterns):
+    """Return sorted list of (case_id, depth_path) from explicit paths or regex patterns.
+
+    Each entry in *patterns* is either:
+      - A literal file path (must exist) → used directly.
+      - A string like "dir/regex" where *dir* is a real directory and *regex* is
+        matched with re.search() against filenames in that directory.
+
+    Duplicates are silently ignored; results are sorted by numeric suffix.
+    """
+    cases = []
+    seen = set()
+    for pattern in patterns:
+        if os.path.isfile(pattern):
+            path = os.path.abspath(pattern)
+            if path not in seen:
+                seen.add(path)
+                cases.append((_numeric_suffix(os.path.basename(path)), path))
+        else:
+            dir_part = os.path.dirname(pattern) or '.'
+            pat_part = os.path.basename(pattern)
+            if not os.path.isdir(dir_part):
+                raise ValueError(
+                    f'--hydrograph-files: directory not found: {dir_part!r} '
+                    f'(from pattern {pattern!r})'
+                )
+            rx = re.compile(pat_part)
+            for fname in sorted(os.listdir(dir_part)):
+                if not fname.endswith('.csv'):
+                    continue
+                if rx.search(fname):
+                    path = os.path.abspath(os.path.join(dir_part, fname))
+                    if path not in seen:
+                        seen.add(path)
+                        cases.append((_numeric_suffix(fname), path))
+    return sorted(cases, key=lambda x: x[0])
+
+
 # ── combined-file detection ───────────────────────────────────────────────────
 
 def _parse_depth_file_maybe_combined(filepath):
@@ -278,15 +316,39 @@ def _write_summary(results, time_units, outdir):
     return summary_path
 
 
+# ── time-series export ───────────────────────────────────────────────────────
+
+def _write_timeseries_csv(path, sim_times, h_in, h_ext,
+                          h_basement, h_sump, mul, time_units):
+    """Write a time-series CSV: time, h_ext, h_int, [h_basement], [h_sump]."""
+    has_bsm = bool(h_basement) and any(v > 1e-9 for v in h_basement)
+    has_smp = bool(h_sump)     and any(v > 1e-9 for v in h_sump)
+    with open(path, 'w', newline='') as f:
+        w = csv.writer(f)
+        header = [f'time_{time_units}', 'h_ext_m', 'h_int_m']
+        if has_bsm:
+            header.append('h_basement_m')
+        if has_smp:
+            header.append('h_sump_m')
+        w.writerow(header)
+        for i, (t, hi, he) in enumerate(zip(sim_times, h_in, h_ext)):
+            row = [round(t / mul, 3), round(he, 4), round(hi, 4)]
+            if has_bsm:
+                row.append(round(h_basement[i] if i < len(h_basement) else 0.0, 4))
+            if has_smp:
+                row.append(round(h_sump[i]     if i < len(h_sump)     else 0.0, 4))
+            w.writerow(row)
+
+
 # ── main batch loop ───────────────────────────────────────────────────────────
 
 _DEFAULT_THRESHOLDS = [round(0.10 * i, 2) for i in range(1, 16)]  # 0.10 … 1.50 m
 
 
-def run_batch(depth_dir, ingress_list, floor_area,
-              time_units, dt, thresholds,
-              building_content_vulnerability,
-              outdir, verbose=True,
+def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
+              time_units='minutes', dt=1.0, thresholds=None,
+              building_content_vulnerability=None,
+              outdir='batch_results', verbose=True,
               basement_content_vulnerability=None,
               basement_area=0.0, basement_floor_elev=None,
               basement_ceiling_elev=0.0,
@@ -296,7 +358,9 @@ def run_batch(depth_dir, ingress_list, floor_area,
               frag_paths=None, membranes=None,
               n_replicates=1, random_seed=None,
               velocity_mode='zero', vel_a=1.5, vel_b=0.5,
-              floor_datum=0.0):
+              floor_datum=0.0,
+              hydrograph_files=None,
+              save_timeseries=False):
     """
     Run the full batch ensemble and write results.
 
@@ -332,13 +396,20 @@ def run_batch(depth_dir, ingress_list, floor_area,
     -------
     list of result dicts (one per successfully completed case)
     """
+    if thresholds is None:
+        thresholds = _DEFAULT_THRESHOLDS
     mul  = _MUL.get(time_units, 60.0)
     dt_s = dt * mul
     os.makedirs(outdir, exist_ok=True)
 
-    pairs = _discover_cases(depth_dir)
-    if not pairs:
-        raise ValueError(f'No CSV files found in: {depth_dir}')
+    if hydrograph_files:
+        pairs = _discover_cases_from_files(hydrograph_files)
+        if not pairs:
+            raise ValueError(f'No CSV files matched by --hydrograph-files: {hydrograph_files}')
+    else:
+        pairs = _discover_cases(depth_dir)
+        if not pairs:
+            raise ValueError(f'No CSV files found in: {depth_dir}')
 
     has_fragile_paths = (frag_paths is not None
                          and any(p.fragility is not None for p in frag_paths))
@@ -427,6 +498,7 @@ def run_batch(depth_dir, ingress_list, floor_area,
                     vel_a              = vel_a,
                     vel_b              = vel_b,
                     static_pathways    = static_paths,
+                    floor_datum        = floor_datum,
                 )
                 for rep in mc.replicates:
                     row = {
@@ -460,6 +532,23 @@ def run_batch(depth_dir, ingress_list, floor_area,
                     for col, dur in zip(dur_cols, rep_durations):
                         row[col] = dur
                     results.append(row)
+
+                if save_timeseries:
+                    import plot as _viz
+                    rep = mc.replicates[0]
+                    ext_s = sample_with_zero_padding(rep.sim_times, times_s, depths)
+                    rep_tag = '' if n_replicates == 1 else f'_r{rep.replicate_id:02d}'
+                    ts_path = os.path.join(outdir, f'timeseries_{case_id:03d}{rep_tag}.csv')
+                    _write_timeseries_csv(ts_path, rep.sim_times, rep.h_in, ext_s,
+                                         rep.h_basement, rep.h_sump, mul, time_units)
+                    if n_replicates == 1:
+                        _viz.save_simulation_result(
+                            rep.sim_times, rep.h_in, ext_s,
+                            ts_path.replace('.csv', '.png'),
+                            time_unit=time_units,
+                            basement_levels=rep.h_basement if any(v > 1e-9 for v in (rep.h_basement or [])) else None,
+                            sump_levels=rep.h_sump         if any(v > 1e-9 for v in (rep.h_sump     or [])) else None,
+                        )
 
             else:
                 res = _run_case(
@@ -504,6 +593,20 @@ def run_batch(depth_dir, ingress_list, floor_area,
                 for col, dur in zip(dur_cols, durations):
                     row[col] = dur
                 results.append(row)
+
+                if save_timeseries:
+                    import plot as _viz
+                    ext_s = sample_with_zero_padding(res.times, times_s, depths)
+                    ts_path = os.path.join(outdir, f'timeseries_{case_id:03d}.csv')
+                    _write_timeseries_csv(ts_path, res.times, res.h_in, ext_s,
+                                         res.h_basement, res.h_sump, mul, time_units)
+                    _viz.save_simulation_result(
+                        res.times, res.h_in, ext_s,
+                        ts_path.replace('.csv', '.png'),
+                        time_unit=time_units,
+                        basement_levels=res.h_basement if any(v > 1e-9 for v in (res.h_basement or [])) else None,
+                        sump_levels=res.h_sump         if any(v > 1e-9 for v in (res.h_sump     or [])) else None,
+                    )
 
         except Exception as exc:
             n_failed += 1
@@ -655,8 +758,13 @@ def _parse_args(argv=None):
                     'For true Monte Carlo see docs/NOTE_montecarlo.md.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument('--depth-dir',    required=True,
+    input_group = p.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('--depth-dir',
                    help='Directory containing depth CSV files.')
+    input_group.add_argument('--hydrograph-files', nargs='+', metavar='PATH_OR_REGEX',
+                   help='One or more explicit file paths or regex patterns '
+                        '(e.g. "hydrographs/0083.csv" or "hydrographs/008[0-9]\\.csv"). '
+                        'Mutually exclusive with --depth-dir.')
     p.add_argument('--ingress',      required=True,
                    help='Ingress pathways CSV (header-based unified format).')
     p.add_argument('--basement-ingress', default=None,
@@ -719,6 +827,9 @@ def _parse_args(argv=None):
                         'Use 0.10 for a building with a 10 cm doorstep.')
     p.add_argument('--outdir',       default='batch_results',
                    help='Output directory for batch_results.csv and batch_summary.csv.')
+    p.add_argument('--save-timeseries', action='store_true', default=False,
+                   help='Write time-series CSV and plot for each hydrograph '
+                        '(timeseries_NNN.csv / .png).  Intended for single-event runs.')
     return p.parse_args(argv)
 
 
@@ -804,6 +915,7 @@ def main(argv=None):
 
     run_batch(
         depth_dir                      = args.depth_dir,
+        hydrograph_files               = args.hydrograph_files,
         ingress_list                   = ingress_list,
         frag_paths                     = frag_paths,
         membranes                      = membranes,
@@ -827,6 +939,7 @@ def main(argv=None):
         sump_pump                      = sump_pump,
         floor_datum                    = args.floor_datum,
         outdir                         = args.outdir,
+        save_timeseries                = args.save_timeseries,
         verbose                        = True,
     )
 

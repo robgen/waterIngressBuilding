@@ -564,6 +564,7 @@ def run_fragility_montecarlo(
     vel_a: float = 1.5,
     vel_b: float = 0.5,
     static_pathways: Optional[list] = None,
+    floor_datum: float = 0.0,
 ) -> MonteCarloResult:
     """Run the Monte Carlo ensemble.
 
@@ -644,6 +645,7 @@ def run_fragility_montecarlo(
             velocity_mode=velocity_mode,
             vel_a=vel_a,
             vel_b=vel_b,
+            floor_datum=floor_datum,
         )
         ret = sim.run()
 
@@ -998,4 +1000,5 @@ def run(config, hydro, paths: List[FragilePath],
         velocity_mode=config.velocity_mode,
         vel_a=config.velocity_power_law_a,
         vel_b=config.velocity_power_law_b,
+        floor_datum=config.floor_datum,
     )

@@ -1,3 +1,0 @@
-# Pathway that never triggers ground-floor ingress.
-name, height_m, area_m2, Cd
-never_reached, 10.0, 0.001, 0.6

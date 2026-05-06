@@ -524,7 +524,7 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
     # ── layout ────────────────────────────────────────────────────────────────
     # Suppress rcParams grid for the animation (building panel looks cleaner)
     with plt.rc_context({'axes.grid': False, 'axes.facecolor': 'white',
-                         'figure.facecolor': '#f0f4f8'}):
+                         'figure.facecolor': 'white'}):
         if basement_levels is None:
             fig = plt.figure(figsize=(12, 5.2))
             gs  = gridspec.GridSpec(1, 2, figure=fig,
@@ -844,7 +844,7 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
             init_func=init, blit=False)
         try:
             writer = animation.PillowWriter(fps=fps)
-            ani.save(outpath, writer=writer)
+            ani.save(outpath, writer=writer, savefig_kwargs={'facecolor': 'white'})
         except Exception:
             writer = animation.FFMpegWriter(fps=fps)
             ani.save(outpath.replace('.gif', '.mp4'), writer=writer)

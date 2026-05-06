@@ -48,10 +48,23 @@ ANIMATE, _ = _ap.parse_known_args()
 
 # ── shared hydrograph ─────────────────────────────────────────────────────────
 # Triangular flood: 0 → 0.5 m over 30 min, recession to 0 by t = 60 min.
-# Dry tail extends to t = 360 min so all cases show full post-flood drainage.
-HYDRO = [
-    (0,  0.00), (30, 0.50), (60, 0.00), (360, 0.00),
-]
+# Each case ends at a duration chosen to avoid a long zero tail.
+def make_hydro(t_end):
+    return [(0, 0.00), (30, 0.50), (60, 0.00), (t_end, 0.00)]
+
+# Per-case simulation end times (minutes).
+# Ex03 needs 360 min for slow crack drainage; others end once dynamics settle.
+CASE_DURATION = {
+    'ex01': 120,   # fast orifice; drains by ~70 min
+    'ex02': 120,   # raised sill; residual trapped, no dynamics after ~70 min
+    'ex03': 360,   # slow crack drainage must reach zero
+    'ex04': 120,   # basement permanently trapped; level flat after t = 60 min
+    'ex05': 90,    # strong pump keeps sump dry throughout
+    'ex06': 150,   # sump overflows and basement fills; level flat after ~80 min
+    'ex07': 120,   # fragility MC; fill/drain settles by ~100 min
+    'ex08': 120,
+    'ex09': 90,    # membrane intact, near-zero interior; nothing to show past 90 min
+}
 
 # ── batch hydrograph ensemble ─────────────────────────────────────────────────
 # 20 triangular hydrographs with peaks from 0.10 m to 1.05 m in 0.05 m steps.
@@ -76,13 +89,14 @@ def write_csv_rows(path, rows):
         for row in rows:
             w.writerow(row)
 
-def run(name, extra_args, outdir):
+def run(name, extra_args, outdir, hydro_path=None):
     """Run cli.py for one case; return (ok, stdout+stderr)."""
     mkdir(outdir)
-    hydro = os.path.join(HERE, 'shared', 'hydro.csv')
+    if hydro_path is None:
+        hydro_path = os.path.join(HERE, 'shared', 'hydro.csv')
     cmd = [
         PY, os.path.join(ROOT, 'cli.py'),
-        '--external', hydro,
+        '--external', hydro_path,
         '--time-units', 'minutes',
         '--dt', '1',
         '--outdir', outdir,
@@ -140,14 +154,6 @@ def _load_csv(path):
 
 print('Creating shared inputs...')
 shared = mkdir(os.path.join(HERE, 'shared'))
-write_csv_rows(os.path.join(shared, 'hydro.csv'), HYDRO)
-
-# Negligible ground-floor ingress (sill = 10 m, never reached): used when we
-# want a building with no effective ground-floor pathway.
-write_text(os.path.join(shared, 'no_gf_ingress.csv'),
-           '# Pathway that never triggers ground-floor ingress.\n'
-           'name, height_m, area_m2, Cd\n'
-           'never_reached, 10.0, 0.001, 0.6\n')
 
 # Shared basement perimeter opening for basement cases.
 write_text(os.path.join(shared, 'basement_opening.csv'),
@@ -163,12 +169,14 @@ print('\nEx 01 – single opening, sill = 0 m')
 ex01 = mkdir(os.path.join(HERE, 'ex01'))
 write_text(os.path.join(ex01, 'ingress.csv'),
            'name, height_m, area_m2, Cd\ndoor_gap, 0.0, 0.05, 0.6\n')
+write_csv_rows(os.path.join(ex01, 'hydro.csv'), make_hydro(CASE_DURATION['ex01']))
 run('ex01', [
     '--ingress', os.path.join(ex01, 'ingress.csv'),
     '--floor', '50',
     '--dt', '0.1',   # 6 s — keeps peak bias < 0.3 % (see dt_sensitivity)
 ] + (['--animate'] if ANIMATE.animate else []),
-    mkdir(os.path.join(ex01, 'out')))
+    mkdir(os.path.join(ex01, 'out')),
+    hydro_path=os.path.join(ex01, 'hydro.csv'))
 
 # Timestep sensitivity study for Ex 01
 print('  Generating dt sensitivity figure for ex01...')
@@ -183,12 +191,14 @@ print('\nEx 02 – raised sill, sill = 0.3 m')
 ex02 = mkdir(os.path.join(HERE, 'ex02'))
 write_text(os.path.join(ex02, 'ingress.csv'),
            'name, height_m, area_m2, Cd\ndoor_gap_raised, 0.3, 0.05, 0.6\n')
+write_csv_rows(os.path.join(ex02, 'hydro.csv'), make_hydro(CASE_DURATION['ex02']))
 run('ex02', [
     '--ingress', os.path.join(ex02, 'ingress.csv'),
     '--floor', '50',
     '--dt', '0.1',
 ] + (['--animate'] if ANIMATE.animate else []),
-    mkdir(os.path.join(ex02, 'out')))
+    mkdir(os.path.join(ex02, 'out')),
+    hydro_path=os.path.join(ex02, 'hydro.csv'))
 
 # ── Ex 03: two openings, different sills ─────────────────────────────────────
 # Base crack (always active) + door gap (active above sill 0.3 m).
@@ -199,11 +209,13 @@ write_text(os.path.join(ex03, 'ingress.csv'),
            'name, height_m, area_m2, Cd\n'
            'base_crack, 0.0, 0.001, 0.6\n'
            'door_gap_high, 0.3, 0.005, 0.6\n')
+write_csv_rows(os.path.join(ex03, 'hydro.csv'), make_hydro(CASE_DURATION['ex03']))
 run('ex03', [
     '--ingress', os.path.join(ex03, 'ingress.csv'),
     '--floor', '50',
 ] + (['--animate'] if ANIMATE.animate else []),
-    mkdir(os.path.join(ex03, 'out')))
+    mkdir(os.path.join(ex03, 'out')),
+    hydro_path=os.path.join(ex03, 'hydro.csv'))
 
 # ── Ex 04: basement only, no ground-floor opening ────────────────────────────
 # Realistic: 30 m² partial basement, floor at −2.5 m (full-height UK basement).
@@ -211,14 +223,15 @@ run('ex03', [
 # Without a pump, basement water is permanently trapped once the flood recedes.
 print('\nEx 04 – basement compartment, no ground-floor opening')
 ex04 = mkdir(os.path.join(HERE, 'ex04'))
+write_csv_rows(os.path.join(ex04, 'hydro.csv'), make_hydro(CASE_DURATION['ex04']))
 run('ex04', [
-    '--ingress', os.path.join(shared, 'no_gf_ingress.csv'),
     '--basement-ingress', os.path.join(shared, 'basement_opening.csv'),
     '--floor', '50',
     '--basement-area',            '30',
     '--basement-floor-elevation', '-2.5',
 ] + (['--animate'] if ANIMATE.animate else []),
-    mkdir(os.path.join(ex04, 'out')))
+    mkdir(os.path.join(ex04, 'out')),
+    hydro_path=os.path.join(ex04, 'hydro.csv'))
 
 # ── Ex 05: basement + sump/pump that keeps up ────────────────────────────────
 # Same inflow as Ex 04.  Strong pump: Q_pump ≈ 0.045 m³/s >> Q_in_max ≈ 0.008 m³/s.
@@ -226,8 +239,8 @@ run('ex04', [
 # H_lift = |h_ext − z_sump| = |0.5 − (−2.5)| = 3.0 m at peak flood.
 print('\nEx 05 – basement + sump/pump (keeps up)')
 ex05 = mkdir(os.path.join(HERE, 'ex05'))
+write_csv_rows(os.path.join(ex05, 'hydro.csv'), make_hydro(CASE_DURATION['ex05']))
 run('ex05', [
-    '--ingress', os.path.join(shared, 'no_gf_ingress.csv'),
     '--basement-ingress', os.path.join(shared, 'basement_opening.csv'),
     '--floor', '50',
     '--basement-area',               '30',
@@ -244,7 +257,8 @@ run('ex05', [
     '--sumppump-pipe-loss-coeff',    '0',
     '--sumppump-availability',       '1.0',
 ] + (['--animate'] if ANIMATE.animate else []),
-    mkdir(os.path.join(ex05, 'out')))
+    mkdir(os.path.join(ex05, 'out')),
+    hydro_path=os.path.join(ex05, 'hydro.csv'))
 
 # Timestep sensitivity study for Ex 05
 print('  Generating dt sensitivity figure for ex05...')
@@ -257,8 +271,8 @@ print('  OK  ex05 dt-sensitivity')
 # Q_pump = sqrt((5.0 − 3.0) / 100000) ≈ 0.0045 m³/s  <  Q_in_max ≈ 0.008 m³/s
 print('\nEx 06 – basement + sump/pump (overwhelmed)')
 ex06 = mkdir(os.path.join(HERE, 'ex06'))
+write_csv_rows(os.path.join(ex06, 'hydro.csv'), make_hydro(CASE_DURATION['ex06']))
 run('ex06', [
-    '--ingress', os.path.join(shared, 'no_gf_ingress.csv'),
     '--basement-ingress', os.path.join(shared, 'basement_opening.csv'),
     '--floor', '50',
     '--basement-area',               '30',
@@ -275,7 +289,8 @@ run('ex06', [
     '--sumppump-pipe-loss-coeff',    '0',
     '--sumppump-availability',       '1.0',
 ] + (['--animate'] if ANIMATE.animate else []),
-    mkdir(os.path.join(ex06, 'out')))
+    mkdir(os.path.join(ex06, 'out')),
+    hydro_path=os.path.join(ex06, 'hydro.csv'))
 
 # ── Ex 07: fragility MC – single probabilistic path, 50 % failure ─────────────
 # One path: base state is a nearly sealed door (area ≈ 0).
@@ -289,12 +304,14 @@ ex07 = mkdir(os.path.join(HERE, 'ex07'))
 write_text(os.path.join(ex07, 'ingress_frag.csv'),
            'name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
            'seal_door, 0.0, 1.0e-7, 0.6, 0, failed, 0.5, 0.3, 5.0e-3, 0.6\n')
+write_csv_rows(os.path.join(ex07, 'hydro.csv'), make_hydro(CASE_DURATION['ex07']))
 run('ex07', [
     '--ingress', os.path.join(ex07, 'ingress_frag.csv'),
     '--floor', '50',
     '--n-replicates', '500',
     '--random-seed', '42',
-], mkdir(os.path.join(ex07, 'out')))
+], mkdir(os.path.join(ex07, 'out')),
+    hydro_path=os.path.join(ex07, 'hydro.csv'))
 
 # ── Ex 08: fragility MC – membrane-protected group, 50 % membrane failure ─────
 # Two pathways (airbrick + door gap) sit behind a membrane.
@@ -311,13 +328,15 @@ write_text(os.path.join(ex08, 'ingress_frag.csv'),
 write_text(os.path.join(ex08, 'membrane.csv'),
            'name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
            'membrane_1, 0.0, 1.0e-6, 0.6, 1, overtopped, 0.5, 0.1, 1.0e-9, 0.6\n')
+write_csv_rows(os.path.join(ex08, 'hydro.csv'), make_hydro(CASE_DURATION['ex08']))
 run('ex08', [
     '--ingress',    os.path.join(ex08, 'ingress_frag.csv'),
     '--membrane',   os.path.join(ex08, 'membrane.csv'),
     '--floor', '50',
     '--n-replicates', '500',
     '--random-seed', '42',
-], mkdir(os.path.join(ex08, 'out')))
+], mkdir(os.path.join(ex08, 'out')),
+    hydro_path=os.path.join(ex08, 'hydro.csv'))
 
 # ── Ex 09: deterministic membrane — design capacity above flood peak ──────────
 # Same two pathways as Ex 08 (airbrick + door_gap behind membrane group_id=1).
@@ -330,13 +349,15 @@ ex09 = mkdir(os.path.join(HERE, 'ex09'))
 write_text(os.path.join(ex09, 'membrane_det.csv'),
            'name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
            'membrane_1, 0.0, 1.0e-6, 0.6, 1, overtopped, 0.6, 0.0, 1.0e-9, 0.6\n')
+write_csv_rows(os.path.join(ex09, 'hydro.csv'), make_hydro(CASE_DURATION['ex09']))
 run('ex09', [
     '--ingress',  os.path.join(ex08, 'ingress_frag.csv'),   # same airbrick + door_gap
     '--membrane', os.path.join(ex09, 'membrane_det.csv'),
     '--floor', '50',
     '--n-replicates', '500',
     '--random-seed', '42',
-], mkdir(os.path.join(ex09, 'out')))
+], mkdir(os.path.join(ex09, 'out')),
+    hydro_path=os.path.join(ex09, 'hydro.csv'))
 
 # Generate MC result figures for ex07, ex08, ex09
 print('\nGenerating fragility MC figures ...')

@@ -40,8 +40,9 @@ def _build_argparser():
                    help='Power-law exponent b in v=a·h^b. Default: 0.5.')
 
     # ── ingress pathways ──────────────────────────────────────────────────────
-    p.add_argument('--ingress', '-i', required=True,
-                   help='Ground-floor ingress pathways CSV (unified format).')
+    p.add_argument('--ingress', '-i', default=None,
+                   help='Ground-floor ingress pathways CSV (unified format). '
+                        'Omit for basement-only cases with no ground-floor pathway.')
     p.add_argument('--basement-ingress', default=None,
                    help='Exterior→basement perimeter opening CSV (unified format, '
                         'typically one row).')
@@ -183,7 +184,7 @@ def _build_hydro(args, config: engine.SimConfig) -> engine.Hydrograph:
 
 def _build_pathways(args):
     """Parse --ingress, --basement-ingress, --membrane and return (paths, membranes, basement_pathway)."""
-    paths = _frag.parse_pathway_file(args.ingress)
+    paths = _frag.parse_pathway_file(args.ingress) if args.ingress else []
     _frag.validate_fragility_inputs(paths, [])
 
     basement_pathway = None
@@ -238,7 +239,7 @@ def main(argv=None):
             has_sump=config.sumppump is not None,
             has_pump=config.sumppump is not None,
             bypass_height=float(config.basement_connection_height or 0.0),
-            label=os.path.splitext(os.path.basename(args.ingress))[0],
+            label=os.path.splitext(os.path.basename(args.ingress))[0] if args.ingress else '',
         )
     except Exception as exc:
         if args.verbose:
