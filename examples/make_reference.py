@@ -144,6 +144,7 @@ paths_07 = [
         fragility=FragilityDefinition(states=[
             FragilityState(state_name='failed', median_m=0.5, beta_ln=0.3, area_m2=5e-3, Cd=0.6),
         ]),
+        reversible=False,  # door seal: physically irreversible failure
     ),
 ]
 result_07 = run_fragility_montecarlo(
@@ -177,6 +178,7 @@ membranes_08 = [
         fragility=FragilityDefinition(states=[
             FragilityState(state_name='overtopped', median_m=0.5, beta_ln=0.1, area_m2=1e-9, Cd=0.6),
         ]),
+        reversible=True,  # flood membrane: overtopping-type, reversible
     ),
 ]
 result_08 = run_fragility_montecarlo(
@@ -207,6 +209,7 @@ membranes_09 = [
         fragility=FragilityDefinition(states=[
             FragilityState(state_name='overtopped', median_m=0.6, beta_ln=0.0, area_m2=1e-9, Cd=0.6),
         ]),
+        reversible=True,  # flood membrane: overtopping-type, reversible
     ),
 ]
 result_09 = run_fragility_montecarlo(
@@ -261,6 +264,7 @@ membranes_11 = [
             FragilityState(state_name='overtopped', median_m=0.5,
                            beta_ln=0.1, area_m2=1e-9, Cd=0.6),
         ]),
+        reversible=True,  # flood membrane: overtopping-type, reversible
     ),
 ]
 

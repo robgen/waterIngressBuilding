@@ -302,8 +302,9 @@ run('ex06', [
 print('\nEx 07 – fragility MC, single probabilistic path (50 % failure)')
 ex07 = mkdir(os.path.join(HERE, 'ex07'))
 write_text(os.path.join(ex07, 'ingress_frag.csv'),
-           'name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
-           'seal_door, 0.0, 1.0e-7, 0.6, 0, failed, 0.5, 0.3, 5.0e-3, 0.6\n')
+           'name, height_m, area_m2, Cd, group_id, reversible,'
+           ' state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
+           'seal_door, 0.0, 1.0e-7, 0.6, 0, 0, failed, 0.5, 0.3, 5.0e-3, 0.6\n')
 write_csv_rows(os.path.join(ex07, 'hydro.csv'), make_hydro(CASE_DURATION['ex07']))
 run('ex07', [
     '--ingress', os.path.join(ex07, 'ingress_frag.csv'),
@@ -326,8 +327,9 @@ write_text(os.path.join(ex08, 'ingress_frag.csv'),
            'airbrick, 0.1, 6.0e-3, 0.6, 1\n'
            'door_gap, 0.0, 2.0e-3, 0.6, 1\n')
 write_text(os.path.join(ex08, 'membrane.csv'),
-           'name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
-           'membrane_1, 0.0, 1.0e-6, 0.6, 1, overtopped, 0.5, 0.1, 1.0e-9, 0.6\n')
+           'name, height_m, area_m2, Cd, group_id, reversible,'
+           ' state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
+           'membrane_1, 0.0, 1.0e-6, 0.6, 1, 1, overtopped, 0.5, 0.1, 1.0e-9, 0.6\n')
 write_csv_rows(os.path.join(ex08, 'hydro.csv'), make_hydro(CASE_DURATION['ex08']))
 run('ex08', [
     '--ingress',    os.path.join(ex08, 'ingress_frag.csv'),
@@ -347,8 +349,9 @@ run('ex08', [
 print('\nEx 09 – deterministic membrane (design capacity above flood peak)')
 ex09 = mkdir(os.path.join(HERE, 'ex09'))
 write_text(os.path.join(ex09, 'membrane_det.csv'),
-           'name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
-           'membrane_1, 0.0, 1.0e-6, 0.6, 1, overtopped, 0.6, 0.0, 1.0e-9, 0.6\n')
+           'name, height_m, area_m2, Cd, group_id, reversible,'
+           ' state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
+           'membrane_1, 0.0, 1.0e-6, 0.6, 1, 1, overtopped, 0.6, 0.0, 1.0e-9, 0.6\n')
 write_csv_rows(os.path.join(ex09, 'hydro.csv'), make_hydro(CASE_DURATION['ex09']))
 run('ex09', [
     '--ingress',  os.path.join(ex08, 'ingress_frag.csv'),   # same airbrick + door_gap

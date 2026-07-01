@@ -245,6 +245,10 @@ Hydrograph
 - `fragility.run(config, hydro)` — if `config.montecarlo is not None` and a single hydrograph
 - `batch.run(config, hydro_dir)` — if a folder of hydrographs is provided; internally calls `engine.run()` or `fragility.run()` per hydrograph
 
+### Reversibility flag
+
+Every fragility-bearing element (ingress path or membrane) carries a mandatory `reversible: bool` field. When `reversible=False`, the element's active state is latched at the highest state reached during the event; it cannot recover to a lower state even as the flood recedes. The latch is local to each Monte Carlo replicate and resets between replicates. Deterministic paths (no fragility states) do not require this field. See `docs/fragility.md` for the full reversibility mapping guidance.
+
 ### Regression contract
 
 All twelve validation case studies in `examples/` have reference peak metrics in `examples/reference/`. `tests/test_regression.py` runs each case and asserts computed metrics match reference values within tolerance (1 % for peak depths, 5 % for volumes). This test must pass before any merge.
