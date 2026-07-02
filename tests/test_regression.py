@@ -161,6 +161,7 @@ def test_ex07_fragility_single_path():
                 FragilityState(state_name='failed', median_m=0.5, beta_ln=0.3,
                                area_m2=5e-3, Cd=0.6),
             ]),
+            reversible=False,  # door seal: physically irreversible failure
         ),
     ]
     result = run_fragility_montecarlo(
@@ -194,6 +195,7 @@ def test_ex08_fragility_membrane_group():
                 FragilityState(state_name='overtopped', median_m=0.5, beta_ln=0.1,
                                area_m2=1e-9, Cd=0.6),
             ]),
+            reversible=True,  # flood membrane: overtopping-type, reversible
         ),
     ]
     result = run_fragility_montecarlo(
@@ -230,6 +232,7 @@ def test_ex09_deterministic_membrane_no_failure():
                 FragilityState(state_name='overtopped', median_m=0.6, beta_ln=0.0,
                                area_m2=1e-9, Cd=0.6),
             ]),
+            reversible=True,  # flood membrane: overtopping-type, reversible
         ),
     ]
     result = run_fragility_montecarlo(
@@ -285,6 +288,7 @@ def test_ex11_batch_mc_membrane():
                 FragilityState(state_name='overtopped', median_m=0.5,
                                beta_ln=0.1, area_m2=1e-9, Cd=0.6),
             ]),
+            reversible=True,  # flood membrane: overtopping-type, reversible
         ),
     ]
     total_reps = 0

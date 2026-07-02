@@ -32,7 +32,7 @@ RECESSION_RATIOS = [1.5,  2.5,  4.0]                        # T_rec / T_peak
 
 DT = 1   # minutes — fixed timestep for all cases
 
-VEL_A = 1.0   # m/s per m^b  — coefficient in v = a * h^b
+VEL_A = 1.5   # m/s per m^b  — coefficient in v = a * h^b
 VEL_B = 0.5   # depth exponent
 
 

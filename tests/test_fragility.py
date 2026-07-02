@@ -147,7 +147,8 @@ def test_select_active_state_exact_boundary():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_get_conductance_base_state():
-    p = FragilePath("door", 0.0, 4e-7, 0.6, 0, _make_one_state_frag(0.6, 0.35))
+    p = FragilePath("door", 0.0, 4e-7, 0.6, 0, _make_one_state_frag(0.6, 0.35),
+                    reversible=False)
     area, cd = get_conductance(p, 0)
     assert area == 4e-7
     assert cd == 0.6
@@ -157,7 +158,7 @@ def test_get_conductance_degraded_state():
     frag = _make_one_state_frag(0.6, 0.35)
     frag.states[0].area_m2 = 3e-2
     frag.states[0].Cd = 0.65
-    p = FragilePath("door", 0.0, 4e-7, 0.6, 0, frag)
+    p = FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=False)
     area, cd = get_conductance(p, 1)
     assert area == 3e-2
     assert cd == 0.65
@@ -199,14 +200,16 @@ def test_parse_pathway_deterministic_paths():
 
 def test_parse_pathway_one_fragility_state():
     path = _write_temp_csv(
-        "name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n"
-        "flood_door, 0.00, 4.0e-7, 0.60, 0, baseline, 0.70, 0.35, 3.0e-2, 0.60\n"
+        "name, height_m, area_m2, Cd, group_id, reversible,"
+        " state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n"
+        "flood_door, 0.00, 4.0e-7, 0.60, 0, 0, baseline, 0.70, 0.35, 3.0e-2, 0.60\n"
     )
     try:
         paths = parse_pathway_file(path)
         assert len(paths) == 1
         p = paths[0]
         assert p.fragility is not None
+        assert p.reversible is False
         assert len(p.fragility.states) == 1
         assert p.fragility.states[0].median_m == pytest.approx(0.70)
         assert p.fragility.states[0].area_m2 == pytest.approx(3e-2)
@@ -216,10 +219,10 @@ def test_parse_pathway_one_fragility_state():
 
 def test_parse_pathway_two_fragility_states():
     path = _write_temp_csv(
-        "name, height_m, area_m2, Cd, group_id,"
+        "name, height_m, area_m2, Cd, group_id, reversible,"
         " state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1,"
         " state_name_2, median_m_2, beta_ln_2, area_m2_2, Cd_2\n"
-        "door, 0.00, 4e-7, 0.6, 0, s1, 0.4, 0.3, 1e-2, 0.6, s2, 0.8, 0.3, 3e-2, 0.6\n"
+        "door, 0.00, 4e-7, 0.6, 0, 0, s1, 0.4, 0.3, 1e-2, 0.6, s2, 0.8, 0.3, 3e-2, 0.6\n"
     )
     try:
         paths = parse_pathway_file(path)
@@ -232,10 +235,10 @@ def test_parse_pathway_two_fragility_states():
 
 def test_validate_rejects_non_monotonic():
     path = _write_temp_csv(
-        "name, height_m, area_m2, Cd, group_id,"
+        "name, height_m, area_m2, Cd, group_id, reversible,"
         " state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1,"
         " state_name_2, median_m_2, beta_ln_2, area_m2_2, Cd_2\n"
-        "door, 0.00, 4e-7, 0.6, 0, s1, 0.8, 0.3, 1e-2, 0.6, s2, 0.4, 0.3, 3e-2, 0.6\n"
+        "door, 0.00, 4e-7, 0.6, 0, 0, s1, 0.8, 0.3, 1e-2, 0.6, s2, 0.4, 0.3, 3e-2, 0.6\n"
     )
     try:
         paths = parse_pathway_file(path)
@@ -259,10 +262,12 @@ def test_parse_pathway_grouped_path_no_fragility():
 
 
 def test_validate_rejects_grouped_ingress_with_fragility():
+    # reversible column present so parse succeeds; group_id+fragility conflict
+    # is then caught by validate_fragility_inputs
     path = _write_temp_csv(
-        "name, height_m, area_m2, Cd, group_id,"
+        "name, height_m, area_m2, Cd, group_id, reversible,"
         " state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n"
-        "airbrick, 0.10, 8e-3, 0.60, 1, s1, 0.4, 0.3, 1e-2, 0.6\n"
+        "airbrick, 0.10, 8e-3, 0.60, 1, 0, s1, 0.4, 0.3, 1e-2, 0.6\n"
     )
     try:
         paths = parse_pathway_file(path)
@@ -278,14 +283,17 @@ def test_validate_rejects_grouped_ingress_with_fragility():
 
 def test_parse_membrane_unified_format():
     path = _write_temp_csv(
-        "name, height_m, area_m2, Cd, group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n"
-        "perimeter_barrier, 0.00, 1.0e-5, 0.60, 1, overtopped, 0.60, 0.07, 1e-9, 0.6\n"
+        "name, height_m, area_m2, Cd, group_id, reversible,"
+        " state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n"
+        "perimeter_barrier, 0.00, 1.0e-5, 0.60, 1, 1, overtopped, 0.60, 0.07, 1e-9, 0.6\n"
     )
     try:
         fps = parse_pathway_file(path)
         assert len(fps) == 1
+        assert fps[0].reversible is True
         m = fragile_path_to_membrane(fps[0])
         assert m.group_id == 1
+        assert m.reversible is True
         assert m.height_m == pytest.approx(0.0)
         assert m.fragility.states[0].median_m == pytest.approx(0.60)
         assert m.fragility.states[0].beta_ln == pytest.approx(0.07)
@@ -314,10 +322,12 @@ def test_parse_membrane_args_builds_membrane():
         membrane_group=2, membrane_height=0.0,
         membrane_area=1e-5, membrane_Cd=0.6,
         membrane_median=0.6, membrane_beta=0.07,
+        membrane_reversible=1,
     )
     m = parse_membrane_args(args)
     assert m is not None
     assert m.group_id == 2
+    assert m.reversible is True
     assert m.fragility.states[0].median_m == pytest.approx(0.6)
 
 
@@ -331,9 +341,9 @@ def test_parse_membrane_args_raises_on_partial():
 # Parsing — merge_membrane_source
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_membrane(gid):
+def _make_membrane(gid, reversible=True):
     frag = FragilityDefinition([FragilityState("ot", 0.6, 0.07, 1e-9, 0.6)])
-    return Membrane(gid, 0.0, 1e-5, 0.6, frag)
+    return Membrane(gid, 0.0, 1e-5, 0.6, frag, reversible=reversible)
 
 
 def test_merge_membrane_source_file_only():
@@ -393,8 +403,9 @@ def test_parse_basement_fragility_args_raises_on_partial():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_validate_rejects_grouped_path_with_fragility():
+    # group_id+fragility conflict is caught before reversible check
     frag = FragilityDefinition([FragilityState("s1", 0.5, 0.3, 1e-2, 0.6)])
-    paths = [FragilePath("ab1", 0.1, 8e-3, 0.6, 1, frag)]
+    paths = [FragilePath("ab1", 0.1, 8e-3, 0.6, 1, frag, reversible=False)]
     with pytest.raises(ValueError, match="membrane-protected"):
         validate_fragility_inputs(paths, [])
 
@@ -402,10 +413,18 @@ def test_validate_rejects_grouped_path_with_fragility():
 def test_validate_accepts_valid_inputs():
     frag = FragilityDefinition([FragilityState("s1", 0.5, 0.3, 1e-2, 0.6)])
     paths = [
-        FragilePath("door", 0.0, 4e-7, 0.6, 0, frag),
+        FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=False),
         FragilePath("ab1",  0.1, 8e-3, 0.6, 1, None),
     ]
     validate_fragility_inputs(paths, [])  # must not raise
+
+
+def test_validate_rejects_fragile_path_missing_reversible():
+    """A fragile path without reversible flag must fail validation."""
+    frag = FragilityDefinition([FragilityState("s1", 0.5, 0.3, 1e-2, 0.6)])
+    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag)]  # no reversible
+    with pytest.raises(ValueError, match="reversible"):
+        validate_fragility_inputs(paths, [])
 
 
 def test_assign_representative_paths():
@@ -438,9 +457,10 @@ def _paths_with_membrane():
     ]
 
 
-def _membrane_gid1(median=0.60, beta=0.07):
+def _membrane_gid1(median=0.60, beta=0.07, reversible=True):
     frag = FragilityDefinition([FragilityState("overtopped", median, beta, 1e-9, 0.6)])
-    m = Membrane(1, 0.0, 1e-5, 0.6, frag, representative_path_idx=0)
+    m = Membrane(1, 0.0, 1e-5, 0.6, frag, reversible=reversible,
+                 representative_path_idx=0)
     return m
 
 
@@ -482,7 +502,7 @@ def test_resolver_membrane_overtopped_restores_group_paths():
 def test_resolver_probabilistic_path_state_switches():
     """A path with fragility uses degraded conductance once depth exceeds threshold."""
     frag = FragilityDefinition([FragilityState("baseline", 0.5, 0.3, 3e-2, 0.6)])
-    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag)]
+    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=True)]
     # Fix threshold at exactly 0.50
     sampled = SampledThresholds(
         path_thresholds={'door': [0.50]},
@@ -570,7 +590,7 @@ def test_montecarlo_percentile_ordering():
     """P10 ≤ P50 ≤ P90 for peak_h_in across a non-trivial ensemble."""
     times, levels = _hydrograph()
     frag = FragilityDefinition([FragilityState("s1", 0.6, 0.35, 3e-2, 0.6)])
-    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag)]
+    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=True)]
 
     def factory():
         return _simple_building()
@@ -594,7 +614,7 @@ def test_montecarlo_state_frequency_bounded():
     """State frequencies must be in [0, 1] and state_0 frequency == 1.0."""
     times, levels = _hydrograph()
     frag = FragilityDefinition([FragilityState("s1", 0.6, 0.35, 3e-2, 0.6)])
-    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag)]
+    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=True)]
 
     def factory():
         return _simple_building()
@@ -620,7 +640,7 @@ def test_montecarlo_rank_correlation_keys():
     """Rank correlations dict contains a key for each probabilistic element."""
     times, levels = _hydrograph()
     frag = FragilityDefinition([FragilityState("s1", 0.6, 0.35, 3e-2, 0.6)])
-    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag)]
+    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=True)]
 
     def factory():
         return _simple_building()
@@ -643,7 +663,7 @@ def test_montecarlo_reproducible_with_seed():
     """Two runs with the same seed produce identical results."""
     times, levels = _hydrograph()
     frag = FragilityDefinition([FragilityState("s1", 0.6, 0.35, 3e-2, 0.6)])
-    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag)]
+    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=True)]
 
     def factory():
         return _simple_building()
@@ -666,7 +686,8 @@ def test_montecarlo_membrane_intact_reduces_ingress():
     ]
     # With membrane — threshold at 2.0 m (never exceeded), so paths suppressed
     frag_mem = FragilityDefinition([FragilityState("ot", 2.0, 0.05, 1e-9, 0.6)])
-    m = Membrane(1, 0.0, 1e-9, 0.6, frag_mem, representative_path_idx=0)
+    m = Membrane(1, 0.0, 1e-9, 0.6, frag_mem, reversible=True,
+                 representative_path_idx=0)
     paths_with_mem = [
         FragilePath("ab1", 0.10, 8e-3, 0.6, 1, None),
         FragilePath("ab2", 0.10, 8e-3, 0.6, 1, None),
@@ -682,3 +703,93 @@ def test_montecarlo_membrane_intact_reduces_ingress():
     peak_bare = r_bare.replicates[0].peak_h_in
     peak_mem  = r_mem.replicates[0].peak_h_in
     assert peak_mem < peak_bare
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reversible vs irreversible latch behaviour
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_irreversible_path_latches_degraded_state_after_recession():
+    """An irreversible element stays degraded after the head drops below its
+    capacity threshold; a reversible element reverts to base state."""
+    # Hydrograph: rises to 0.8 m (above threshold 0.5 m), then drops to 0.1 m
+    # (below threshold), then stays at 0.1 m.  After the recession the
+    # irreversible path must remain in state 1; the reversible path must be
+    # back in state 0.
+    from fragility import SampledThresholds, make_conductance_resolver
+
+    frag = FragilityDefinition([
+        FragilityState("failed", median_m=0.5, beta_ln=0.3, area_m2=3e-2, Cd=0.6)
+    ])
+    # Fix capacity threshold at exactly 0.50 m
+    sampled = SampledThresholds(
+        path_thresholds={
+            'irrev': [0.50],
+            'rev':   [0.50],
+        },
+        u_values={'irrev': 0.5, 'rev': 0.5},
+    )
+
+    paths_irrev = [FragilePath("irrev", 0.0, 4e-7, 0.6, 0, frag, reversible=False)]
+    paths_rev   = [FragilePath("rev",   0.0, 4e-7, 0.6, 0, frag, reversible=True)]
+
+    resolver_irrev = make_conductance_resolver(paths_irrev, [], sampled)
+    resolver_rev   = make_conductance_resolver(paths_rev,   [], sampled)
+
+    # --- rising: h_ext = 0.8 m → depth above sill = 0.8 ≥ 0.5 → state 1 ---
+    irrev_above = resolver_irrev(0.8)[0]
+    rev_above   = resolver_rev(0.8)[0]
+    assert irrev_above.area == pytest.approx(3e-2), "irrev should be degraded at peak"
+    assert rev_above.area   == pytest.approx(3e-2), "rev should be degraded at peak"
+
+    # --- recession: h_ext = 0.1 m → depth above sill = 0.1 < 0.5 ---
+    irrev_below = resolver_irrev(0.1)[0]
+    rev_below   = resolver_rev(0.1)[0]
+    # irreversible: latched to state 1 → still degraded area
+    assert irrev_below.area == pytest.approx(3e-2), \
+        "irreversible path must stay degraded after head recedes below threshold"
+    # reversible: back to base state → tiny base area
+    assert rev_below.area == pytest.approx(4e-7), \
+        "reversible path must revert to base state once head drops below threshold"
+
+
+def test_irreversible_membrane_latches_overtopped_state():
+    """An irreversible membrane latches in the overtopped state once triggered,
+    even when head drops back below the threshold."""
+    from fragility import SampledThresholds, make_conductance_resolver
+
+    frag_mem = FragilityDefinition([
+        FragilityState("overtopped", median_m=0.5, beta_ln=0.07, area_m2=1e-9, Cd=0.6)
+    ])
+    sampled = SampledThresholds(
+        membrane_thresholds={1: [0.50]},
+        u_values={'membrane:1': 0.5},
+    )
+
+    paths = [
+        FragilePath("ab1", 0.0, 8e-3, 0.6, 1, None),
+    ]
+    m_irrev = Membrane(1, 0.0, 1e-5, 0.6, frag_mem, reversible=False,
+                       representative_path_idx=0)
+    m_rev   = Membrane(1, 0.0, 1e-5, 0.6, frag_mem, reversible=True,
+                       representative_path_idx=0)
+
+    res_irrev = make_conductance_resolver(paths, [m_irrev], sampled)
+    res_rev   = make_conductance_resolver(paths, [m_rev],   sampled)
+
+    # Rising: h_ext = 0.8 m → membrane depth = 0.8 ≥ 0.5 → overtopped
+    irrev_above = {ip.name: ip for ip in res_irrev(0.8)}
+    rev_above   = {ip.name: ip for ip in res_rev(0.8)}
+    # When overtopped, ab1 is restored to its own area (8e-3)
+    assert irrev_above['ab1'].area == pytest.approx(8e-3)
+    assert rev_above['ab1'].area   == pytest.approx(8e-3)
+
+    # Recession: h_ext = 0.1 m → membrane depth = 0.1 < 0.5 m
+    irrev_below = {ip.name: ip for ip in res_irrev(0.1)}
+    rev_below   = {ip.name: ip for ip in res_rev(0.1)}
+    # Irreversible: still latched overtopped → ab1 at own area
+    assert irrev_below['ab1'].area == pytest.approx(8e-3), \
+        "irreversible membrane must remain overtopped after head recedes"
+    # Reversible: back to intact → representative carries membrane area (1e-5)
+    assert rev_below['ab1'].area == pytest.approx(1e-5), \
+        "reversible membrane must restore to intact state once head drops below threshold"

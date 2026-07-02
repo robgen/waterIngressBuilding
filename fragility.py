@@ -84,6 +84,12 @@ class FragilePath:
     'basement'). The same `group_id` may be shared by ground-floor and basement
     pathways, in which case a single membrane fragility governs both — they
     overtop together for each replicate.
+
+    `reversible` is mandatory for fragile elements (fragility is not None):
+      True  — state follows the instantaneous head (overtopping / bathtub measures).
+      False — state latches to the worst reached so far; never decreases within
+              an event (failure-type: door seals, airbrick covers, pipe seals).
+    Deterministic paths (fragility=None) leave reversible=None.
     """
     name: str
     height_m: float
@@ -92,16 +98,23 @@ class FragilePath:
     group_id: int = 0
     fragility: Optional[FragilityDefinition] = None
     target: str = 'ground'  # 'ground' or 'basement'
+    reversible: Optional[bool] = None  # required when fragility is not None
 
 
 @dataclass
 class Membrane:
-    """Perimeter flood protection element shielding a group of ingress paths."""
+    """Perimeter flood protection element shielding a group of ingress paths.
+
+    `reversible` is mandatory (no default):
+      True  — state follows the instantaneous head (skirts, bunds, barriers).
+      False — state latches to the worst reached so far (irreversible failure).
+    """
     group_id: int
     height_m: float
     area_m2: float          # base-state lumped leakage area
     Cd: float
     fragility: FragilityDefinition   # always present; governs overtopping
+    reversible: bool                 # required — see class docstring
     representative_path_idx: int = -1   # set by assign_representative_paths
 
 
@@ -171,12 +184,19 @@ def _parse_fragility_states_from_parts(
 def parse_membrane_args(args) -> Optional[Membrane]:
     """Build a single Membrane from --membrane-* CLI args, or None."""
     needed = ['membrane_group', 'membrane_height', 'membrane_area',
-              'membrane_Cd', 'membrane_median', 'membrane_beta']
+              'membrane_Cd', 'membrane_median', 'membrane_beta', 'membrane_reversible']
     if not any(getattr(args, k, None) is not None for k in needed):
         return None
     missing = [k for k in needed if getattr(args, k, None) is None]
     if missing:
         raise ValueError(f"Incomplete --membrane-* arguments; missing: {missing}")
+    rev_raw = getattr(args, 'membrane_reversible')
+    if str(rev_raw).lower() in ('1', 'true', 'yes'):
+        reversible = True
+    elif str(rev_raw).lower() in ('0', 'false', 'no'):
+        reversible = False
+    else:
+        raise ValueError(f"Invalid --membrane-reversible value: {rev_raw!r}. Use 1/true or 0/false.")
     frag = FragilityDefinition([FragilityState(
         state_name='overtopped',
         median_m=float(args.membrane_median),
@@ -191,6 +211,7 @@ def parse_membrane_args(args) -> Optional[Membrane]:
         area_m2=float(args.membrane_area),
         Cd=float(args.membrane_Cd),
         fragility=frag,
+        reversible=reversible,
     )
 
 
@@ -265,7 +286,8 @@ def validate_fragility_inputs(
     Checks:
     1. Fragility–membrane conflict: group_id != 0 paths must not have fragility.
     2. Monotonic medians for every probabilistic path.
-    3. (Membrane monotonicity is checked at parse time.)
+    3. Missing reversible flag on fragile elements.
+    4. (Membrane monotonicity is checked at parse time.)
     """
     for p in paths:
         if p.group_id != 0 and p.fragility is not None:
@@ -276,6 +298,12 @@ def validate_fragility_inputs(
             )
         if p.fragility is not None:
             p.fragility.validate(p.name)
+            if p.reversible is None:
+                raise ValueError(
+                    f"Fragile path '{p.name}' is missing the required 'reversible' flag. "
+                    "Set reversible=True for overtopping/membrane elements, "
+                    "reversible=False for failure-type seals/covers."
+                )
 
 
 def assign_representative_paths(
@@ -400,6 +428,14 @@ def make_conductance_resolver(
         for p in paths if p.group_id != 0
     }
 
+    # Per-replicate latch memory — accumulates the highest degraded state reached
+    # so far for irreversible elements.  The resolver closure captures these dicts;
+    # they are fresh for each call to make_conductance_resolver (i.e. each replicate
+    # in run_fragility_montecarlo and each single CLI run), so the latch resets
+    # correctly between replicates without touching the RNG state or seeds.
+    path_attained: Dict[str, int] = {}   # path.name  → highest state index so far
+    mem_attained:  Dict[int, int]  = {}  # group_id   → highest membrane state so far
+
     def resolver(h_ext: float) -> list:
         result: list = []
         # Track which paths have already been handled by membrane logic
@@ -410,6 +446,11 @@ def make_conductance_resolver(
             h_mem = max(0.0, h_ext - m.height_m)
             mem_thresholds = sampled.membrane_thresholds.get(gid, [])
             mem_state = select_active_state(h_mem, mem_thresholds)
+
+            # Irreversible membrane: latch to highest state reached so far
+            if not m.reversible:
+                mem_state = max(mem_state, mem_attained.get(gid, 0))
+                mem_attained[gid] = mem_state
 
             group_paths = group_map.get(gid, [])
             rep_idx = m.representative_path_idx
@@ -455,6 +496,12 @@ def make_conductance_resolver(
                 h_path = max(0.0, h_ext - p.height_m)
                 thresholds = sampled.path_thresholds.get(p.name, [])
                 state = select_active_state(h_path, thresholds)
+
+                # Irreversible path: latch to highest state reached so far
+                if not p.reversible:
+                    state = max(state, path_attained.get(p.name, 0))
+                    path_attained[p.name] = state
+
                 area, cd = get_conductance(p, state)
                 result.append(IngressPathway(
                     height=p.height_m, area=area, coeff=cd, name=p.name,
@@ -880,7 +927,7 @@ def parse_pathway_file(filepath: str) -> List[FragilePath]:
     """
     paths: List[FragilePath] = []
     header_seen = False
-    col_name = col_height = col_area = col_cd = col_group = None
+    col_name = col_height = col_area = col_cd = col_group = col_reversible = None
 
     with open(filepath, newline='') as fh:
         for lineno, raw in enumerate(fh, start=1):
@@ -897,18 +944,19 @@ def parse_pathway_file(filepath: str) -> List[FragilePath]:
                     raise ValueError(
                         f"{filepath}:{lineno}: positional ingress format (height,area,coeff,name) "
                         "is no longer supported. Use the header-based unified pathway format: "
-                        "name, height_m, area_m2, Cd[, group_id[, state columns]]"
+                        "name, height_m, area_m2, Cd[, group_id[, reversible[, state columns]]]"
                     )
                 except ValueError as exc:
                     if 'positional' in str(exc):
                         raise
                     # Non-numeric first col → treat as header
                     lower = [p.lower() for p in parts]
-                    col_name   = next((i for i, h in enumerate(lower) if 'name' in h), 0)
-                    col_height = next((i for i, h in enumerate(lower) if 'height' in h), 1)
-                    col_area   = next((i for i, h in enumerate(lower) if 'area' in h and 'state' not in lower[max(0,i-1)]), 2)
-                    col_cd     = next((i for i, h in enumerate(lower) if h in ('cd', 'coeff', 'discharge')), 3)
-                    col_group  = next((i for i, h in enumerate(lower) if 'group' in h), None)
+                    col_name       = next((i for i, h in enumerate(lower) if 'name' in h), 0)
+                    col_height     = next((i for i, h in enumerate(lower) if 'height' in h), 1)
+                    col_area       = next((i for i, h in enumerate(lower) if 'area' in h and 'state' not in lower[max(0,i-1)]), 2)
+                    col_cd         = next((i for i, h in enumerate(lower) if h in ('cd', 'coeff', 'discharge')), 3)
+                    col_group      = next((i for i, h in enumerate(lower) if 'group' in h), None)
+                    col_reversible = next((i for i, h in enumerate(lower) if 'reversible' in h), None)
                     header_seen = True
                     continue
 
@@ -925,9 +973,36 @@ def parse_pathway_file(filepath: str) -> List[FragilePath]:
             except (ValueError, IndexError) as exc:
                 raise ValueError(f"{filepath}:{lineno}: bad base columns — {exc}") from exc
 
-            frag_start = (col_group + 1) if col_group is not None else 4
+            # Parse reversible flag (optional column; mandatory for fragile rows)
+            reversible: Optional[bool] = None
+            if col_reversible is not None and col_reversible < len(parts):
+                val = parts[col_reversible].strip().lower()
+                if val in ('1', 'true', 'yes'):
+                    reversible = True
+                elif val in ('0', 'false', 'no'):
+                    reversible = False
+                elif val != '':
+                    raise ValueError(
+                        f"{filepath}:{lineno}: invalid value for 'reversible' on "
+                        f"'{name}': {parts[col_reversible]!r}. Use 1/true or 0/false."
+                    )
+
+            # Fragility states start after all known meta columns
+            meta_cols = [c for c in (col_name, col_height, col_area, col_cd,
+                                     col_group, col_reversible) if c is not None]
+            frag_start = max(meta_cols) + 1
             fragility = _parse_fragility_states_from_parts(parts, frag_start, name)
-            paths.append(FragilePath(name, height, area, cd, gid, fragility))
+
+            # Mandate reversible for fragile elements at parse time
+            if fragility is not None and reversible is None:
+                raise ValueError(
+                    f"{filepath}:{lineno}: fragile element '{name}' is missing the "
+                    "required 'reversible' column. Add a 'reversible' column with "
+                    "value 1 (overtopping/reversible) or 0 (failure-type/irreversible)."
+                )
+
+            paths.append(FragilePath(name, height, area, cd, gid, fragility,
+                                     reversible=reversible))
 
     if not paths:
         raise ValueError(f"No pathway rows found in {filepath}")
@@ -940,12 +1015,18 @@ def fragile_path_to_membrane(fp: FragilePath) -> 'Membrane':
         raise ValueError(f"Cannot convert ungrouped path '{fp.name}' to Membrane (group_id must be > 0)")
     if fp.fragility is None:
         raise ValueError(f"Cannot convert path '{fp.name}' to Membrane: no fragility states defined")
+    if fp.reversible is None:
+        raise ValueError(
+            f"Cannot convert path '{fp.name}' to Membrane: 'reversible' flag is missing. "
+            "Add reversible=1 (skirts/barriers) or reversible=0 (irreversible) to the file."
+        )
     return Membrane(
         group_id=fp.group_id,
         height_m=fp.height_m,
         area_m2=fp.area_m2,
         Cd=fp.Cd,
         fragility=fp.fragility,
+        reversible=fp.reversible,
     )
 
 

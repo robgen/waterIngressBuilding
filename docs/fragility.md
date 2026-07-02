@@ -70,7 +70,55 @@ At each timestep, for each element with fragility:
 
 1. Compute $h(t) = \max(0,\; h_{ext}(t) - z_{sill})$.
 2. Active state = highest $k$ for which $h(t) \geq h^*_k$; state 0 if no threshold is exceeded.
-3. Apply $(A_i, C_i)$ for the active state to the orifice formula.
+3. Apply the irreversibility latch (see below) if the element is not reversible.
+4. Apply $(A_i, C_i)$ for the active state to the orifice formula.
+
+---
+
+## Reversibility and the irreversibility latch
+
+Every fragility-bearing element (ingress path or membrane) carries a mandatory `reversible` flag that controls whether the element can recover from a degraded state during recession.
+
+| `reversible` | Physical archetype | Recession behaviour |
+|---|---|---|
+| `True` | Flood membrane overtopping; flood skirt; demountable barrier | Returns to base state once depth drops below threshold |
+| `False` | Flood door seal failure; airbrick cover failure; service-penetration seal | Remains in highest state reached for the rest of the event |
+
+### Latch logic
+
+When `reversible=False`, a per-element **irreversibility latch** is active:
+
+$$
+\tilde{k}(t) = \max\!\bigl(k(t),\; \max_{s \leq t}\, k(s)\bigr)
+$$
+
+where $k(t)$ is the instantaneous state derived from the fragility curve and $\tilde{k}(t)$ is the state actually applied to the conductance calculation. Once an irreversible element reaches a degraded state, it stays there even if the external level subsequently drops below the capacity threshold.
+
+The latch resets at the start of each Monte Carlo replicate; it does not persist across events.
+
+### Mapping guidance
+
+| Element | Recommended flag | Reason |
+|---|---|---|
+| Flood membrane | `reversible=True` | Overtopping-type; restores naturally as flood recedes |
+| Flood skirt | `reversible=True` | Overtopping-type; depth-controlled |
+| Perimeter barrier | `reversible=True` | Depth-controlled failure |
+| Flood door | `reversible=False` | Seal compression failure; requires manual repair |
+| Airbrick cover | `reversible=False` | Cover can dislodge and may not reseat |
+| Service-penetration seal | `reversible=False` | Hydrostatic pressure failure; remains open |
+| Basement perimeter opening | `reversible=False` | Structural breach; irreversible by default |
+
+### CSV format
+
+The `reversible` column must appear after the standard metadata columns and before the first state column:
+
+```
+name,height_m,area_m2,Cd,group_id,reversible,state_1_name,...
+seal_door,0.0,1e-7,0.6,0,0,failed,...
+membrane_1,0.0,1e-6,0.6,1,1,overtopped,...
+```
+
+Values: `1` = reversible, `0` = irreversible. The column is **mandatory** for any row that carries at least one state column. Rows without state columns (deterministic paths) may omit it.
 
 ---
 
@@ -160,3 +208,5 @@ For membranes (skirts, barriers, bunds), `median_m_1` is the seal height above t
 | $\beta$ fixed from literature | Right-censored kitemark data do not identify $\beta$ jointly with $\eta$ | Epistemic uncertainty in $\beta$ not reflected in ensemble spread |
 | Membrane protected paths are deterministic | Avoids ambiguous compound fragility | Exposed paths treated as fully unprotected when membrane overtops |
 | Basement and membrane fragilities are independent | Physically correct | Scenarios with a single barrier protecting both levels cannot be represented |
+| Irreversibility latch resets between events | Modelled as single-event simulation | Multi-event cumulative damage not represented |
+| Per-element reversibility only | Avoids coupling across elements | Scenarios where one failure triggers another (cascade) cannot be modelled |
