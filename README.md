@@ -172,3 +172,19 @@ python3 tests/run_tests.py   # without pytest
 - **Semi-implicit timestepping**: replace explicit Euler with a semi-implicit sump/pump update to allow larger stable timesteps.
 - **Multiple compartments**: generalise the compartment graph for multi-storey or split-level buildings.
 - **Parametric sweep tool**: dedicated entry point for iterating over `SimConfig` parameter grids (contrast with batch, which iterates over hydrographs).
+
+---
+
+## License
+
+This software is released for **non-commercial use** under the
+[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/)
+(see [LICENSE](LICENSE)). You are free to use, modify, and share it for
+research, teaching, and other non-commercial purposes, including use by
+universities, public research bodies, and government institutions.
+
+**Commercial use requires a separate license.** For commercial licensing or
+consultancy enquiries, contact Roberto Gentile (r.gentile@ucl.ac.uk).
+
+If you use this software in academic work, please cite the accompanying
+paper _(citation / DOI to be added)_.

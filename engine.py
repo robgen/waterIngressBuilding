@@ -502,7 +502,7 @@ def run(config: SimConfig, hydro: Hydrograph, pathways: list, *,
         ing.append(IngressPathway(
             height=config.basement_connection_height,
             area=config.basement_connection_area,
-            coeff=1.0, name='ground-basement-conn',
+            coeff=0.6, name='ground-basement-conn',
             source='ground', target='basement',
         ))
 

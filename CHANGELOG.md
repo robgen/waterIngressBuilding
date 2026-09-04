@@ -67,3 +67,10 @@ All notable changes to this project are documented in this file.
 - Velocity handling: external velocity hydrograph remains supported; forces use sampled/padded velocity series (assumed orthogonal to flow-facing façade).
 - Added unit tests for force formulas (`tests/test_forces.py`) and example runner that demonstrates force outputs.
 
+
+## [2026-09-04]
+
+### Licensing
+
+- License changed from **CC0 1.0 Universal** (public-domain dedication) to the **PolyForm Noncommercial License 1.0.0**. The software is now free for non-commercial use (research, teaching, and use by universities, public research bodies, and government institutions); commercial use requires a separate license. `LICENSE` replaced; a `Required Notice:` copyright line is included and must be preserved by anyone redistributing the code.
+- `README.md`: added a `## License` section summarising the non-commercial terms and the contact for commercial licensing enquiries.
