@@ -22,7 +22,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 import plot  # noqa: F401 — sets Agg backend and shared rcParams as side-effect
-from engine import Building, IngressPathway, Simulation, sample_with_zero_padding
+import engine
+import reference_cases as rc
 
 # ── problem parameters (Case 01) ──────────────────────────────────────────────
 FLOOR_AREA  = 50.0      # m²  — realistic small UK terraced house ground floor
@@ -31,9 +32,8 @@ ORIFICE_CD  = 0.6       # –
 SILL_H      = 0.0       # m
 
 # Shared triangular hydrograph matching run_examples.py (flood 0-60 min, dry tail to 120 min)
-_HYDRO_MIN = [(0, 0.0), (30, 0.5), (60, 0.0), (120, 0.0)]
-EXT_TIMES_S  = [t * 60.0 for t, _ in _HYDRO_MIN]
-EXT_LEVELS   = [h        for _, h in _HYDRO_MIN]
+HYDRO = rc.hydro([(0, 0.0), (30, 0.5), (60, 0.0), (120, 0.0)])
+MODEL = rc.F.assemble_pathways([rc.path('door_gap', SILL_H, ORIFICE_A, ORIFICE_CD)])
 
 # ── dt sweep (seconds) ────────────────────────────────────────────────────────
 # From clearly unstable (60 s) down to well-converged reference (1 s)
@@ -48,16 +48,11 @@ G = 9.81
 
 def run_case(dt_s: float):
     """Run the Case 01 problem at a given dt (seconds). Returns (times_min, h_in, h_ext)."""
-    b   = Building(FLOOR_AREA)
-    ing = [IngressPathway(height=SILL_H, area=ORIFICE_A, coeff=ORIFICE_CD,
-                          name='door_gap')]
-    sim = Simulation(b, ing, EXT_TIMES_S, EXT_LEVELS, dt=dt_s)
-    result = sim.run()
-    times_s  = result[0]
-    h_in     = result[1]
-    h_ext    = sample_with_zero_padding(times_s, EXT_TIMES_S, EXT_LEVELS)
-    times_min = [t / 60.0 for t in times_s]
-    return times_min, h_in, h_ext
+    cfg = engine.SimConfig(floor_area=FLOOR_AREA, dt=dt_s)
+    r = rc.run_one(cfg, HYDRO, MODEL)
+    h_ext, _ = engine.exterior_series(cfg, HYDRO, r.times)
+    times_min = [t / 60.0 for t in r.times]
+    return times_min, r.h_in, h_ext
 
 
 def _analytical_response_time() -> float:
@@ -99,7 +94,7 @@ def main():
 
     # exterior hydrograph fill
     t_ext_fine = np.linspace(0, 60, 1200)
-    h_ext_fine = np.interp(t_ext_fine, [t/60 for t in EXT_TIMES_S], EXT_LEVELS)
+    h_ext_fine = np.interp(t_ext_fine, [t/60 for t in HYDRO.times], HYDRO.levels)
     ax_ts.fill_between(t_ext_fine, h_ext_fine,
                        alpha=0.10, color='#7f8c8d', zorder=1)
     ax_ts.plot(t_ext_fine, h_ext_fine,
@@ -141,7 +136,6 @@ def main():
                     label='$h_{ext}^{max}$ = 0.5 m')
 
     # shade instability zone
-    tau_min = tau / 60.0
     ax_conv.axvspan(60, 70, color='#c0392b', alpha=0.08, zorder=1)
     ax_conv.text(60, ax_conv.get_ylim()[0] if ax_conv.get_ylim()[0] > 0 else 0.45,
                  'unstable\nzone', ha='right', va='bottom',

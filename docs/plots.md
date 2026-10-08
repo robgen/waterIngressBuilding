@@ -4,328 +4,248 @@ All figures are produced by `plot.py`.  The module sets the `Agg` backend on
 import and applies a shared visual style (grey grid, no top/right spines,
 Helvetica/Arial fonts, 150 dpi output).
 
+Single-run figures come in two layers: `save_run_*` functions take the model
+objects (`SimConfig`, `Hydrograph`, `SimResult`, pathways) and derive every
+argument from them; the lower-level functions they call take plain series.
+`cli.py`, `batch.py` and `app.py` use the `save_run_*` layer.
+
+The examples below share this setup (Case 01 of the validation set):
+
+```python
+import numpy as np
+
+import engine
+import fragility
+import plot
+
+config = engine.SimConfig(floor_area=50.0, dt=60.0, time_units='minutes',
+                          velocity_mode='power_law')
+hydro  = engine.hydrograph_from_columns([0, 30, 60, 120], [0.0, 0.5, 0.0, 0.0],
+                                        time_units='minutes')
+paths, membranes = fragility.assemble_pathways(
+    [fragility.FragilePath('door_gap', height_m=0.0, area_m2=0.05, Cd=0.6)])
+result, _ = fragility.run_replicate(config, hydro, paths, membranes,
+                                    np.random.default_rng())
+```
+
 ---
 
 ## 1  External hydrograph preview
 
 **Function:** `save_external_preview(times, levels, outpath, time_unit=None)`
 
-A single-panel time-series of the exterior water depth.  Shows the raw data
-points and a smooth interpolated line.  Useful for a quick sanity-check of
-the uploaded hydrograph before running a simulation.
+Single-panel time series of the exterior water depth with the peak marked.
 
 ```python
-from engine import parse_external_file
-import plot
-
-times, levels = parse_external_file('hydrographs/depth/depth_042.csv',
-                                    time_multiplier=60.0)  # minutes → seconds
-plot.save_external_preview(times, levels, 'out/external_preview.png',
-                          time_unit='minutes')
+plot.save_external_preview([t / 60 for t in hydro.times], hydro.levels,
+                           'out/external_preview.png', time_unit='minutes')
 ```
 
 ---
 
 ## 2  Velocity preview
 
-**Function:** `save_velocity_preview(times, velocities, outpath, time_unit=None, max_safe_v=2.0)`
+**Function:** `save_velocity_preview(times, velocities, outpath, time_unit=None, orig_point_times=None, orig_point_vals=None)`
 
-Time-series of the exterior flow velocity.  A dashed red line marks the
-`max_safe_v` threshold (default 2.0 m/s) above which hydrostatic assumptions
-break down.
+Time series of the exterior flow velocity; `orig_point_*` overlays the raw
+input points when the series was interpolated.
 
 ```python
-from engine import parse_velocity_file
-import plot
-
-vt, vv = parse_velocity_file('hydrographs/velocity/velocity_042.csv',
-                              time_multiplier=60.0)
-plot.save_velocity_preview(vt, vv, 'out/velocity_preview.png',
-                          time_unit='minutes', max_safe_v=2.0)
+h_ext, v_ext = engine.exterior_series(config, hydro, result.times)
+plot.save_velocity_preview([t / 60 for t in result.times], v_ext,
+                           'out/velocity_preview.png', time_unit='minutes')
 ```
 
 ---
 
-## 3  Ingress pathway preview
+## 3  Run schematic
 
-**Function:** `save_ingress_preview(ingress_list, outpath)`
+**Function:** `save_run_schematic(outpath, *, pathways=(), membranes=(), config=None, floor_h=2.5, label='', subtitle='')`
 
-Horizontal bar chart showing each ingress pathway's effective orifice area
-(m²) and sill height (m).  Colour encodes the sill height.  Useful for
-reviewing the parsed pathway configuration before running.
+Building cross-section with a zoomed pathway table.  `pathways` are
+`FragilePath`s, split by `target` into ground-floor and basement openings;
+basement depth, sump and bypass sill are read from `config`.
 
 ```python
-from engine import IngressPathway
-import plot
-
-paths = [
-    IngressPathway(height=0.0, area=0.05,  coeff=0.6, name='door_gap'),
-    IngressPathway(height=0.3, area=0.003, coeff=0.6, name='airbrick'),
-]
-plot.save_ingress_preview(paths, 'out/ingress_preview.png')
+plot.save_run_schematic('out/schematic.png', pathways=paths,
+                        membranes=membranes, config=config, label='Case 01')
 ```
 
 ---
 
-## 4  Ingress location diagram
+## 4  Simulation result
 
-**Function:** `save_ingress_locations(ingress_list, outpath, building_width=1.0)`
+**Functions:**
+`save_run_result(outpath, config, hydro, result)` and the series-level
+`save_simulation_result(sim_times, sim_levels, external_levels, outpath, time_unit=None, basement_levels=None, sump_levels=None, basement_max_depth=None, sump_overflow_level=None)`
 
-Schematic elevation of the building wall showing each pathway as a coloured
-tick at its sill height.  Conveys the vertical distribution of entry points
-at a glance.
+Water depth in each active compartment against the exterior hydrograph.  A
+second panel shows basement (and sump) depth when present, with the ceiling
+and sump overflow crest as reference lines.
 
 ```python
-import plot
-
-plot.save_ingress_locations(paths, 'out/ingress_locations.png',
-                           building_width=1.0)
+plot.save_run_result('out/simulation_result.png', config, hydro, result)
 ```
 
 ---
 
-## 5  Simulation result
+## 5  GIF animation
 
-**Function:** `save_simulation_result(sim_times, sim_levels, external_levels, outpath, …)`
+**Functions:**
+`save_run_animation(outpath, config, hydro, result, pathways)` and the
+series-level `generate_animation(sim_times, sim_levels, external_levels, pathways, outpath, fps=10, max_frames=200, time_unit=None, basement_levels=None, velocity_series=None, sump_levels=None, sump_overflow_level=None, Q_ext_series=None, Q_perim_series=None, Q_bypass_series=None, bypass_height=None)`
 
-The primary single-run output figure.  Two or three panels depending on
-whether a basement and/or sump are active:
-
-- **Left:** interior (and basement / sump if present) depth time-series
-  overlaid with the exterior hydrograph.
-- **Right:** ingress flow-rate time-series (m³/s) per pathway.
-
-Key parameters:
-
-| Parameter | Default | Notes |
-|---|---|---|
-| `ingress_list` | `[]` | Pathway objects — used for the flow panel |
-| `basement_levels` | `None` | Include a basement trace |
-| `sump_levels` | `None` | Include a sump trace |
-| `time_unit` | `'seconds'` | Axis label unit |
-| `animate` | `False` | Also calls `generate_animation` |
+Frame-by-frame cross-section of the building with the rising and falling
+water surfaces and a level chart.  Flow arrows come from the engine trace
+(`Q_ext_b`, `Q_ext_perimeter`, `Q_b_bs`).  Slow to generate; disabled by
+default in `run_examples.py`.
 
 ```python
-from engine import Building, IngressPathway, Simulation
-import plot
-
-b   = Building(floor_area=50.0)
-ing = [IngressPathway(height=0.0, area=0.05, coeff=0.6, name='door_gap')]
-t_ext = [0, 1800, 3600, 21600]
-h_ext = [0.0, 0.5, 0.0, 0.0]
-
-sim_t, sim_h = Simulation(b, ing, t_ext, h_ext, dt=60).run()
-plot.save_simulation_result(sim_t, sim_h, h_ext, 'out/simulation_result.png',
-                           ingress_list=ing, time_unit='seconds')
+plot.save_run_animation('out/simulation_animation.gif', config, hydro, result, paths)
 ```
 
 ---
 
-## 6  GIF animation
-
-**Function:** `generate_animation(sim_times, sim_levels, external_levels, ingress_list, outpath, …)`
-
-Frame-by-frame animated GIF of the interior and exterior water levels rising
-and falling.  Each frame shows a schematic cross-section of the building with
-the current water surface.  Slow to generate; disabled by default in
-`run_examples.py`.
-
-```python
-plot.generate_animation(sim_t, sim_h, h_ext, ing,
-                       'out/simulation_animation.gif',
-                       time_unit='seconds', fps=12)
-```
-
----
-
-## 7  Forces result
+## 6  Forces result
 
 **Function:** `save_forces_result(sim_times, forces_rows, outpath, time_unit=None)`
 
-Two-panel figure: hydrostatic force (kN/m) and drag force (kN/m) versus time,
-computed from the interior / exterior depth difference and flow velocity.
-Generated when `--velocity` data is supplied to the CLI.
+Two panels: lateral forces (hydrostatic, drag, total, in N) and overturning
+moment (N·m) against time.  `forces_rows` are the rows written to
+`forces.csv` by `cli.py --compute-forces`:
+`(time, F_hydro, F_drag, F_total, M_overturn, H_net, H_wet, v, lever_hydro, lever_drag)`.
 
 ```python
-from engine import compute_forces
-import plot
+import forces
 
-forces = compute_forces(sim_t, sim_h, h_ext, velocities)
-plot.save_forces_result(sim_t, forces, 'out/forces_result.png',
-                       time_unit='seconds')
+h_ext, v_ext = engine.exterior_series(config, hydro, result.times)
+rows = []
+for t, he, hi, v in zip(result.times, h_ext, result.h_in, v_ext):
+    H_net, H_wet = max(0.0, he - hi), max(0.0, he)
+    f = forces.compute_combined_forces(H_net, H_wet, v, building_width=10.0)
+    rows.append((t, f['F_hydro'], f['F_drag'], f['F_total'], f['M_overturn'],
+                 H_net, H_wet, v, f['lever_hydro'], f['lever_drag']))
+plot.save_forces_result([t / 60 for t in result.times], rows,
+                        'out/forces_result.png', time_unit='minutes')
 ```
 
 ---
 
-## 8  Interpretation dashboard
+## 7  Interpretation dashboard
 
-**Function:** `save_interpretation_dashboard(diag, outpath, time_unit='seconds', ingress_list=None)`
+**Function:** `save_interpretation_dashboard(diag, outpath, time_unit='seconds', title_suffix='')`
 
-A multi-panel diagnostic dashboard combining:
-
-- Interior / exterior depth time-series with annotated peak and duration
-- Depth exceedance bars (minutes above 10 cm, 20 cm, …)
-- Mass-balance bar chart (volume in vs volume out vs residual)
-- Plain-English interpretation bullet points (generated by `report.py`)
-
-`diag` is a `Diagnostics` dataclass returned by `report.diagnostics_from_trace`.
+Stacked panels: depths, instantaneous pathway flows, cumulative pathway
+volumes, sump control behaviour (only with a sump), and an event mass-balance
+bar chart with the plain-language bullets from `report.generate_narrative`.
+`diag` is the dict returned by `report.diagnostics_from_trace`.
 
 ```python
 from report import diagnostics_from_trace
-import plot
 
-diag = diagnostics_from_trace(sim_t, sim_h, h_ext, ing,
-                               time_unit='seconds')
-plot.save_interpretation_dashboard(diag, 'out/dashboard.png',
-                                  time_unit='seconds', ingress_list=ing)
+diag = diagnostics_from_trace(result.trace, config.dt)
+plot.save_interpretation_dashboard(diag, 'out/dashboard.png', time_unit='seconds')
 ```
 
 ---
 
-## 9  Batch scatter (simple)
+## 8  Batch scatters
 
-**Function:** `save_batch_scatter(h_peak_ext, h_peak_int, outpath)`
+All take one value per case (or replicate) and an optional `v_peak` sequence
+used for point colour (falls back to peak exterior depth).  Produced by
+`batch.py`.
 
-Square scatter plot of peak exterior depth vs peak interior depth across all
-cases in a batch run.  Uses hexbin density shading when `n > 60`.  A dashed
-1:1 line shows the "no attenuation" reference.  Pearson *r* is annotated.
-Produced automatically by `batch.py`.
+| Function | Axes |
+|---|---|
+| `save_batch_scatter(h_peak_ext, h_peak_int, outpath, *, v_peak=None)` | peak exterior vs peak ground-floor depth, 1:1 line |
+| `save_basement_scatter(h_peak_ext, h_peak_basement, outpath, *, v_peak=None)` | peak exterior vs peak basement depth |
+| `save_ground_loss_scatter(h_peak_int, building_losses, outpath, *, v_peak=None)` | peak ground-floor depth vs ground-floor contents loss |
+| `save_basement_loss_scatter(h_peak_basement, basement_losses, outpath, *, v_peak=None)` | peak basement depth vs basement contents loss |
+| `save_loss_scatter(h_peak_ext, aggregate_losses, outpath, *, v_peak=None)` | peak exterior depth vs aggregate contents loss |
 
 ```python
-import plot
-
 plot.save_batch_scatter([0.1, 0.2, 0.3, 0.5], [0.09, 0.19, 0.28, 0.45],
-                       'out/batch_scatter.png')
-```
-
----
-
-## 10  Loss scatter
-
-**Function:** `save_loss_scatter(h_peak_ext, aggregate_losses, outpath)`
-
-Scatter plot of peak exterior depth vs aggregate flood loss (GBP).  Points
-are coloured by depth using a `YlOrRd` gradient.  A running-median trend line
-is overlaid when `n > 10`.  Produced by `batch.py` when a vulnerability curve
-is supplied.
-
-```python
-import plot
-
+                        'out/batch_scatter.png')
 plot.save_loss_scatter([0.1, 0.3, 0.5, 0.8], [2000, 8000, 18000, 35000],
-                      'out/loss_scatter.png')
+                       'out/loss_scatter.png')
 ```
 
 ---
 
-## 11  Batch deterministic (sweep)
+## 9  Batch deterministic (sweep)
 
-**Function:** `save_batch_deterministic(h_ext, h_int, title, outpath)`
+**Function:** `save_batch_deterministic(h_ext, h_int, title, outpath, *, v_peak=None)`
 
-Two-panel figure for a deterministic batch run over many hydrographs:
-
-- **Left:** scatter of peak exterior vs peak interior depth with a 1:1
-  reference line.
-- **Right:** attenuation ratio h\_in / h\_ext vs h\_ext.
-
-Monotonic response and near-unity attenuation (for a large orifice) are
-immediately visible.
+Two panels for a one-replicate batch over many hydrographs: peak exterior vs
+peak interior depth with a 1:1 line, and the attenuation ratio
+h\_in / h\_ext vs h\_ext.
 
 ```python
-import plot
-
-h_ext = [0.10, 0.15, 0.20, 0.25, 0.30, 0.50]
-h_int = [0.11, 0.16, 0.21, 0.26, 0.31, 0.51]
-plot.save_batch_deterministic(h_ext, h_int,
-                             'Batch — single opening, 6 hydrographs',
-                             'out/batch_result.png')
+plot.save_batch_deterministic([0.10, 0.20, 0.30, 0.50], [0.11, 0.21, 0.31, 0.51],
+                              'Batch — single opening', 'out/batch_result.png')
 ```
 
 ---
 
-## 12  Batch fragility MC (fragility curve)
+## 10  Batch fragility MC (fragility curve)
 
 **Function:** `save_batch_mc_fragility(h_ext_all, h_int_all, title, outpath, membrane_median_m=None)`
 
-Two-panel figure for a batch run with Monte Carlo replicates:
-
-- **Left:** replicate scatter cloud with P10 / P50 / P90 bands.
-- **Right:** fragility curve — fraction of replicates with significant ingress
-  (h\_in > 5 % of max h\_in) as a function of peak exterior depth.
-
-Pass `membrane_median_m` to draw a vertical reference line at the membrane
-design capacity.
+Two panels for a batch with Monte Carlo replicates: the replicate cloud with
+P10 / P50 / P90 bands, and the fragility curve — fraction of replicates with
+significant ingress against peak exterior depth.  `membrane_median_m` draws a
+reference line at the membrane design capacity.
 
 ```python
-import plot
-
-# 20 hydrographs × 50 replicates = 1 000 rows
-h_ext_all = [...]   # 1 000 values
-h_int_all = [...]   # 1 000 values
-plot.save_batch_mc_fragility(h_ext_all, h_int_all,
-                            'Batch MC — membrane η = 0.5 m',
-                            'out/batch_mc_result.png',
-                            membrane_median_m=0.5)
+config_mc = engine.SimConfig(floor_area=50.0, dt=60.0, n_replicates=50, random_seed=42)
+mc_paths, mc_membranes = fragility.assemble_pathways(
+    [fragility.FragilePath('airbrick', 0.1, 6e-3, 0.6, group_id=1),
+     fragility.FragilePath('door_gap', 0.0, 2e-3, 0.6, group_id=1)],
+    [],
+    [fragility.FragilePath('membrane', 0.0, 1e-6, 0.6, group_id=1, reversible=True,
+                           fragility=fragility.FragilityDefinition([
+                               fragility.FragilityState('overtopped', 0.5, 0.1, 1e-9, 0.6)]))])
+h_ext_all, h_int_all = [], []
+for peak in (0.3, 0.5, 0.7):
+    hyd = engine.hydrograph_from_columns([0, 30, 60, 120], [0.0, peak, 0.0, 0.0],
+                                         time_units='minutes')
+    for rec in fragility.run(config_mc, hyd, mc_paths, mc_membranes).replicates:
+        h_ext_all.append(rec.result.peak_h_ext)
+        h_int_all.append(rec.result.peak_h_in)
+plot.save_batch_mc_fragility(h_ext_all, h_int_all, 'Batch MC — membrane η = 0.5 m',
+                             'out/batch_mc_result.png', membrane_median_m=0.5)
 ```
 
 ---
 
-## 13  Fragility MC result
+## 11  Fragility MC result
 
 **Function:** `save_mc_result(peak_h_in, peak_h_ext, state_freq_rows, title, outpath)`
 
-Two-panel figure for a single-hydrograph Monte Carlo run:
+- **Left:** scatter of peak interior depth per replicate, separating
+  *intact* (near-zero) and *degraded* replicates, with an empirical CDF on
+  the right y-axis and P25 / P50 / P75 hairlines.
+- **Right:** grouped bar chart of element state frequencies.
 
-- **Left:** scatter of peak interior vs exterior depth, colour-split into
-  *intact* (near-zero) and *degraded* replicates, with an empirical CDF
-  on the right y-axis.  P25 / P50 / P75 hairlines are drawn on the CDF.
-- **Right:** grouped bar chart of element state frequencies (fraction of
-  replicates in each state per fragility element or membrane).
-
-`state_freq_rows` is a list of dicts with keys `element`, `state_0_freq`,
-`state_1_freq`, … — the format written to `fragility_state_freq.csv` by
-`cli.py`.
+`state_freq_rows` are the rows of `fragility_state_freq.csv` (dicts with
+`element`, `state_0_freq`, `state_1_freq`, …); pass `[]` to omit the bars.
+Used by `examples/run_examples.py`.
 
 ```python
-from fragility import run_fragility_montecarlo, FragilePath, FragilityDefinition, FragilityState
-from engine import Building
-import plot
-
-paths = [FragilePath(
-    name='seal_door', height_m=0.0, area_m2=1e-7, Cd=0.6, group_id=0,
-    fragility=FragilityDefinition(states=[
-        FragilityState('failed', median_m=0.5, beta_ln=0.3,
-                       area_m2=5e-3, Cd=0.6),
-    ]),
-)]
-result = run_fragility_montecarlo(
-    building_factory=lambda: Building(50.0),
-    paths=paths, membranes=[], basement_fragility=None,
-    external_times=[0, 1800, 3600, 21600],
-    external_levels=[0.0, 0.5, 0.0, 0.0],
-    n_replicates=500, dt=60, seed=42,
-)
-
-peak_h_in  = [r.peak_h_in  for r in result.replicates]
-peak_h_ext = [r.peak_h_ext for r in result.replicates]
-
-# state_freq_rows can be read from the CSV or built manually:
-# [{'element': 'seal_door', 'state_0_freq': '0.50', 'state_1_freq': '0.50'}]
-state_freq_rows = []  # omit for no bar chart
-
-plot.save_mc_result(peak_h_in, peak_h_ext, state_freq_rows,
-                   'Case 08 — single probabilistic seal (n = 500)',
-                   'out/mc_result.png')
+mc = fragility.run(config_mc, hydro, mc_paths, mc_membranes)
+plot.save_mc_result([r.result.peak_h_in for r in mc.replicates],
+                    [r.result.peak_h_ext for r in mc.replicates],
+                    [], 'Membrane group (n = 50)', 'out/mc_result.png')
 ```
 
 ---
 
-## 14  Building schematic (single panel)
+## 12  Building schematic (single panel)
 
 **Function:** `draw_schematic(ax, cfg)`
 
 Draws one building cross-section on an existing `matplotlib.axes.Axes`.
-Used inside `save_all_schematics` and in the Streamlit app sidebar.
+Used by `save_all_schematics` and `save_run_schematic`.
 
 `cfg` is a dict with the following keys:
 
@@ -340,16 +260,16 @@ Used inside `save_all_schematics` and in the Streamlit app sidebar.
 | `gf_paths` | list of dict | Ground-floor ingress paths |
 | `bsmt_paths` | list of dict | Basement ingress paths |
 | `membrane` | dict or None | Flood membrane configuration |
+| `bypass_height` | float, optional | Ground-floor slab / bypass sill elevation (m) |
 
 Each path dict: `{'sill': float, 'name': str, 'style': 'det'|'prob'|'behind'}`.
-
 Membrane dict: `{'sill': float, 'capacity': float, 'style': 'prob'|'det'}`.
 
-Nine ready-made configs are available in `plot.SCHEMATIC_CASES`.
+Ready-made configs for the single-hydrograph validation cases (01–10) are in
+`plot.SCHEMATIC_CASES`.
 
 ```python
 import matplotlib.pyplot as plt
-import plot
 
 fig, ax = plt.subplots(figsize=(3.5, 3.5))
 plot.draw_schematic(ax, plot.SCHEMATIC_CASES[0])  # Case 01
@@ -359,23 +279,16 @@ plt.close(fig)
 
 ---
 
-## 15  All schematics (3 × 3 grid)
+## 13  All schematics (grid)
 
 **Function:** `save_all_schematics(outpath, cases=None)`
 
-Draws all nine case-study building schematics in a 3 × 3 grid with a shared
-legend.  `cases` defaults to `plot.SCHEMATIC_CASES` (Cases 01–10).
+Draws case schematics in rows of four, one row per run of consecutive cases
+with the same building type (ground floor only / with basement), with a
+shared legend.  `cases` defaults to `plot.SCHEMATIC_CASES`.
 
 ```python
-import plot
-
-plot.save_all_schematics('examples/schematics.png')
-```
-
-To draw a custom set of cases:
-
-```python
-import plot
+plot.save_all_schematics('out/schematics.png')
 
 my_cases = [
     dict(label='No protection', subtitle='sill = 0 m',
@@ -395,20 +308,18 @@ plot.save_all_schematics('out/my_schematics.png', cases=my_cases)
 
 ## Summary table
 
-| # | Function | Panels | Inputs |
+| # | Function | Output | Inputs |
 |---|---|---|---|
-| 1 | `save_external_preview` | 1 | times, levels |
-| 2 | `save_velocity_preview` | 1 | times, velocities |
-| 3 | `save_ingress_preview` | 1 | ingress list |
-| 4 | `save_ingress_locations` | 1 | ingress list |
-| 5 | `save_simulation_result` | 2–3 | sim output + optional basement/sump |
-| 6 | `generate_animation` | animated GIF | sim output |
-| 7 | `save_forces_result` | 2 | forces rows |
-| 8 | `save_interpretation_dashboard` | 5 | Diagnostics dataclass |
-| 9 | `save_batch_scatter` | 1 | h_ext, h_int arrays |
-| 10 | `save_loss_scatter` | 1 | h_ext, losses arrays |
-| 11 | `save_batch_deterministic` | 2 | h_ext, h_int arrays |
-| 12 | `save_batch_mc_fragility` | 2 | replicate arrays |
-| 13 | `save_mc_result` | 2 | replicate arrays + state freq rows |
-| 14 | `draw_schematic` | 1 (on existing axes) | cfg dict |
-| 15 | `save_all_schematics` | 3 × 3 grid | list of cfg dicts |
+| 1 | `save_external_preview` | 1 panel | times, levels |
+| 2 | `save_velocity_preview` | 1 panel | times, velocities |
+| 3 | `save_run_schematic` | cross-section + pathway table | pathways, membranes, config |
+| 4 | `save_run_result` / `save_simulation_result` | 1–2 panels | run objects / series |
+| 5 | `save_run_animation` / `generate_animation` | animated GIF | run objects / series + trace flows |
+| 6 | `save_forces_result` | 2 panels | forces rows |
+| 7 | `save_interpretation_dashboard` | 4–5 panels | diagnostics dict |
+| 8 | `save_*_scatter` | 1 panel | per-case arrays |
+| 9 | `save_batch_deterministic` | 2 panels | per-case arrays |
+| 10 | `save_batch_mc_fragility` | 2 panels | per-replicate arrays |
+| 11 | `save_mc_result` | 2 panels | per-replicate arrays + state freq rows |
+| 12 | `draw_schematic` | 1 panel on existing axes | cfg dict |
+| 13 | `save_all_schematics` | grid | list of cfg dicts |

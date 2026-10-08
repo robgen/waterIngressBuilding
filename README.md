@@ -25,8 +25,8 @@ Beyond deterministic simulation, the tool supports probabilistic analysis of flo
 | Mode | Entry point | Description |
 |------|-------------|-------------|
 | Deterministic, single hydrograph | `cli.py` | One flood event; all pathway conductances fixed |
-| + basement | `cli.py` | Adds a basement compartment with its own water balance, fed by a separate perimeter opening |
-| + sump/pump | `cli.py` | Adds a sump chamber and pump that intercept basement inflow; the pump curve governs when the sump overflows into the basement |
+| + basement | `cli.py` | Adds a basement compartment with its own water balance, fed by exterior→basement pathways (`--basement-ingress`); when full, it joins the ground floor as one compartment |
+| + sump/pump | `cli.py` | Adds a sump chamber and pump that intercept basement inflow; water above the sump crest spills into the basement |
 | Fragility (Monte Carlo) | `cli.py` | Samples lognormal pathway capacities and runs N replicates; produces percentile distributions and state frequency tables |
 | Batch | `batch.py` | Runs any of the above for every hydrograph in a folder and aggregates results |
 
@@ -112,14 +112,14 @@ python3 cli.py \
 ```bash
 # Deterministic batch
 python3 batch.py \
-  --depth-dir  hydrographs/depth \
+  --depth-dir  hydrographs/generated \
   --ingress    ingress.csv \
   --floor      50 \
   --outdir     out/
 
 # Batch + fragility
 python3 batch.py \
-  --depth-dir    hydrographs/depth \
+  --depth-dir    hydrographs/generated \
   --ingress      ingress.csv \
   --floor        50 \
   --n-replicates 200 \
@@ -134,12 +134,13 @@ Written to `--outdir`. See [docs/reference.md](docs/reference.md) for full colum
 
 | File | Produced by |
 |------|-------------|
-| `simulation_result.png` | All single-run modes |
-| `simulation_animation.gif` | Single-run + `--animate` |
-| `batch_results.csv`, `batch_summary.csv` | Batch |
-| `fragility_replicates.csv`, `fragility_summary.csv`, `fragility_state_freq.csv` | Fragility |
-| `mc_result.png` | Fragility |
-| `forces.csv`, `forces_result.png` | `--compute-forces` |
+| `schematic.png` | All modes |
+| `external_preview.png` | `cli.py` |
+| `simulation_result.png`, `velocity_preview.png` | `cli.py` with `--n-replicates 1` |
+| `simulation_animation.gif` | `cli.py` with `--n-replicates 1 --animate` |
+| `fragility_replicates.csv`, `fragility_summary.csv`, `fragility_state_freq.csv` | `cli.py` with `--n-replicates` > 1 |
+| `batch_results.csv`, `batch_summary.csv`, scatter plots | `batch.py` |
+| `forces.csv`, `forces_result.png` | `cli.py --compute-forces` |
 
 ---
 
@@ -158,8 +159,7 @@ Outputs go to `examples/exNN/out/`. Reference metrics for regression testing are
 ## Tests
 
 ```bash
-pytest -q          # recommended
-python3 tests/run_tests.py   # without pytest
+pytest -q
 ```
 
 `tests/test_regression.py` reproduces all validation cases and compares peak metrics against reference values in `examples/reference/`. Any implementation change that shifts results is caught here (tolerance: 1 % on peak depths, 5 % on volumes).

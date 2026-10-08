@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.10, 3.11]
+        python-version: ['3.10', '3.11']
 
     steps:
       - name: Checkout repository
@@ -28,29 +28,24 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Run tests
-        run: |
-          # prefer pytest when available
-          if command -v pytest >/dev/null 2>&1; then
-            pytest -q
-          else
-            python3 tests/run_tests.py
-          fi
+        run: pytest -q
 
-      - name: Run example (smoke test)
+      - name: Run examples (smoke test)
         run: |
-          # Run a short, fast smoke example to validate end-to-end behavior.
-          # Use a coarse timestep and do not generate animation to keep CI fast.
-          python3 main.py --external example_run/example_external_levels.csv \
-            --ingress example_run/example_ingress_paths.txt --dt 60 \
-            --outdir example_run_ci
-            --temp-output
+          # Single run and batch run end to end; no animation to keep CI fast.
+          python3 cli.py --external examples/ex01/hydro.csv \
+            --ingress examples/ex01/ingress.csv --floor 50 --dt 1 \
+            --outdir ci_outputs/cli
+          python3 batch.py --depth-dir examples/shared/batch_hydros \
+            --ingress examples/ex01/ingress.csv --floor 50 --dt 1 \
+            --outdir ci_outputs/batch
 
       - name: Upload example outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: example-run-outputs
-          path: example_run_ci/**
+          path: ci_outputs/**
 
       - name: Upload test logs (if any)
         if: failure()

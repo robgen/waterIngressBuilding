@@ -6,7 +6,7 @@
 
 ### Unified pathway CSV format
 
-All pathway inputs — ground-floor ingress, basement perimeter opening, and membranes — share an identical CSV format. One parser handles all three; routing is determined by which CLI flag the file is passed to.
+All pathway inputs — ground-floor ingress, basement perimeter openings, and membranes — share an identical CSV format. One parser (`fragility.parse_pathway_text`) handles all three; routing is determined by which CLI flag the file is passed to.
 
 **Format rules**
 
@@ -15,6 +15,7 @@ All pathway inputs — ground-floor ingress, basement perimeter opening, and mem
 - Blank lines are ignored.
 - Columns `name`, `height_m`, `area_m2`, `Cd` are required.
 - `group_id` is optional (defaults to `0` = ungrouped, no membrane protection).
+- `reversible` is required on every row that has fragility state columns (`1` = state follows the current head, e.g. overtopping; `0` = state latches at the worst reached, e.g. a failed seal); it may be left empty on deterministic rows.
 - Fragility state columns are optional and repeat in blocks of five per state: `state_name_N`, `median_m_N`, `beta_ln_N`, `area_m2_N`, `Cd_N`.
 - Medians must be strictly increasing within a pathway.
 - A pathway with `group_id > 0` must not carry its own fragility state columns.
@@ -28,6 +29,7 @@ All pathway inputs — ground-floor ingress, basement perimeter opening, and mem
 | `area_m2` | float | yes | Orifice area in the base (unloaded) state (m²) |
 | `Cd` | float | yes | Discharge coefficient in the base state |
 | `group_id` | int | no | Membrane group ID; `0` = ungrouped |
+| `reversible` | 0/1 | with fragility | Whether a degraded state can recover when the head drops |
 | `state_name_N` | string | no | Label for fragility state N |
 | `median_m_N` | float | no | Lognormal median capacity for state N (m above sill) |
 | `beta_ln_N` | float | no | Log-standard deviation for state N |
@@ -48,8 +50,8 @@ wall_crack, 0.0,      0.001,   0.6
 The base-state area represents the sealed or best-performance conductance. State 1 is the degraded conductance, activated when the sampled capacity threshold is exceeded.
 
 ```csv
-name,       height_m, area_m2, Cd,  group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1
-seal_door,  0.0,      1.0e-7,  0.6, 0,        failed,       0.5,        0.3,       5.0e-3,    0.6
+name,       height_m, area_m2, Cd,  group_id, reversible, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1
+seal_door,  0.0,      1.0e-7,  0.6, 0,        0,          failed,       0.5,        0.3,       5.0e-3,    0.6
 wall_crack, 0.0,      0.001,   0.6
 ```
 
@@ -116,7 +118,7 @@ Rows represent exterior-to-ground-floor pathways. Uses the unified pathway forma
 
 ### Basement perimeter opening (`--basement-ingress`)
 
-Represents the lumped exterior-to-basement perimeter opening. Uses the **same** unified pathway format. Typically a single-row file. May include fragility states.
+Exterior-to-basement pathways (perimeter openings, airbricks into the basement, floor–wall joints). Uses the **same** unified pathway format; every row flows into the basement (into the sump when one is configured). May include fragility states and `group_id`s shared with ground-floor rows, so one membrane can protect both.
 
 Deterministic example:
 
@@ -128,8 +130,8 @@ ext_basement, 0.0,      0.005,   0.5
 With fragility:
 
 ```csv
-name,         height_m, area_m2, Cd,  group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1
-ext_basement, 0.0,      1.0e-7,  0.5, 0,        cracked,      0.30,       0.25,      0.005,     0.5
+name,         height_m, area_m2, Cd,  group_id, reversible, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1
+ext_basement, 0.0,      1.0e-7,  0.5, 0,        0,          cracked,      0.30,       0.25,      0.005,     0.5
 ```
 
 ---
@@ -141,13 +143,24 @@ Uses the **same** unified pathway format. Each row defines one membrane. `group_
 `height_m` is the membrane sill elevation. `median_m_1` is the seal height above that sill (the physical top of the membrane).
 
 ```csv
-name,           height_m, area_m2, Cd,  group_id, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1
-front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,       1.0e-9,    0.6
+name,           height_m, area_m2, Cd,  group_id, reversible, state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1
+front_membrane, 0.0,      1.0e-6,  0.6, 1,        1,          overtopped,   0.5,        0.1,       1.0e-9,    0.6
 ```
 
 ---
 
 ### CLI flags
+
+`cli.py` and `batch.py` share every flag below except those marked *cli.py only*
+or listed under **Batch only** (definitions in `inputs.py`).
+
+**Pathway files**
+
+| Flag | Description |
+|------|-------------|
+| `--ingress PATH` | Ground-floor pathways CSV (optional for basement-only cases) |
+| `--basement-ingress PATH` | Exterior→basement pathways CSV; every row flows into the basement |
+| `--membrane PATH` | Membrane CSV (rows with `group_id > 0` and fragility states) |
 
 **Velocity**
 
@@ -164,12 +177,13 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--floor FLOAT` | required | Ground-floor plan area (m²) |
+| `--floor-datum FLOAT` | 0 | Internal floor elevation above external ground (m) |
 | `--dt FLOAT` | 1 | Simulation timestep in `--time-units` |
 | `--time-units STR` | `minutes` | `seconds`, `minutes`, or `hours` |
-| `--outdir PATH` | `.` | Output directory |
-| `--temp-output` | off | Write to a temp directory, removed on exit |
-| `--animate` | off | Write a GIF animation (slow) |
-| `--verbose` | off | Print progress to stdout |
+| `--outdir PATH` | `.` (cli), `batch_results` (batch) | Output directory |
+| `--temp-output` | off | *cli.py only* — write to a temp directory, removed on exit |
+| `--animate` | off | *cli.py only* — write a GIF animation (slow) |
+| `--verbose` | off | *cli.py only* — print progress to stdout |
 
 **Basement**
 
@@ -177,7 +191,7 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 |------|-------------|
 | `--basement-area FLOAT` | Basement plan area (m²) |
 | `--basement-floor-elevation FLOAT` | Basement floor elevation relative to datum (m, negative = below datum) |
-| `--basement-ceiling-elevation FLOAT` | Optional ceiling elevation cap (m); water above this spills to ground floor |
+| `--basement-ceiling-elevation FLOAT` | Ceiling elevation (m), default `--floor-datum`; water above this spills to ground floor |
 | `--basement-bypass-height FLOAT` | Sill of the ground-floor ↔ basement bypass connection (m) |
 | `--basement-bypass-area FLOAT` | Area of the ground-floor ↔ basement bypass (m²) |
 | `--basement-bypass-coeff FLOAT` | Discharge coefficient Cd of the ground-floor ↔ basement bypass (–); default 0.6 |
@@ -202,10 +216,11 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--n-replicates INT` | 1 | Number of Monte Carlo replicates; > 1 triggers fragility mode |
+| `--n-replicates INT` | 1 | Number of Monte Carlo replicates (per hydrograph in batch); 1 = a single run, with one sampled draw if the model has fragile elements |
 | `--random-seed INT` | — | Optional seed for reproducibility |
+| `--output-percentiles INT ...` | 10 25 50 75 90 | Percentiles in `fragility_summary.csv` |
 
-**Forces**
+**Forces** (*cli.py only*)
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -219,6 +234,8 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 | Flag | Description |
 |------|-------------|
 | `--depth-dir PATH` | Folder of depth CSV files (one per hydrograph); files may be 2- or 3-column |
+| `--hydrograph-files PATH_OR_REGEX ...` | Explicit files or `dir/regex` patterns (instead of `--depth-dir`) |
+| `--save-timeseries` | Write `timeseries_NNN.csv` / `.png` per hydrograph (first replicate) |
 | `--building-vulnerability PATH` | CSV mapping ground-floor peak depth to building contents loss |
 | `--basement-vulnerability PATH` | CSV mapping basement peak depth to basement contents loss |
 | `--contents-loss-column NAME` | Loss column to read from vulnerability CSVs (default `mean_repair_loss_GBP`) |
@@ -241,67 +258,72 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 
 All outputs are written to `--outdir`. The files produced depend on the run mode.
 
-### Single-run outputs (all non-batch modes)
+### Single-run outputs (`cli.py`)
 
 | File | Description |
 |------|-------------|
-| `simulation_result.png` | Time series of water depth in each active compartment |
-| `simulation_animation.gif` | Animated cross-section schematic (only with `--animate`) |
-| `external_preview.png` | External hydrograph (and velocity, if provided) |
-| `ingress_preview.png` | Pathway sill heights and areas |
-| `ingress_locations.png` | Pathway positions on the building envelope |
+| `schematic.png` | Building cross-section with the pathway table |
+| `external_preview.png` | External depth hydrograph |
+| `velocity_preview.png` | Exterior velocity on the simulation grid (`--n-replicates 1`) |
+| `simulation_result.png` | Water depth in each active compartment vs the exterior (`--n-replicates 1`) |
+| `simulation_animation.gif` | Animated cross-section (`--n-replicates 1` with `--animate`) |
 
-### Fragility (Monte Carlo) outputs
+### Fragility (Monte Carlo) outputs (`cli.py --n-replicates N`, N > 1)
 
 | File | Description |
 |------|-------------|
-| `fragility_replicates.csv` | One row per replicate: $u$ values, capacity thresholds, peak depths, total volume |
-| `fragility_summary.csv` | Percentile statistics (P10, P25, P50, P75, P90) for peak depths and volume |
-| `fragility_state_freq.csv` | Fraction of replicates reaching each degraded state per pathway |
-| `mc_result.png` | Scatter and CDF plots of peak interior and basement depth |
+| `fragility_replicates.csv` | One row per replicate |
+| `fragility_summary.csv` | Percentiles (`--output-percentiles`) of `peak_h_in`, `peak_h_basement`, `total_volume_in` |
+| `fragility_state_freq.csv` | Per fragile element / membrane: fraction of replicates in exactly state k (`state_k_freq`, rows sum to 1) |
 
 **`fragility_replicates.csv` columns**
 
 | Column | Description |
 |--------|-------------|
-| `replicate` | Replicate index (0-based) |
-| `u_<name>` | Uniform draw for pathway `<name>` |
-| `threshold_<name>_k` | Sampled capacity threshold for state k of pathway `<name>` (m above sill) |
-| `peak_h_in` | Peak interior ground-floor depth (m) |
-| `peak_h_basement` | Peak basement depth (m), if basement configured |
-| `total_volume_in` | Total ingress volume to ground floor (m³) |
+| `replicate_id` | Replicate index (0-based) |
+| `u_<element>` | Uniform draw for a fragile path, or `u_membrane:<group_id>` |
+| `h_star_<k>_<element>` | Sampled capacity threshold for state k (m above sill) |
+| `peak_h_in_m` | Peak ground-floor depth (m) |
+| `peak_h_basement_m` | Peak basement depth (m), 0 without basement |
+| `peak_h_sump_m` | Peak sump depth (m), 0 without sump |
+| `peak_h_ext_m` | Peak exterior depth on the simulation grid (m) |
+| `total_volume_in_m3` | Sum of ground-floor storage increases (m³) |
 
-### Batch outputs
+### Batch outputs (`batch.py`)
 
 | File | Description |
 |------|-------------|
-| `batch_results.csv` | One row per hydrograph: peak depths, durations, loss estimate |
-| `batch_summary.csv` | Percentile statistics (P10, P50, P90) across the ensemble |
+| `batch_results.csv` | One row per hydrograph (per replicate when `--n-replicates` > 1) |
+| `batch_summary.csv` | min, p10, p25, median, p75, p90, max of peak depths, durations and losses (one-replicate runs only) |
+| `schematic.png` | Building cross-section with the pathway table |
 | `peak_exterior_vs_peak_interior.png` | Scatter: peak exterior vs peak interior depth, coloured by peak velocity |
-| `peak_exterior_vs_peak_basement.png` | Scatter: peak exterior vs peak basement depth (only when basement active) |
-| `peak_exterior_vs_aggregate_loss.png` | Scatter: peak exterior depth vs aggregate loss (only with `--building-vulnerability`) |
+| `peak_exterior_vs_peak_basement.png` | Scatter: peak exterior vs peak basement depth (one-replicate runs with basement water) |
+| `ground_floor_loss.png`, `basement_loss.png`, `aggregate_loss.png` | Loss scatters (one-replicate runs with both vulnerability curves) |
+| `peak_exterior_vs_aggregate_loss.png` | Loss scatter (one-replicate runs with `--building-vulnerability` only) |
+| `timeseries_NNN.csv`, `timeseries_NNN.png` | Per-hydrograph time series and result figure (`--save-timeseries`; first replicate, suffix `_r00` when N > 1) |
 
 **`batch_results.csv` columns**
 
 | Column | Description |
 |--------|-------------|
-| `case_id` | Numeric case index |
-| `depth_file` | Depth hydrograph filename (2- or 3-column) |
+| `case_id` | Numeric suffix of the hydrograph filename |
+| `replicate` | Replicate index, only when `--n-replicates` > 1 |
+| `depth_file` | Hydrograph filename |
 | `h_peak_ext` | Peak exterior depth (m) |
-| `h_peak_int` | Peak interior ground-floor depth (m) |
+| `h_peak_int` | Peak ground-floor depth (m) |
 | `h_peak_basement` | Peak basement depth (m) |
-| `h_peak_sump` | Peak sump depth (m), only when sump configured |
 | `v_peak_ext` | Peak exterior velocity (m/s) |
-| `dur_h<XXX>cm_<tu>` | Duration above threshold XXX cm, in selected time units |
+| `h_peak_sump` | Peak sump depth (m), only when sump configured |
 | `building_content_loss` | Ground-floor contents loss (GBP), only with `--building-vulnerability` |
 | `basement_content_loss` | Basement contents loss (GBP), only with `--basement-vulnerability` |
 | `aggregate_content_loss` | Sum of building and basement content losses (GBP) |
+| `dur_h<XXX>cm_<tu>` | Time with ground-floor depth ≥ XXX cm, in `--time-units` |
 
-### Force outputs (only with `--compute-forces`)
+### Force outputs (`cli.py --compute-forces`, `--n-replicates 1`)
 
 | File | Description |
 |------|-------------|
-| `forces.csv` | Time series of $F_{hydro}$, $F_{drag}$, $F_{total}$, $M_{overturn}$ |
-| `forces_result.png` | Time series plot of total lateral force and overturning moment |
+| `forces.csv` | Time series of lateral forces and overturning moment |
+| `forces_result.png` | Force and moment time series |
 
-**`forces.csv` columns**: `time`, `h_ext`, `F_hydro_kN`, `F_drag_kN`, `F_total_kN`, `M_overturn_kNm`.
+**`forces.csv` columns**: `time` (s), `F_hydro_N`, `F_drag_N`, `F_total_N`, `M_overturn_Nm`, `H_net_m`, `H_wet_m`, `v_m_per_s`, `lever_hydro_m`, `lever_drag_m`.

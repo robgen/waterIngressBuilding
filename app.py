@@ -13,7 +13,6 @@ Usage:
 import csv
 import io
 import os
-import sys
 import tempfile
 
 import matplotlib
@@ -23,12 +22,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import fragility as _frag
 from engine import (
-    Building, IngressPathway, Simulation,
+    SimConfig, TIME_UNIT_SECONDS,
+    hydrograph_from_columns,
     parse_combined_text,
-    parse_ingress_text,
-    sample_with_zero_padding,
 )
+from fragility import FragilePath
 from loss import load_vulnerability_curve
 from pump import SumpPump
 from report import diagnostics_from_trace, diagnostics_to_csv_rows, generate_narrative
@@ -117,7 +117,7 @@ with st.sidebar:
         time_unit = st.selectbox(
             'Time unit', ['seconds', 'minutes', 'hours'], index=1,
             help='Applies to the hydrograph CSV and the simulation timestep.')
-        _mul = {'seconds': 1.0, 'minutes': 60.0, 'hours': 3600.0}[time_unit]
+        _mul = TIME_UNIT_SECONDS[time_unit]
         _ta = _time_abbr(time_unit)
         timestep = st.number_input(
             f'Timestep  ({_ta})',
@@ -155,6 +155,9 @@ with st.sidebar:
             manual_ing_tbl = _data_editor(
                 [{'height': 0.0, 'area': 0.01, 'coeff': 0.6, 'name': 'wall_crack'}],
                 key='ing_tbl')
+        uploaded_membrane = st.file_uploader(
+            'Membrane CSV  (optional; protects ingress rows with the same group_id)',
+            type=['csv'], key='mem_csv')
 
         with st.expander('💨  External velocity  (optional)', expanded=False):
             vel_mode = st.radio(
@@ -237,27 +240,116 @@ with st.sidebar:
         uploaded_bsmt_vuln = st.file_uploader(
             'Basement vulnerability', type=['csv'], key='svuln')
 
-    # ── 6. Monte Carlo ───────────────────────────────────────────────────────
-    with st.expander('🎲  Monte Carlo  (fragility)', expanded=False):
-        enable_mc = st.checkbox('Enable fragility MC', value=False)
-        if enable_mc:
-            uploaded_frag_ing = st.file_uploader(
-                'Fragility ingress CSV', type=['csv'], key='frag_ing')
-            uploaded_membrane = st.file_uploader(
-                'Membrane CSV  (optional)', type=['csv'], key='mem_csv')
-            mc1, mc2 = st.columns(2)
-            n_reps    = mc1.number_input('Replicates', value=200, min_value=2, step=50)
-            frag_seed = mc2.number_input('Seed  (0 = random)', value=42, min_value=0, step=1)
-        else:
-            uploaded_frag_ing = uploaded_membrane = None
-            n_reps = 100; frag_seed = 0
-
-    # ── 7. Output options ────────────────────────────────────────────────────
+    # ── 6. Output options ────────────────────────────────────────────────────
     with st.expander('🎬  Output options', expanded=False):
         make_anim = st.checkbox('Generate GIF animation  (slow)', value=False)
 
     st.divider()
     run_button = st.button('▶  Run simulation', type='primary', use_container_width=True)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MODEL INPUTS  (sidebar → SimConfig, Hydrograph, pathways; shared by all runs)
+# ════════════════════════════════════════════════════════════════════════════
+
+_vel_mode_key = ('file' if vel_mode == 'File'
+                 else 'power_law' if vel_mode == 'Power law  (v = a · h^b)'
+                 else 'zero')
+
+
+def _model_config(n_replicates=1, random_seed=None) -> SimConfig:
+    sump = None
+    if enable_sump and enable_basement and sump_area > 0:
+        sump = SumpPump(
+            sump_area=float(sump_area),
+            sump_base_elevation=float(sump_base_elev),
+            overflow_level=float(sump_ov_level),
+            overflow_coeff=float(sump_ov_coeff),
+            overflow_exponent=float(sump_ov_exp),
+            pump_on_level=float(pump_on),
+            pump_off_level=float(pump_off),
+            pump_shutoff_head=float(pump_hsh),
+            pump_curve_coeff=float(pump_k),
+            pipe_loss_coeff=float(pipe_k),
+            pump_availability=float(pump_avail),
+        )
+    return SimConfig(
+        floor_area=float(floor_area),
+        dt=float(timestep) * _mul,
+        basement_area=float(basement_area) if enable_basement else 0.0,
+        basement_floor_elevation=float(basement_floor_elev),
+        basement_ceiling_elevation=float(basement_ceiling_elev),
+        basement_connection_height=float(bsmt_conn_height) if bsmt_conn_area > 0 else None,
+        basement_connection_area=float(bsmt_conn_area),
+        basement_connection_coeff=float(bsmt_conn_coeff),
+        sumppump=sump,
+        n_replicates=n_replicates,
+        random_seed=random_seed,
+        output_percentiles=tuple(sorted(mc_percentiles)),
+        velocity_mode=_vel_mode_key,
+        velocity_power_law_a=float(vel_pl_a),
+        velocity_power_law_b=float(vel_pl_b),
+        time_units=time_unit,
+    )
+
+
+def _hydrograph():
+    if ext_mode == 'Upload CSV':
+        times, levels, vel = parse_combined_text(_read_text(uploaded_external))
+    else:
+        times, levels = _tbl_to_pairs(manual_ext_tbl, 'time', 'level')
+        vel = None
+    return hydrograph_from_columns(times, levels, vel, time_units=time_unit,
+                                   velocity_mode=_vel_mode_key)
+
+
+def _ingress_rows():
+    """Ground-floor pathways from the uploaded CSV or the manual table."""
+    if ing_mode == 'Upload file':
+        if uploaded_ingress is None:
+            return []
+        return _frag.parse_pathway_text(_read_text(uploaded_ingress),
+                                        source=uploaded_ingress.name)
+    if manual_ing_tbl is None:
+        return []
+    recs = (manual_ing_tbl.to_dict('records')
+            if hasattr(manual_ing_tbl, 'to_dict') else list(manual_ing_tbl))
+    rows = []
+    for i, r in enumerate(recs):
+        try:
+            rows.append(FragilePath(name=str(r.get('name') or f'ing{i}'),
+                                    height_m=float(r['height']),
+                                    area_m2=float(r['area']),
+                                    Cd=float(r['coeff'])))
+        except (KeyError, TypeError, ValueError):
+            pass
+    return rows
+
+
+def _basement_rows():
+    """Exterior→basement perimeter opening from the basement section."""
+    if enable_basement and float(bsmt_ing_area) > 0:
+        return [FragilePath(name='ext-basement-perimeter',
+                            height_m=float(bsmt_ing_height),
+                            area_m2=float(bsmt_ing_area),
+                            Cd=float(bsmt_ing_coeff))]
+    return []
+
+
+def _membrane_rows():
+    if uploaded_membrane is not None:
+        return _frag.parse_pathway_text(_read_text(uploaded_membrane),
+                                        source=uploaded_membrane.name)
+    return []
+
+
+def _seed():
+    return int(frag_seed) if frag_seed > 0 else None
+
+
+def _pathways():
+    """(paths, membranes) used by both the single run and Monte Carlo."""
+    return _frag.assemble_pathways(_ingress_rows(), _basement_rows(), _membrane_rows())
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -274,6 +366,37 @@ tab_setup, tab_results, tab_diag, tab_mc_out, tab_batch = st.tabs([
     '🎲  Monte Carlo'  + ('  ✓' if _has_mc  else ''),
     '📊  Batch analysis',
 ])
+
+
+# ── Tab 4 (settings): Monte Carlo ─────────────────────────────────────────────
+
+with tab_mc_out:
+    st.markdown('#### Monte Carlo settings')
+    st.warning(
+        'Monte Carlo samples **only the fragility parameters defined in the ingress '
+        'file** (per row: `reversible` and the state columns `state_name_N, median_m_N, '
+        'beta_ln_N, area_m2_N, Cd_N`) and in the membrane file.  Rows without them — '
+        'and every row of the manual ingress table — are deterministic, so they give '
+        'the same result in every replicate.')
+    enable_mc = st.checkbox('Run Monte Carlo with the simulation', value=False, key='enable_mc')
+    _mc_c1, _mc_c2 = st.columns(2)
+    n_reps = _mc_c1.number_input('Replicates', value=200, min_value=2, step=50,
+                                 disabled=not enable_mc)
+    frag_seed = _mc_c2.number_input(
+        'Seed  (0 = random)', value=42, min_value=0, step=1,
+        help='Also fixes the single-run draw when the ingress file has fragility parameters.')
+    mc_percentiles = st.multiselect(
+        'Reported percentiles', [5, 10, 25, 50, 75, 90, 95],
+        default=[10, 25, 50, 75, 90], disabled=not enable_mc) or [50]
+    if enable_mc:
+        try:
+            _mc_chk_paths, _mc_chk_mems = _pathways()
+            if not _mc_chk_mems and not any(p.fragility is not None for p in _mc_chk_paths):
+                st.warning('The current ingress and membrane inputs define no fragility '
+                           'parameters: every replicate will be identical.')
+        except Exception as _pe:
+            st.error(f'Pathway input error: {_pe}')
+    st.divider()
 
 
 # ── Tab 1: Setup & preview ────────────────────────────────────────────────────
@@ -318,11 +441,8 @@ with tab_setup:
         _show_ing = False
         if ing_mode == 'Upload file' and uploaded_ingress:
             try:
-                import fragility as _frag_ing
-                _tmp_ing2 = _save_tmp(_read_bytes(uploaded_ingress), '.csv')
-                _il2 = _frag_ing.parse_pathway_file(_tmp_ing2)
                 _p = os.path.join(tempfile.gettempdir(), 'prev_ing.png')
-                viz.save_run_schematic(_p, gf_pathways=_il2)
+                viz.save_run_schematic(_p, pathways=_ingress_rows())
                 st.image(_p, width="stretch")
                 _show_ing = True
             except Exception as _e:
@@ -353,43 +473,14 @@ with tab_setup:
     st.markdown('**Building schematic**')
     _col_l, _col_sch, _col_r = st.columns([1.5, 2, 1.5])
     with _col_sch:
-        _bsmt_d_sch = (abs(float(basement_floor_elev))
-                       if enable_basement and basement_area > 0 else None)
         try:
-            import fragility as _frag_sch
-            _gf_pw_sch = []
-            _mem_sch   = []
-            if ing_mode == 'Upload file' and uploaded_ingress:
-                try:
-                    _tmp_sch = _save_tmp(_read_bytes(uploaded_ingress), '.csv')
-                    _gf_pw_sch = _frag_sch.parse_pathway_file(_tmp_sch)
-                except Exception:
-                    pass
-            if enable_mc and uploaded_membrane:
-                try:
-                    _tmp_m = _save_tmp(_read_bytes(uploaded_membrane), '.csv')
-                    _raw_m = _frag_sch.parse_pathway_file(_tmp_m)
-                    _mem_sch = [_frag_sch.fragile_path_to_membrane(fp)
-                                for fp in _raw_m
-                                if fp.group_id > 0 and fp.fragility is not None]
-                except Exception:
-                    pass
-            _bsmt_pw_sch = []
-            if enable_basement and float(bsmt_ing_area) > 0:
-                _bsmt_pw_sch = [IngressPathway(
-                    height=float(bsmt_ing_height), area=float(bsmt_ing_area),
-                    coeff=float(bsmt_ing_coeff), name='ext-basement-perimeter',
-                    source='outside', target='basement')]
+            _pw_sch, _mem_sch = _pathways()
             _sch_p = os.path.join(tempfile.gettempdir(), 'preview_schematic.png')
             viz.save_run_schematic(
                 _sch_p,
-                gf_pathways=_gf_pw_sch,
-                bsmt_pathways=_bsmt_pw_sch,
+                pathways=_pw_sch,
                 membranes=_mem_sch,
-                basement_depth=_bsmt_d_sch,
-                has_sump=enable_sump,
-                has_pump=enable_sump,
-                bypass_height=float(bsmt_conn_height or 0.0),
+                config=_model_config(),
                 label='Current setup',
                 subtitle=('Basement' + (' + pump' if enable_sump else '')
                           if enable_basement else 'Ground floor only'),
@@ -420,100 +511,12 @@ if run_button:
             _stat  = st.empty()
 
         try:
-            # ── External hydrograph ──────────────────────────────────────────
-            if ext_mode == 'Upload CSV':
-                _times, _levels, _inline_vel = parse_combined_text(_read_text(uploaded_external))
-            else:
-                _times, _levels = _tbl_to_pairs(manual_ext_tbl, 'time', 'level')
-                _inline_vel = None
-
-            times_s  = [t * _mul for t in _times]
-            dt_s     = float(timestep) * _mul
-
-            # ── Ingress pathways ─────────────────────────────────────────────
-            if ing_mode == 'Upload file':
-                import fragility as _frag_io
-                _tmp_ing = _save_tmp(_read_bytes(uploaded_ingress), '.csv')
-                _frun_paths = _frag_io.parse_pathway_file(_tmp_ing)
-                ing_list = [
-                    IngressPathway(height=fp.height_m, area=fp.area_m2,
-                                   coeff=fp.Cd, name=fp.name)
-                    for fp in _frun_paths
-                ]
-            else:
-                _recs = (manual_ing_tbl.to_dict('records')
-                         if hasattr(manual_ing_tbl, 'to_dict') else list(manual_ing_tbl))
-                _lines = []
-                for _r in _recs:
-                    try:
-                        _v = list(_r.values())
-                        _parts = [str(_v[0]), str(_v[1]), str(_v[2])]
-                        if len(_v) > 3 and _v[3]:
-                            _parts.append(str(_v[3]))
-                        _lines.append(','.join(_parts))
-                    except Exception:
-                        pass
-                ing_list = parse_ingress_text('\n'.join(_lines))
-
-            # ── Velocity ─────────────────────────────────────────────────────
-            v_times_s, v_vals = None, None
-            if vel_mode == 'File':
-                if _inline_vel is None:
-                    raise ValueError(
-                        'Velocity mode "File" requires a 3-column hydrograph '
-                        '(time, depth, velocity). The uploaded file has only 2 columns.')
-                v_times_s = times_s
-                v_vals    = list(_inline_vel)
-            _vel_mode_key = ('file' if vel_mode == 'File'
-                             else 'power_law' if vel_mode == 'Power law  (v = a · h^b)'
-                             else 'zero')
-
-            # ── Building ──────────────────────────────────────────────────────
-            bld = Building(float(floor_area))
-            if enable_basement and basement_area > 0:
-                bld.basement_area              = float(basement_area)
-                bld.h_basement                 = 0.0
-                bld.z_basement                 = float(basement_floor_elev)
-                bld.basement_ceiling_elevation = float(basement_ceiling_elev)
-                if bsmt_ing_area > 0:
-                    bld.basement_ingress = IngressPathway(
-                        height=float(bsmt_ing_height),
-                        area=float(bsmt_ing_area),
-                        coeff=float(bsmt_ing_coeff),
-                        name='ext-basement-perimeter',
-                        source='outside', target='basement')
-                if bsmt_conn_area > 0:
-                    ing_list.append(IngressPathway(
-                        height=float(bsmt_conn_height),
-                        area=float(bsmt_conn_area),
-                        coeff=float(bsmt_conn_coeff), name='ground-basement-conn',
-                        source='ground', target='basement'))
-                if enable_sump and sump_area > 0:
-                    bld.sump_pump = SumpPump(
-                        sump_area=float(sump_area),
-                        sump_base_elevation=float(sump_base_elev),
-                        overflow_level=float(sump_ov_level),
-                        overflow_coeff=float(sump_ov_coeff),
-                        overflow_exponent=float(sump_ov_exp),
-                        pump_on_level=float(pump_on),
-                        pump_off_level=float(pump_off),
-                        pump_shutoff_head=float(pump_hsh),
-                        pump_curve_coeff=float(pump_k),
-                        pipe_loss_coeff=float(pipe_k),
-                        pump_availability=float(pump_avail),
-                    )
+            hydro  = _hydrograph()
+            config = _model_config(random_seed=_seed())
+            paths, membranes = _pathways()
 
             # ── Simulate ──────────────────────────────────────────────────────
             _prog.progress(5, 'Running simulation…')
-            _sim_ing = ing_list + ([bld.basement_ingress]
-                                   if bld.basement_ingress is not None else [])
-            sim = Simulation(bld, _sim_ing, times_s, _levels,
-                             dt=dt_s,
-                             external_vel_times=v_times_s,
-                             external_velocities=v_vals,
-                             velocity_mode=_vel_mode_key,
-                             vel_a=float(vel_pl_a),
-                             vel_b=float(vel_pl_b))
 
             def _cb(p):
                 try:
@@ -521,52 +524,9 @@ if run_button:
                 except Exception:
                     pass
 
-            _ret = sim.run(progress_callback=_cb, verbose=False)
-            if len(_ret) == 4:
-                sim_t, sim_h, sim_b, sim_s = _ret
-            elif len(_ret) == 3:
-                sim_t, sim_h, sim_b = _ret; sim_s = None
-            else:
-                sim_t, sim_h = _ret; sim_b = sim_s = None
-
-            sim_t_disp = [t / _mul for t in sim_t]
-
-            # Sample external to sim grid
-            def _samp(st_list, t_ext, h_ext):
-                out = []; j = 0
-                for t in st_list:
-                    while j < len(t_ext) - 1 and t >= t_ext[j + 1]:
-                        j += 1
-                    if j < len(t_ext) - 1:
-                        t1, h1, t2, h2 = t_ext[j], h_ext[j], t_ext[j+1], h_ext[j+1]
-                        out.append(h1 + (h2-h1)*(t-t1)/(t2-t1) if t2!=t1 else h1)
-                    else:
-                        out.append(h_ext[-1] if h_ext else 0.0)
-                return out
-
-            samp_ext = _samp(sim_t, times_s, _levels)
-            samp_vel = None
-            try:
-                if _vel_mode_key == 'file' and v_times_s and v_vals:
-                    samp_vel = sample_with_zero_padding(sim_t, v_times_s, v_vals)
-                elif _vel_mode_key == 'power_law':
-                    _samp_e = sample_with_zero_padding(sim_t, times_s, _levels)
-                    samp_vel = [float(vel_pl_a) * (max(0.0, h) ** float(vel_pl_b))
-                                for h in _samp_e]
-                else:
-                    samp_vel = [0.0] * len(sim_t)
-            except Exception:
-                pass
-
-            # ── Key metrics ───────────────────────────────────────────────────
-            h_pk_gf   = max(sim_h,   default=0.0)
-            h_pk_bsmt = max(sim_b,   default=0.0) if sim_b else 0.0
-            h_pk_sump = max(sim_s,   default=0.0) if sim_s else 0.0
-            vol_in = sum(
-                (sim_h[i] - sim_h[i-1]) * float(floor_area)
-                for i in range(1, len(sim_h))
-                if sim_h[i] > sim_h[i-1]
-            )
+            result, _ = _frag.run_replicate(
+                config, hydro, paths, membranes, np.random.default_rng(config.random_seed),
+                progress_callback=_cb)
 
             # ── Main plot ────────────────────────────────────────────────────
             _prog.progress(80, 'Generating plots…')
@@ -577,34 +537,13 @@ if run_button:
             sch_bytes = None
             try:
                 _sch_p = os.path.join(outdir, 'schematic.png')
-                _bsmt_d_sch = (abs(float(basement_floor_elev))
-                               if enable_basement and basement_area > 0 else None)
-                _bsmt_pw_run = ([bld.basement_ingress]
-                                if bld.basement_ingress is not None else [])
-                viz.save_run_schematic(
-                    _sch_p,
-                    gf_pathways=ing_list,
-                    bsmt_pathways=_bsmt_pw_run,
-                    basement_depth=_bsmt_d_sch,
-                    has_sump=enable_sump,
-                    has_pump=enable_sump,
-                    bypass_height=float(bsmt_conn_height or 0.0),
-                )
+                viz.save_run_schematic(_sch_p, pathways=paths, membranes=membranes,
+                                       config=config)
                 with open(_sch_p, 'rb') as _f:
                     sch_bytes = _f.read()
             except Exception:
                 pass
-            _bsmt_max = (max(0.0, float(basement_ceiling_elev) - float(basement_floor_elev))
-                         if enable_basement and basement_area > 0 else None)
-            _sump_ov  = float(sump_ov_level) if enable_sump else None
-            viz.save_simulation_result(
-                sim_t_disp, sim_h, samp_ext, sim_png,
-                time_unit=time_unit,
-                basement_levels=sim_b,
-                velocity_series=samp_vel,
-                sump_levels=sim_s,
-                basement_max_depth=_bsmt_max,
-                sump_overflow_level=_sump_ov)
+            viz.save_run_result(sim_png, config, hydro, result)
             with open(sim_png, 'rb') as _f:
                 sim_png_bytes = _f.read()
 
@@ -613,7 +552,7 @@ if run_button:
             ev_rows = {}
             try:
                 _prog.progress(85, 'Running diagnostics…')
-                diag     = diagnostics_from_trace(sim._last_trace, sim.dt)
+                diag     = diagnostics_from_trace(result.trace, config.dt)
                 dash_png = os.path.join(outdir, 'dashboard.png')
                 viz.save_interpretation_dashboard(diag, dash_png, time_unit=time_unit)
                 with open(dash_png, 'rb') as _f:
@@ -651,14 +590,14 @@ if run_button:
                 try:
                     bldg_loss = load_vulnerability_curve(
                         _save_tmp(_read_bytes(uploaded_bldg_vuln), '.csv')
-                    ).interpolate_loss(h_pk_gf)
+                    ).interpolate_loss(result.peak_h_in)
                 except Exception:
                     pass
             if uploaded_bsmt_vuln:
                 try:
                     bsmt_loss = load_vulnerability_curve(
                         _save_tmp(_read_bytes(uploaded_bsmt_vuln), '.csv')
-                    ).interpolate_loss(h_pk_bsmt)
+                    ).interpolate_loss(result.peak_h_basement)
                 except Exception:
                     pass
 
@@ -667,21 +606,8 @@ if run_button:
             if make_anim:
                 _prog.progress(88, 'Generating animation…')
                 try:
-                    _ap  = os.path.join(outdir, 'animation.gif')
-                    _sp  = bld.sump_pump
-                    _tr  = sim._last_trace
-                    viz.generate_animation(
-                        sim_t_disp, sim_h, samp_ext, ing_list, _ap,
-                        time_unit=time_unit,
-                        basement_levels=sim_b,
-                        basement_abs_levels=(
-                            [bld.z_basement + hb for hb in sim_b] if sim_b else None),
-                        velocity_series=samp_vel,
-                        sump_levels=sim_s,
-                        sump_overflow_level=(_sp.overflow_level if _sp else None),
-                        Q_perim_series=(_tr['Q_ext_perimeter'] if _tr else None),
-                        Q_bypass_series=(_tr['Q_b_bs'] if _tr else None),
-                    )
+                    _ap = os.path.join(outdir, 'animation.gif')
+                    viz.save_run_animation(_ap, config, hydro, result, paths)
                     with open(_ap, 'rb') as _f:
                         anim_bytes = _f.read()
                 except Exception:
@@ -689,30 +615,25 @@ if run_button:
 
             # ── Store ─────────────────────────────────────────────────────────
             st.session_state.run_result = dict(
-                sim_t_disp=sim_t_disp, sim_h=sim_h, sim_b=sim_b, sim_s=sim_s,
-                h_pk_gf=h_pk_gf, h_pk_bsmt=h_pk_bsmt, h_pk_sump=h_pk_sump,
-                vol_in=vol_in,
-                time_unit=time_unit, mul=_mul,
-                has_basement=sim_b is not None, has_sump=sim_s is not None,
+                h_pk_gf=result.peak_h_in,
+                h_pk_bsmt=result.peak_h_basement,
+                h_pk_sump=result.peak_h_sump,
+                vol_in=result.total_volume_in,
+                has_basement=bool(result.h_basement),
+                has_sump=bool(result.h_sump),
                 sim_png_bytes=sim_png_bytes,
                 sch_bytes=sch_bytes,
                 dash_bytes=dash_bytes, diag_csv=diag_csv,
                 narrative=narrative or [], ev_rows=ev_rows,
                 bldg_loss=bldg_loss, bsmt_loss=bsmt_loss,
                 anim_bytes=anim_bytes,
-                # Keep parsed inputs for MC factory
-                times_s=times_s, levels=_levels,
-                v_times_s=v_times_s, v_vals=v_vals, dt_s=dt_s,
-                bld_floor=float(floor_area),
             )
             st.session_state.mc_result = None  # clear stale MC on new run
 
             # ── Monte Carlo ───────────────────────────────────────────────────
-            if enable_mc and uploaded_frag_ing is not None:
+            if enable_mc:
                 _prog.progress(92, 'Running Monte Carlo…')
                 try:
-                    import fragility as _frag
-
                     with tab_mc_out:
                         _mc_prog = st.progress(0, 'Monte Carlo…')
 
@@ -724,78 +645,9 @@ if run_button:
                         except Exception:
                             pass
 
-                    _tmp_fi  = _save_tmp(_read_bytes(uploaded_frag_ing), '.csv')
-                    _fpaths  = _frag.parse_pathway_file(_tmp_fi)
-                    _fmems   = []
-                    if uploaded_membrane:
-                        _tmp_m   = _save_tmp(_read_bytes(uploaded_membrane), '.csv')
-                        _raw_mem = _frag.parse_pathway_file(_tmp_m)
-                        _fmems   = [_frag.fragile_path_to_membrane(fp)
-                                    for fp in _raw_mem
-                                    if fp.group_id > 0 and fp.fragility is not None]
-                    _frag.assign_representative_paths(_fpaths, _fmems)
-
-                    # Capture current building config for factory closure
-                    _fa    = float(floor_area)
-                    _eb    = enable_basement and float(basement_area) > 0
-                    _ba, _bf, _bc = float(basement_area), float(basement_floor_elev), float(basement_ceiling_elev)
-                    _bih2, _bia2, _bic2 = float(bsmt_ing_height), float(bsmt_ing_area), float(bsmt_ing_coeff)
-                    _es    = enable_sump and enable_basement
-                    _sa2, _sbe2, _sol2 = float(sump_area), float(sump_base_elev), float(sump_ov_level)
-                    _soc2, _soe2 = float(sump_ov_coeff), float(sump_ov_exp)
-                    _pol2, _pfl2, _psh2 = float(pump_on), float(pump_off), float(pump_hsh)
-                    _pcc2, _plc2, _pa2  = float(pump_k), float(pipe_k), float(pump_avail)
-
-                    def _bfactory():
-                        _b = Building(_fa)
-                        if _eb:
-                            _b.basement_area = _ba; _b.h_basement = 0.0
-                            _b.z_basement = _bf; _b.basement_ceiling_elevation = _bc
-                            if _bia2 > 0:
-                                _b.basement_ingress = IngressPathway(
-                                    height=_bih2, area=_bia2, coeff=_bic2,
-                                    name='ext-basement-perimeter',
-                                    source='outside', target='basement')
-                            if _es and _sa2 > 0:
-                                _b.sump_pump = SumpPump(
-                                    sump_area=_sa2, sump_base_elevation=_sbe2,
-                                    overflow_level=_sol2, overflow_coeff=_soc2,
-                                    overflow_exponent=_soe2,
-                                    pump_on_level=_pol2, pump_off_level=_pfl2,
-                                    pump_shutoff_head=_psh2, pump_curve_coeff=_pcc2,
-                                    pipe_loss_coeff=_plc2, pump_availability=_pa2)
-                        return _b
-
-                    # Static basement pathways: the engine reads only the ingress
-                    # list, not Building.basement_ingress.
-                    _static = []
-                    if _eb and _bia2 > 0:
-                        _static.append(IngressPathway(
-                            height=_bih2, area=_bia2, coeff=_bic2,
-                            name='ext-basement-perimeter',
-                            source='outside', target='basement'))
-                    if _eb and float(bsmt_conn_area) > 0:
-                        _static.append(IngressPathway(
-                            height=float(bsmt_conn_height),
-                            area=float(bsmt_conn_area),
-                            coeff=float(bsmt_conn_coeff), name='ground-basement-conn',
-                            source='ground', target='basement'))
-
-                    _seed = int(frag_seed) if frag_seed > 0 else None
-                    _mc_res = _frag.run_fragility_montecarlo(
-                        building_factory=_bfactory,
-                        paths=_fpaths, membranes=_fmems,
-                        basement_fragility=None,
-                        external_times=times_s, external_levels=_levels,
-                        n_replicates=int(n_reps), dt=dt_s,
-                        external_vel_times=v_times_s, external_velocities=v_vals,
-                        seed=_seed,
-                        progress_callback=_mc_cb,
-                        static_pathways=_static,
-                        velocity_mode=_vel_mode_key,
-                        vel_a=float(vel_pl_a),
-                        vel_b=float(vel_pl_b),
-                    )
+                    _mc_res = _frag.run(
+                        _model_config(n_replicates=int(n_reps), random_seed=_seed()),
+                        hydro, paths, membranes, progress_callback=_mc_cb)
 
                     # Percentile table
                     _pct_rows = []
@@ -821,7 +673,7 @@ if run_button:
                         _sf_rows.append(_row2)
 
                     # Histogram data
-                    _peak_vals = [rec.peak_h_in for rec in _mc_res.replicates]
+                    _peak_vals = [rec.result.peak_h_in for rec in _mc_res.replicates]
 
                     # CSV outputs
                     _mc_dir  = tempfile.mkdtemp(prefix='mc_')
@@ -980,9 +832,9 @@ with tab_diag:
 with tab_mc_out:
     _mc = st.session_state.mc_result
     if not enable_mc:
-        st.info('Enable **Fragility Monte Carlo** in the sidebar to use this tab.')
+        st.info('Tick **Run Monte Carlo with the simulation** above to use this tab.')
     elif _mc is None and not run_button:
-        st.info('Upload a fragility ingress CSV and press **▶ Run simulation**.')
+        st.info('Press **▶ Run simulation** in the sidebar.')
     elif _mc is not None:
         # ── KPI strip ──────────────────────────────────────────────────────────
         _mn = np.mean(_mc['peak_vals'])

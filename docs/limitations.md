@@ -8,7 +8,7 @@ Deliberate trade-offs and known simplifications in the current implementation. N
 
 ### A. Full orifice area applied regardless of partial submergence
 
-`engine.py` — `IngressPath.compute_flow`
+`engine.py` — `IngressPathway.compute_flow`
 
 The orifice formula uses the full area $A$ even when the water surface is only slightly above the sill. For near-threshold events (exterior water within a few centimetres of sill height) the flow is over-estimated; for deep flooding scenarios the error is negligible.
 
@@ -36,13 +36,13 @@ The operating point $Q^* = \sqrt{(H_{shut} - H_{lift})/(k_{pump} + k_{pipe})}$ i
 
 ---
 
-### D. Sump overflow evaluated on the previous step's depth
+### D. Sump overflow is instantaneous
 
-`engine.py` — sump update block
+`engine.py` — `Simulation._set_lower_volume`
 
-Overflow $Q_{s \to b}$ is computed before $h_s$ is updated with the current step's inflow (explicit Euler artifact). The sump can transiently exceed the overflow crest by one full step's worth of inflow before the corrective overflow takes effect.
+The sump and basement are treated as one stored volume: the sump fills first and any volume above the crest spreads over sump + basement in the same step. There is no rate limit on sump→basement overflow, so `--sumppump-overflow-coeff` / `--sumppump-overflow-exponent` currently have no effect and the `Q_sump_overflow` diagnostic is always zero.
 
-**Possible fix:** semi-implicit or iterative sump update.
+**Possible fix:** rate-limited weir overflow $Q_{s \to b} = C_{ov}(h_s - h_{ov})^{m_{ov}}$ (`pump.compute_sump_overflow`) with separate sump and basement balances.
 
 ---
 
@@ -76,11 +76,11 @@ Hydrostatic and drag forces are computed for the ground-floor façade. Basement 
 
 ---
 
-### I. Lumped single perimeter opening and bypass
+### I. Single lumped ground↔basement connection
 
-All simulation modules
+`engine.py` — `_internal_pathways`
 
-The model represents the full basement perimeter inflow as a single lumped orifice and the ground↔basement path as a single lumped connection. Spatial variation in perimeter leakage and multiple discrete connections are not modelled.
+Exterior→basement inflow can be split over any number of pathways (`--basement-ingress` rows), but the ground↔basement connection is a single lumped orifice (`--basement-bypass-*`). Several discrete internal connections at different sills are not modelled.
 
 ---
 
@@ -102,20 +102,19 @@ Setting $\Delta t \leq 0.5\,\Delta t_{crit}$ provides adequate margin. See the t
 
 ## Resolved items (summary)
 
-The following issues were identified in earlier code reviews and are resolved in the current implementation:
+Issues found in earlier reviews and resolved in the current implementation (details in CHANGELOG.md):
 
-| Item | Description | Status |
-|------|-------------|--------|
-| H | `Building` state mutated in place — `sim.run()` not idempotent | Resolved — state snapshotted at construction, reset on each call |
-| I | `_vel_index` persisted across `run()` calls | Resolved |
-| J | `has_sump` inferred from flow activity | Resolved — explicit flag in trace |
-| K | Animation recomputed bypass flow instead of reading trace | Resolved |
-| L | No `SumpPump` parameter validation | Resolved — `__post_init__` raises on bad inputs |
-| M | `parse_ingress_text` passed raw strings to constructor | Resolved |
-| N | Malformed ingress lines silently skipped | Resolved — warning emitted |
-| O | `import math` inside `run()` | Resolved |
-| P | `sample_external` closure duplicated canonical sampler | Resolved |
-| Q | Legacy `always_open` ingress flag | Resolved — removed |
-| R | `VulnerabilityCurve` frozen but held mutable lists | Resolved — converted to tuples |
-| S | Batch file matching by digit concatenation was fragile | Resolved — uses trailing-digit regex |
-| T | Bypass connection Cd hardcoded (0.6 in `cli.py`, 1.0 in `batch.py`/`app.py`) | Resolved — `--basement-bypass-coeff` (default 0.6) wired through CLI, batch and dashboard |
+| Item | Description | Resolution |
+|------|-------------|------------|
+| R1 | `Building` state mutated in place — `sim.run()` not idempotent | State snapshotted at construction, reset on each call |
+| R2 | `_vel_index` persisted across `run()` calls | Reset on each call |
+| R3 | `has_sump` inferred from flow activity | Explicit flag in trace |
+| R4 | Animation recomputed flows instead of reading the trace | Arrows use the engine trace |
+| R5 | No `SumpPump` parameter validation | `__post_init__` raises on bad inputs |
+| R6 | Malformed pathway rows silently skipped | Warning emitted |
+| R7 | Legacy `always_open` and positional ingress formats | Removed; header-based pathway CSV only |
+| R8 | `VulnerabilityCurve` frozen but held mutable lists | Converted to tuples |
+| R9 | Batch file matching by digit concatenation was fragile | Trailing-digit regex |
+| R10 | Bypass Cd hardcoded (0.6 in `cli.py`, 1.0 in `batch.py`/`app.py`) | `--basement-bypass-coeff` (default 0.6) |
+| R11 | Basement inflow dropped in Monte Carlo and dashboard runs | Single model assembly in `engine.run` for every mode |
+| R12 | Full basement kept driving inflow against its ceiling level (indoor level above the flood) | Merged-compartment rule (docs/model.md, *Full basement*) |

@@ -240,7 +240,7 @@ def save_velocity_preview(times, velocities, outpath, time_unit=None,
 
 def save_simulation_result(sim_times, sim_levels, external_levels, outpath,
                            time_unit=None, basement_levels=None,
-                           velocity_series=None, sump_levels=None,
+                           sump_levels=None,
                            basement_max_depth=None, sump_overflow_level=None):
     """High-quality multi-panel simulation result figure."""
     t   = list(sim_times)
@@ -248,7 +248,6 @@ def save_simulation_result(sim_times, sim_levels, external_levels, outpath,
     h_i = list(sim_levels)
     has_bs   = basement_levels is not None and any(v > 1e-6 for v in basement_levels)
     has_sump = sump_levels is not None and any(v > 1e-6 for v in sump_levels)
-    has_vel  = velocity_series is not None
 
     x_range = (t[-1] - t[0]) if len(t) > 1 else 1.0
 
@@ -468,11 +467,19 @@ def save_forces_result(sim_times, forces_rows, outpath, time_unit=None):
 
 # ── animation ─────────────────────────────────────────────────────────────────
 
-def generate_animation(sim_times, sim_levels, external_levels, ingress_list, outpath,
+def generate_animation(sim_times, sim_levels, external_levels, pathways, outpath,
                        fps=10, max_frames=200, time_unit=None, basement_levels=None,
-                       basement_abs_levels=None, velocity_series=None, sump_levels=None,
-                       sump_overflow_level=None, Q_perim_series=None,
-                       Q_bypass_series=None):
+                       velocity_series=None, sump_levels=None,
+                       sump_overflow_level=None, Q_ext_series=None,
+                       Q_perim_series=None, Q_bypass_series=None,
+                       bypass_height=None):
+    """Animated GIF of one run.
+
+    `pathways` are FragilePaths (markers at their sills).  Flow arrows are
+    drawn from the engine trace: Q_ext_series (exterior↔ground floor),
+    Q_perim_series (exterior→basement) and Q_bypass_series (ground→basement,
+    drawn at `bypass_height`).
+    """
     n_frames = len(sim_times)
     if n_frames <= 0:
         raise ValueError('No simulation times for animation')
@@ -481,7 +488,7 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
 
     building_width = 1.0
     bx = 0.5
-    max_ingress_h = max((ing.height for ing in ingress_list), default=0.0)
+    max_ingress_h = max((p.height_m for p in pathways), default=0.0)
     max_level     = max(max(external_levels or [0]),
                         max(sim_levels or [0]), max_ingress_h)
     building_height = max(3.0, max_level * 1.4 + 0.5)
@@ -489,25 +496,12 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
                   else ('min' if time_unit.startswith('min')
                         else ('h' if time_unit.startswith('hour') else time_unit)))
 
-    # Ground↔basement flow series
-    if Q_bypass_series is not None:
-        Qgb_series = list(Q_bypass_series)
-    elif ingress_list and basement_levels is not None:
-        abs_basement = basement_abs_levels if basement_abs_levels is not None else basement_levels
-        Qgb_series = [0.0] * len(sim_times)
-        if abs_basement is not None:
-            for i in range(len(sim_times)):
-                total = 0.0
-                for ing in ingress_list:
-                    src = getattr(ing, 'source', 'outside')
-                    tgt = getattr(ing, 'target', 'ground')
-                    if src == 'ground' and tgt == 'basement':
-                        total += ing.compute_flow(sim_levels[i], abs_basement[i])
-                    elif src == 'basement' and tgt == 'ground':
-                        total -= ing.compute_flow(abs_basement[i], sim_levels[i])
-                Qgb_series[i] = total
-    else:
-        Qgb_series = [0.0] * len(sim_times)
+    # Flow series from the engine trace
+    Qgb_series = (list(Q_bypass_series) if Q_bypass_series is not None
+                  else [0.0] * len(sim_times))
+    Qext_series = (list(Q_ext_series) if Q_ext_series is not None
+                   else [0.0] * len(sim_times))
+    gf_pathways = [p for p in pathways if p.target != 'basement']
 
     _dts = ([sim_times[k+1] - sim_times[k] for k in range(len(sim_times) - 1)] + [0.0])
     cum_perim  = [0.0] * len(sim_times)
@@ -580,17 +574,17 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
 
         # ingress markers
         ingress_x = bx + building_width
-        items_sorted_anim = sorted(ingress_list, key=lambda ing: ing.height)
+        items_sorted_anim = sorted(pathways, key=lambda p: p.height_m)
         min_lbl_sep = max(0.22, building_height * 0.07)
         label_ys_anim = []
         last_y2 = -999.0
         for ing in items_sorted_anim:
-            yl = max(ing.height, last_y2 + min_lbl_sep)
+            yl = max(ing.height_m, last_y2 + min_lbl_sep)
             label_ys_anim.append(yl)
             last_y2 = yl
 
         for ing, y_lbl in zip(items_sorted_anim, label_ys_anim):
-            y = ing.height
+            y = ing.height_m
             slot_a = patches.FancyBboxPatch(
                 (ingress_x - 0.045, y - 0.022), 0.045, 0.045,
                 boxstyle='round,pad=0.003',
@@ -784,15 +778,12 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
             time_text.set_text(f'T = {t_now:.1f} {unit_label}')
             cursor_line.set_xdata([t_now, t_now])
 
-            # flow arrows
-            max_area = max((ing.area for ing in ingress_list), default=1.0)
-            for ing in ingress_list:
-                if not (ing.target == 'ground' or ing.source == 'ground' or
-                        (ing.source == 'outside' and ing.target == 'ground')):
-                    continue
-                Q   = ing.compute_flow(h_out, h_in)
-                y   = ing.height
-                mag = min(1.0, abs(Q) / max(1e-9, max_area))
+            # exterior↔ground-floor flow arrows (aggregate trace flow)
+            Q = Qext_series[i] if i < len(Qext_series) else 0.0
+            Q_ext_sc = max(1e-9, max((abs(q) for q in Qext_series), default=0.0))
+            mag = min(1.0, abs(Q) / Q_ext_sc)
+            for ing in gf_pathways:
+                y   = ing.height_m
                 if Q > 0:
                     xa, xb, col = ex_x + 0.05, ingress_x - 0.04, _C['external']
                 elif Q < 0:
@@ -811,13 +802,8 @@ def generate_animation(sim_times, sim_levels, external_levels, ingress_list, out
                     any(abs(q) > 0 for q in Qgb_series)):
                 Q_cur = Qgb_series[i] if i < len(Qgb_series) else 0.0
                 Q_sc  = max(1e-6, max(abs(q) for q in Qgb_series))
-                for ing in ingress_list:
-                    src = getattr(ing, 'source', 'outside')
-                    tgt = getattr(ing, 'target', 'ground')
-                    if not ((src == 'ground' and tgt == 'basement') or
-                            (src == 'basement' and tgt == 'ground')):
-                        continue
-                    y0  = ing.height
+                if bypass_height is not None:
+                    y0  = bypass_height
                     x0  = ingress_x - 0.08
                     mag = min(1.0, abs(Q_cur) / Q_sc)
                     al  = 0.30 + 0.70 * mag
@@ -1456,7 +1442,6 @@ def save_batch_mc_fragility(h_ext_all, h_int_all, title, outpath,
     """
     from collections import defaultdict
 
-    _BLUE   = '#2980b9'
     _ORANGE = '#e67e22'
     _RED    = '#c0392b'
     _GREY   = '#7f8c8d'
@@ -1766,7 +1751,7 @@ def draw_schematic(ax, cfg):
 
 
 def save_all_schematics(outpath, cases=None):
-    """Draw all case-study schematics in a 3 × 3 grid and save to *outpath*.
+    """Draw case-study schematics in rows of four, grouped by building type.
 
     Parameters
     ----------
@@ -1834,33 +1819,32 @@ def save_all_schematics(outpath, cases=None):
 
 
 def save_run_schematic(outpath, *,
-                       gf_pathways=(),
-                       bsmt_pathways=(),
+                       pathways=(),
                        membranes=(),
-                       basement_depth=None,
-                       has_sump=False,
-                       has_pump=False,
+                       config=None,
                        floor_h=2.5,
-                       bypass_height=0.0,
                        label='',
                        subtitle=''):
     """Save a single building cross-section schematic with embedded pathway table.
 
-    Replaces the separate ingress_preview and ingress_locations plots.
-
     Parameters
     ----------
     outpath         : str   Destination PNG path.
-    gf_pathways     : iterable of FragilePath or IngressPathway
-    bsmt_pathways   : iterable of FragilePath or IngressPathway
+    pathways        : iterable of FragilePath (split by target into ground/basement)
     membranes       : iterable of Membrane
-    basement_depth  : float or None  Absolute basement depth below datum (m).
-    has_sump        : bool
-    has_pump        : bool
+    config          : engine.SimConfig or None — basement, sump and bypass geometry
     floor_h         : float  Floor-to-ceiling height for display (m).
     label           : str
     subtitle        : str
     """
+    has_bsmt       = config is not None and config.basement_area > 0
+    basement_depth = abs(config.basement_floor_elevation) if has_bsmt else None
+    has_sump       = has_bsmt and config.sumppump is not None
+    has_pump       = has_sump
+    bypass_height  = float(config.basement_connection_height or 0.0) if has_bsmt else 0.0
+    gf_pathways    = [p for p in pathways if p.target != 'basement']
+    bsmt_pathways  = [p for p in pathways if p.target == 'basement']
+
     def _sill(p):
         v = getattr(p, 'height_m', None)
         return v if v is not None else float(getattr(p, 'height', 0.0))
@@ -2155,3 +2139,48 @@ def save_run_schematic(outpath, *,
     fig.savefig(outpath, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close(fig)
     return outpath
+
+
+# ── run-level figures (one SimConfig + Hydrograph + SimResult) ────────────────
+
+def _basement_max_depth(config):
+    if config.basement_area <= 0:
+        return None
+    return max(0.0, config.basement_ceiling_elevation - config.basement_floor_elevation)
+
+
+def save_run_result(outpath, config, hydro, result):
+    """Multi-panel result figure for one engine.run() result."""
+    import engine
+    mul = engine.TIME_UNIT_SECONDS[config.time_units]
+    h_ext, _ = engine.exterior_series(config, hydro, result.times)
+    save_simulation_result(
+        [t / mul for t in result.times], result.h_in, h_ext, outpath,
+        time_unit=config.time_units,
+        basement_levels=result.h_basement or None,
+        sump_levels=result.h_sump or None,
+        basement_max_depth=_basement_max_depth(config),
+        sump_overflow_level=config.sumppump.overflow_level if config.sumppump else None,
+    )
+
+
+def save_run_animation(outpath, config, hydro, result, pathways):
+    """Animated GIF for one engine.run() result."""
+    import engine
+    mul = engine.TIME_UNIT_SECONDS[config.time_units]
+    h_ext, v_ext = engine.exterior_series(config, hydro, result.times)
+    tr = result.trace
+    generate_animation(
+        [t / mul for t in result.times], result.h_in, h_ext, pathways, outpath,
+        time_unit=config.time_units,
+        basement_levels=result.h_basement or None,
+        velocity_series=v_ext,
+        sump_levels=result.h_sump or None,
+        sump_overflow_level=config.sumppump.overflow_level if config.sumppump else None,
+        Q_ext_series=tr.get('Q_ext_b'),
+        Q_perim_series=tr.get('Q_ext_perimeter'),
+        Q_bypass_series=tr.get('Q_b_bs'),
+        bypass_height=(config.basement_connection_height
+                       if config.basement_area > 0 else None),
+    )
+

@@ -4,21 +4,18 @@ Covers:
   - Data model and FragilityDefinition validation
   - sample_thresholds (lognormal inversion)
   - select_active_state
-  - Parsing: ingress fragility file, membrane file, membrane args,
-             basement fragility args
+  - Parsing: ingress fragility file, membrane file
   - validate_fragility_inputs
   - assign_representative_paths
   - make_conductance_resolver (membrane intact / overtopped, path fragility)
-  - make_basement_step_resolver
-  - Monte Carlo: single deterministic replicate matches classic solver;
-                 ensemble percentiles have correct ordering
+  - assemble_pathways
+  - Monte Carlo (fragility.run): single deterministic replicate matches the
+    engine; ensemble percentiles have correct ordering
 """
 
-import math
 import os
 import tempfile
 
-import numpy as np
 import pytest
 
 from fragility import (
@@ -26,24 +23,20 @@ from fragility import (
     FragilityState,
     FragilePath,
     Membrane,
-    BasementFragility,
     SampledThresholds,
+    assemble_pathways,
     parse_pathway_file,
     fragile_path_to_membrane,
-    parse_membrane_args,
-    merge_membrane_source,
-    parse_basement_fragility_args,
     validate_fragility_inputs,
     assign_representative_paths,
-    sample_all_thresholds,
     sample_thresholds,
     select_active_state,
     get_conductance,
     make_conductance_resolver,
-    make_basement_step_resolver,
-    run_fragility_montecarlo,
+    run,
 )
-from engine import Building, IngressPathway, Simulation
+import engine
+from engine import IngressPathway
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -302,105 +295,13 @@ def test_parse_membrane_unified_format():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Parsing — membrane args
-# ─────────────────────────────────────────────────────────────────────────────
-
-class _Args:
-    """Minimal argparse.Namespace stand-in."""
-    def __init__(self, **kw):
-        for k, v in kw.items():
-            setattr(self, k, v)
-
-
-def test_parse_membrane_args_none_when_not_supplied():
-    args = _Args()
-    assert parse_membrane_args(args) is None
-
-
-def test_parse_membrane_args_builds_membrane():
-    args = _Args(
-        membrane_group=2, membrane_height=0.0,
-        membrane_area=1e-5, membrane_Cd=0.6,
-        membrane_median=0.6, membrane_beta=0.07,
-        membrane_reversible=1,
-    )
-    m = parse_membrane_args(args)
-    assert m is not None
-    assert m.group_id == 2
-    assert m.reversible is True
-    assert m.fragility.states[0].median_m == pytest.approx(0.6)
-
-
-def test_parse_membrane_args_raises_on_partial():
-    args = _Args(membrane_group=1, membrane_height=0.0)
-    with pytest.raises(ValueError, match="Incomplete"):
-        parse_membrane_args(args)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Parsing — merge_membrane_source
+# validate_fragility_inputs / assign_representative_paths
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_membrane(gid, reversible=True):
     frag = FragilityDefinition([FragilityState("ot", 0.6, 0.07, 1e-9, 0.6)])
     return Membrane(gid, 0.0, 1e-5, 0.6, frag, reversible=reversible)
 
-
-def test_merge_membrane_source_file_only():
-    result = merge_membrane_source([_make_membrane(1)], None)
-    assert len(result) == 1 and result[0].group_id == 1
-
-
-def test_merge_membrane_source_args_only():
-    result = merge_membrane_source(None, _make_membrane(2))
-    assert len(result) == 1 and result[0].group_id == 2
-
-
-def test_merge_membrane_source_args_override_file():
-    file_m = _make_membrane(1)
-    file_m.area_m2 = 1e-4
-    arg_m = _make_membrane(1)
-    arg_m.area_m2 = 9e-6
-    result = merge_membrane_source([file_m], arg_m)
-    assert len(result) == 1
-    assert result[0].area_m2 == pytest.approx(9e-6)
-
-
-def test_merge_membrane_source_both_empty():
-    assert merge_membrane_source(None, None) == []
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Parsing — basement fragility args
-# ─────────────────────────────────────────────────────────────────────────────
-
-def test_parse_basement_fragility_args_none_when_absent():
-    args = _Args()
-    assert parse_basement_fragility_args(args) is None
-
-
-def test_parse_basement_fragility_args_one_state():
-    args = _Args(
-        basement_state_name_1='baseline',
-        basement_median_1=0.65,
-        basement_beta_1=0.35,
-        basement_area_1=0.02,
-        basement_Cd_1=0.6,
-    )
-    bf = parse_basement_fragility_args(args)
-    assert bf is not None
-    assert bf.fragility.states[0].median_m == pytest.approx(0.65)
-
-
-def test_parse_basement_fragility_args_raises_on_partial():
-    args = _Args(basement_state_name_1='s1', basement_median_1=0.5)
-    with pytest.raises(ValueError, match="Incomplete basement"):
-        parse_basement_fragility_args(args)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# validate_fragility_inputs & assign_representative_paths
-# ─────────────────────────────────────────────────────────────────────────────
 
 def test_validate_rejects_grouped_path_with_fragility():
     # group_id+fragility conflict is caught before reversible check
@@ -520,117 +421,45 @@ def test_resolver_probabilistic_path_state_switches():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# make_basement_step_resolver
-# ─────────────────────────────────────────────────────────────────────────────
-
-def test_basement_step_resolver_no_fragility_returns_base():
-    step = make_basement_step_resolver(None, SampledThresholds(), 0.02, 0.6, 0.0)
-    area, cd = step(0.5)
-    assert area == pytest.approx(0.02)
-    assert cd == pytest.approx(0.6)
-
-
-def test_basement_step_resolver_switches_state():
-    frag = FragilityDefinition([FragilityState("s1", 0.5, 0.3, 0.02, 0.6)])
-    bf = BasementFragility(frag)
-    sampled = SampledThresholds(basement_thresholds=[0.50])
-    step = make_basement_step_resolver(bf, sampled, 4e-7, 0.6, 0.0)
-    # Below threshold
-    area, _ = step(0.30)
-    assert area == pytest.approx(4e-7)
-    # Above threshold
-    area, _ = step(0.70)
-    assert area == pytest.approx(0.02)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Monte Carlo integration tests
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _simple_building():
-    return Building(floor_area=50.0)
-
-
 def _hydrograph():
     # 0 → 1 m over 10 minutes, then flat
-    times   = [0.0, 300.0, 600.0, 1200.0]
-    levels  = [0.0, 0.5,   1.0,   1.0]
-    return times, levels
+    return engine.Hydrograph(times=[0.0, 300.0, 600.0, 1200.0],
+                             levels=[0.0, 0.5, 1.0, 1.0])
 
 
-def test_montecarlo_single_replicate_no_fragility_matches_classic():
-    """With no fragility, a 1-replicate MC must match the classic Simulation exactly."""
-    times, levels = _hydrograph()
-    ingress_classic = [IngressPathway(0.0, 5e-4, 0.6, 'crack')]
-    sim = Simulation(_simple_building(), ingress_classic, times, levels, dt=30.0)
-    _, classic_levels = sim.run()
+def _mc(paths, membranes=(), n_replicates=1, seed=0):
+    config = engine.SimConfig(floor_area=50.0, dt=30.0,
+                              n_replicates=n_replicates, random_seed=seed)
+    return run(config, _hydrograph(), paths, list(membranes))
 
-    paths = [FragilePath('crack', 0.0, 5e-4, 0.6, 0, None)]
 
-    def factory():
-        return _simple_building()
+def _door():
+    frag = FragilityDefinition([FragilityState("s1", 0.6, 0.35, 3e-2, 0.6)])
+    return [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=True)]
 
-    result = run_fragility_montecarlo(
-        building_factory=factory,
-        paths=paths,
-        membranes=[],
-        basement_fragility=None,
-        external_times=times,
-        external_levels=levels,
-        n_replicates=1,
-        dt=30.0,
-        seed=0,
-    )
+
+def test_montecarlo_single_replicate_no_fragility_matches_engine():
+    """With no fragility, a 1-replicate MC equals engine.run with the same path."""
+    config = engine.SimConfig(floor_area=50.0, dt=30.0)
+    direct = engine.run(config, _hydrograph(), [IngressPathway(0.0, 5e-4, 0.6, 'crack')])
+
+    result = _mc([FragilePath('crack', 0.0, 5e-4, 0.6, 0, None)])
     assert len(result.replicates) == 1
-    mc_peak = result.replicates[0].peak_h_in
-    assert abs(mc_peak - max(classic_levels)) < 1e-9
+    assert result.replicates[0].result.h_in == direct.h_in
 
 
 def test_montecarlo_percentile_ordering():
     """P10 ≤ P50 ≤ P90 for peak_h_in across a non-trivial ensemble."""
-    times, levels = _hydrograph()
-    frag = FragilityDefinition([FragilityState("s1", 0.6, 0.35, 3e-2, 0.6)])
-    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=True)]
-
-    def factory():
-        return _simple_building()
-
-    result = run_fragility_montecarlo(
-        building_factory=factory,
-        paths=paths,
-        membranes=[],
-        basement_fragility=None,
-        external_times=times,
-        external_levels=levels,
-        n_replicates=200,
-        dt=30.0,
-        seed=42,
-    )
-    pcts = result.percentiles['peak_h_in']
+    pcts = _mc(_door(), n_replicates=200, seed=42).percentiles['peak_h_in']
     assert pcts['P10'] <= pcts['P50'] <= pcts['P90']
 
 
 def test_montecarlo_state_frequency_bounded():
     """State frequencies must be in [0, 1] and state_0 frequency == 1.0."""
-    times, levels = _hydrograph()
-    frag = FragilityDefinition([FragilityState("s1", 0.6, 0.35, 3e-2, 0.6)])
-    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=True)]
-
-    def factory():
-        return _simple_building()
-
-    result = run_fragility_montecarlo(
-        building_factory=factory,
-        paths=paths,
-        membranes=[],
-        basement_fragility=None,
-        external_times=times,
-        external_levels=levels,
-        n_replicates=100,
-        dt=30.0,
-        seed=7,
-    )
-    freqs = result.state_frequencies.get('door', [])
+    freqs = _mc(_door(), n_replicates=100, seed=7).state_frequencies.get('door', [])
     assert len(freqs) == 2  # state 0 and state 1
     assert freqs[0] == pytest.approx(1.0)
     assert 0.0 <= freqs[1] <= 1.0
@@ -638,47 +467,20 @@ def test_montecarlo_state_frequency_bounded():
 
 def test_montecarlo_rank_correlation_keys():
     """Rank correlations dict contains a key for each probabilistic element."""
-    times, levels = _hydrograph()
-    frag = FragilityDefinition([FragilityState("s1", 0.6, 0.35, 3e-2, 0.6)])
-    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=True)]
-
-    def factory():
-        return _simple_building()
-
-    result = run_fragility_montecarlo(
-        building_factory=factory,
-        paths=paths,
-        membranes=[],
-        basement_fragility=None,
-        external_times=times,
-        external_levels=levels,
-        n_replicates=100,
-        dt=30.0,
-        seed=11,
-    )
-    assert 'door' in result.rank_correlations
+    assert 'door' in _mc(_door(), n_replicates=100, seed=11).rank_correlations
 
 
 def test_montecarlo_reproducible_with_seed():
     """Two runs with the same seed produce identical results."""
-    times, levels = _hydrograph()
-    frag = FragilityDefinition([FragilityState("s1", 0.6, 0.35, 3e-2, 0.6)])
-    paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=True)]
-
-    def factory():
-        return _simple_building()
-
-    r1 = run_fragility_montecarlo(factory, paths, [], None, times, levels, 50, 30.0, seed=99)
-    r2 = run_fragility_montecarlo(factory, paths, [], None, times, levels, 50, 30.0, seed=99)
-    peaks1 = [rec.peak_h_in for rec in r1.replicates]
-    peaks2 = [rec.peak_h_in for rec in r2.replicates]
-    assert peaks1 == peaks2
+    r1 = _mc(_door(), n_replicates=50, seed=99)
+    r2 = _mc(_door(), n_replicates=50, seed=99)
+    assert ([rec.result.peak_h_in for rec in r1.replicates]
+            == [rec.result.peak_h_in for rec in r2.replicates])
 
 
 def test_montecarlo_membrane_intact_reduces_ingress():
     """With membrane intact (threshold never exceeded), peak ingress is lower
     than without membrane (paths carrying 10⁻⁹ vs 8e-3 m²)."""
-    times, levels = _hydrograph()
     # Without membrane — paths carry full 8e-3 area
     paths_bare = [
         FragilePath("ab1", 0.10, 8e-3, 0.6, 0, None),
@@ -692,17 +494,21 @@ def test_montecarlo_membrane_intact_reduces_ingress():
         FragilePath("ab1", 0.10, 8e-3, 0.6, 1, None),
         FragilePath("ab2", 0.10, 8e-3, 0.6, 1, None),
     ]
-
-    def factory():
-        return _simple_building()
-
-    r_bare = run_fragility_montecarlo(factory, paths_bare, [], None,
-                                      times, levels, 1, 30.0, seed=0)
-    r_mem  = run_fragility_montecarlo(factory, paths_with_mem, [m], None,
-                                      times, levels, 1, 30.0, seed=0)
-    peak_bare = r_bare.replicates[0].peak_h_in
-    peak_mem  = r_mem.replicates[0].peak_h_in
+    peak_bare = _mc(paths_bare).replicates[0].result.peak_h_in
+    peak_mem  = _mc(paths_with_mem, [m]).replicates[0].result.peak_h_in
     assert peak_mem < peak_bare
+
+
+def test_assemble_pathways_routes_basement_rows_and_builds_membranes():
+    frag = FragilityDefinition([FragilityState("ot", 0.5, 0.1, 1e-9, 0.6)])
+    paths, membranes = assemble_pathways(
+        [FragilePath("door", 0.0, 2e-3, 0.6, 1)],
+        [FragilePath("perimeter", 0.0, 5e-3, 0.5)],
+        [FragilePath("mem", 0.0, 1e-6, 0.6, 1, frag, reversible=True)],
+    )
+    assert [(p.name, p.target) for p in paths] == [("door", "ground"),
+                                                   ("perimeter", "basement")]
+    assert len(membranes) == 1 and membranes[0].representative_path_idx == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

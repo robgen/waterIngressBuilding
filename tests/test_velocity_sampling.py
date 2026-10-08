@@ -1,5 +1,3 @@
-import math
-
 from engine import Simulation, Building, IngressPathway, sample_with_zero_padding
 
 

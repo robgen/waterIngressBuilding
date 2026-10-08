@@ -3,15 +3,17 @@
 Public API
 ----------
 Data model:   FragilityState, FragilityDefinition, FragilePath, Membrane,
-              BasementFragility, SampledThresholds
-Parsing:      parse_pathway_file, fragile_path_to_membrane,
-              parse_membrane_args, merge_membrane_source,
-              parse_basement_fragility_args
+              SampledThresholds
+Parsing:      parse_pathway_text, parse_pathway_file, fragile_path_to_membrane
+Assembly:     assemble_pathways, load_pathways
 Validation:   validate_fragility_inputs, assign_representative_paths
 Sampling:     sample_thresholds, sample_all_thresholds
 State logic:  select_active_state, get_conductance
 Resolver:     make_conductance_resolver
-Runner:       run_fragility_montecarlo, MonteCarloResult
+Runner:       run_replicate, run, MonteCarloResult
+
+Every simulation (deterministic or Monte Carlo) is one replicate: thresholds
+are sampled, a conductance resolver is built, and engine.run() does the rest.
 """
 
 from __future__ import annotations
@@ -24,6 +26,9 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy.stats import norm as _norm
+
+import engine
+from engine import IngressPathway
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,10 +123,6 @@ class Membrane:
     representative_path_idx: int = -1   # set by assign_representative_paths
 
 
-@dataclass
-class BasementFragility:
-    """Optional fragility definition for the basement connection."""
-    fragility: FragilityDefinition
 
 
 @dataclass
@@ -131,10 +132,10 @@ class SampledThresholds:
     path_thresholds: Dict[str, List[float]] = field(default_factory=dict)
     # group_id   → [h*_1, …, h*_N]
     membrane_thresholds: Dict[int, List[float]] = field(default_factory=dict)
-    # [h*_1, …, h*_N] or None
-    basement_thresholds: Optional[List[float]] = None
     # element name → u draw (for output recording)
     u_values: Dict[str, float] = field(default_factory=dict)
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,97 +181,6 @@ def _parse_fragility_states_from_parts(
         block += 1
     return FragilityDefinition(states) if states else None
 
-
-def parse_membrane_args(args) -> Optional[Membrane]:
-    """Build a single Membrane from --membrane-* CLI args, or None."""
-    needed = ['membrane_group', 'membrane_height', 'membrane_area',
-              'membrane_Cd', 'membrane_median', 'membrane_beta', 'membrane_reversible']
-    if not any(getattr(args, k, None) is not None for k in needed):
-        return None
-    missing = [k for k in needed if getattr(args, k, None) is None]
-    if missing:
-        raise ValueError(f"Incomplete --membrane-* arguments; missing: {missing}")
-    rev_raw = getattr(args, 'membrane_reversible')
-    if str(rev_raw).lower() in ('1', 'true', 'yes'):
-        reversible = True
-    elif str(rev_raw).lower() in ('0', 'false', 'no'):
-        reversible = False
-    else:
-        raise ValueError(f"Invalid --membrane-reversible value: {rev_raw!r}. Use 1/true or 0/false.")
-    frag = FragilityDefinition([FragilityState(
-        state_name='overtopped',
-        median_m=float(args.membrane_median),
-        beta_ln=float(args.membrane_beta),
-        area_m2=1e-9,   # overtopped → paths carry their own params; membrane suppressed
-        Cd=0.6,
-    )])
-    frag.validate('membrane (args)')
-    return Membrane(
-        group_id=int(args.membrane_group),
-        height_m=float(args.membrane_height),
-        area_m2=float(args.membrane_area),
-        Cd=float(args.membrane_Cd),
-        fragility=frag,
-        reversible=reversible,
-    )
-
-
-def merge_membrane_source(
-    file_membranes: Optional[List[Membrane]],
-    arg_membrane: Optional[Membrane],
-) -> List[Membrane]:
-    """Apply override precedence (spec §3.3)."""
-    if arg_membrane is None and not file_membranes:
-        return []
-    if arg_membrane is None:
-        return list(file_membranes)
-    if not file_membranes:
-        return [arg_membrane]
-    # both supplied — args override
-    warnings.warn(
-        "Both --membrane-file and --membrane-* arguments supplied; "
-        "arguments override the file for matching group_id.",
-        stacklevel=2,
-    )
-    merged = {m.group_id: m for m in file_membranes}
-    merged[arg_membrane.group_id] = arg_membrane
-    return list(merged.values())
-
-
-def parse_basement_fragility_args(args) -> Optional[BasementFragility]:
-    """Extract indexed --basement-state-name-N etc. args (up to state index 9).
-
-    Returns None when no basement fragility arguments are present.
-    Raises ValueError when a partial state definition is found.
-    """
-    states: List[FragilityState] = []
-    for idx in range(1, 10):
-        sname  = getattr(args, f'basement_state_name_{idx}', None)
-        median = getattr(args, f'basement_median_{idx}', None)
-        beta   = getattr(args, f'basement_beta_{idx}', None)
-        area   = getattr(args, f'basement_area_{idx}', None)
-        cd     = getattr(args, f'basement_Cd_{idx}', None)
-        present = [x for x in (sname, median, beta, area, cd) if x is not None]
-        if not present:
-            break   # no more states
-        if len(present) < 5:
-            raise ValueError(
-                f"Incomplete basement fragility definition for state {idx}: "
-                "all five of --basement-state-name, --basement-median, "
-                "--basement-beta, --basement-area, --basement-Cd are required"
-            )
-        states.append(FragilityState(
-            state_name=str(sname),
-            median_m=float(median),
-            beta_ln=float(beta),
-            area_m2=float(area),
-            Cd=float(cd),
-        ))
-    if not states:
-        return None
-    frag = FragilityDefinition(states)
-    frag.validate('basement')
-    return BasementFragility(frag)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -340,7 +250,6 @@ def sample_thresholds(fragility_def: FragilityDefinition, u: float) -> List[floa
 def sample_all_thresholds(
     paths: List[FragilePath],
     membranes: List[Membrane],
-    basement_fragility: Optional[BasementFragility],
     rng: np.random.Generator,
 ) -> SampledThresholds:
     """Draw one u per probabilistic element and invert all fragility curves."""
@@ -356,11 +265,9 @@ def sample_all_thresholds(
         key = f"membrane:{m.group_id}"
         result.u_values[key] = u
         result.membrane_thresholds[m.group_id] = m.fragility.sample_thresholds(u)
-    if basement_fragility is not None:
-        u = float(rng.uniform())
-        result.u_values['basement'] = u
-        result.basement_thresholds = basement_fragility.fragility.sample_thresholds(u)
     return result
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -407,17 +314,12 @@ def make_conductance_resolver(
     The returned list is a fresh set of IngressPathway objects with the
     correct (area_m2, Cd) for the current external head h_ext, taking into
     account both path-level fragility and membrane protection logic.
-
-    Import is deferred to avoid a circular dependency with main.py.
     """
-    from engine import IngressPathway  # engine has no upstream project imports
-
     # Build fast lookup: group_id -> list of (path_index, FragilePath)
     group_map: Dict[int, List[Tuple[int, FragilePath]]] = {}
     for i, p in enumerate(paths):
         if p.group_id != 0:
             group_map.setdefault(p.group_id, []).append((i, p))
-    membrane_by_gid: Dict[int, Membrane] = {m.group_id: m for m in membranes}
 
     # Pre-build suppressed IngressPathway stubs (10⁻⁹ m²) for group members
     suppressed: Dict[str, IngressPathway] = {
@@ -430,8 +332,7 @@ def make_conductance_resolver(
 
     # Per-replicate latch memory — accumulates the highest degraded state reached
     # so far for irreversible elements.  The resolver closure captures these dicts;
-    # they are fresh for each call to make_conductance_resolver (i.e. each replicate
-    # in run_fragility_montecarlo and each single CLI run), so the latch resets
+    # they are fresh for each call to make_conductance_resolver (i.e. each replicate), so the latch resets
     # correctly between replicates without touching the RNG state or seeds.
     path_attained: Dict[str, int] = {}   # path.name  → highest state index so far
     mem_attained:  Dict[int, int]  = {}  # group_id   → highest membrane state so far
@@ -513,57 +414,10 @@ def make_conductance_resolver(
     return resolver
 
 
-def make_basement_resolver(
-    basement_fragility: Optional[BasementFragility],
-    sampled: SampledThresholds,
-    base_area: float,
-    base_Cd: float,
-    sill_elevation: float,
-) -> Tuple[float, float]:
-    """Return the (area_m2, Cd) to use for the basement connection this replicate.
-
-    Because basement conductance is constant within a replicate (the threshold
-    is fixed before the time loop), this returns a single (area, Cd) pair
-    representing the *worst* state reached at peak external depth.
-
-    For the time-loop we instead apply per-step basement state selection via
-    make_basement_step_resolver.
-    """
-    if basement_fragility is None or sampled.basement_thresholds is None:
-        return base_area, base_Cd
-    # Return base values; actual per-step selection done by step resolver
-    return base_area, base_Cd
-
-
-def make_basement_step_resolver(
-    basement_fragility: Optional[BasementFragility],
-    sampled: SampledThresholds,
-    base_area: float,
-    base_Cd: float,
-    sill_elevation: float,
-):
-    """Return a callable(h_ext) -> (area_m2, Cd) for the basement connection."""
-    if basement_fragility is None or sampled.basement_thresholds is None:
-        def _fixed(_h):
-            return base_area, base_Cd
-        return _fixed
-
-    thresholds = sampled.basement_thresholds
-    states_list = basement_fragility.fragility.states
-
-    def _step(h_ext: float) -> Tuple[float, float]:
-        h = max(0.0, h_ext - sill_elevation)
-        active = select_active_state(h, thresholds)
-        if active == 0:
-            return base_area, base_Cd
-        s = states_list[active - 1]
-        return s.area_m2, s.Cd
-
-    return _step
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Monte Carlo runner
+# Runner
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -571,18 +425,7 @@ class ReplicateRecord:
     replicate_id: int
     u_values: Dict[str, float]
     capacity_thresholds: Dict[str, List[float]]
-    peak_h_in: float
-    peak_h_basement: float
-    peak_h_sump: float
-    total_volume_in: float       # m³ ingressed to ground floor
-    peak_h_ext: float            # peak exterior depth (same for all reps in fixed hydrograph)
-    v_peak_ext: float            # peak exterior velocity (same for all reps in fixed hydrograph)
-    u_basement: Optional[float]
-    basement_thresholds: Optional[List[float]]
-    h_in: List[float] = field(default_factory=list)
-    h_basement: List[float] = field(default_factory=list)
-    h_sump: List[float] = field(default_factory=list)
-    sim_times: List[float] = field(default_factory=list)
+    result: engine.SimResult
 
 
 @dataclass
@@ -593,52 +436,40 @@ class MonteCarloResult:
     rank_correlations: Dict[str, float]        # element_u → Spearman ρ with peak_h_in
 
 
-def run_fragility_montecarlo(
-    building_factory,            # callable() → Building (fresh instance each replicate)
-    paths: List[FragilePath],
-    membranes: List[Membrane],
-    basement_fragility: Optional[BasementFragility],
-    external_times: list,
-    external_levels: list,
-    n_replicates: int,
-    dt: float,
-    external_vel_times: Optional[list] = None,
-    external_velocities: Optional[list] = None,
-    seed: Optional[int] = None,
-    percentile_values: Tuple[int, ...] = (10, 25, 50, 75, 90),
-    progress_callback: Optional[Callable[[int, int], None]] = None,
-    velocity_mode: str = 'zero',
-    vel_a: float = 1.5,
-    vel_b: float = 0.5,
-    static_pathways: Optional[list] = None,
-    floor_datum: float = 0.0,
-) -> MonteCarloResult:
-    """Run the Monte Carlo ensemble.
+def run_replicate(config, hydro, paths: List[FragilePath],
+                  membranes: List[Membrane], rng: np.random.Generator,
+                  progress_callback=None) -> Tuple[engine.SimResult, SampledThresholds]:
+    """Sample one set of capacity thresholds and run the simulation.
+
+    Deterministic paths (fragility=None, no membrane) consume no random draws,
+    so a model without fragile elements gives the same result for any rng.
+    """
+    sampled = sample_all_thresholds(paths, membranes, rng)
+    result = engine.run(
+        config, hydro,
+        conductance_resolver=make_conductance_resolver(paths, membranes, sampled),
+        progress_callback=progress_callback,
+    )
+    return result, sampled
+
+
+def run(config, hydro, paths: List[FragilePath],
+        membranes: Optional[List[Membrane]] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        ) -> MonteCarloResult:
+    """Run config.n_replicates replicates (seeded by config.random_seed).
 
     Args:
-        building_factory: zero-arg callable returning a fresh Building instance.
-            Called once per replicate so building state is never shared.
-        paths: list of FragilePath (all ingress paths).
-        membranes: list of Membrane (may be empty).
-        basement_fragility: optional basement fragility definition.
-        external_times / external_levels: hydrograph (seconds internally).
-        n_replicates: number of Monte Carlo replicates.
-        dt: simulation timestep (seconds).
-        external_vel_times / external_velocities: velocity time series (file mode only).
-        velocity_mode: 'zero', 'power_law', or 'file'.
-        vel_a / vel_b: power-law coefficients (used when velocity_mode='power_law').
-        seed: random seed for reproducibility (None → non-deterministic).
-        percentile_values: percentiles to report (default: 10, 25, 50, 75, 90).
+        config: engine.SimConfig.
+        hydro: engine.Hydrograph (times in seconds).
+        paths: all ingress paths (ground floor and basement).
+        membranes: membranes protecting groups of paths (may be empty).
         progress_callback: optional callable(replicate_idx, n_replicates).
-
-    Returns:
-        MonteCarloResult with per-replicate records and aggregated statistics.
     """
-    from engine import Building, IngressPathway, Simulation  # engine has no upstream imports
-
-    rng = np.random.default_rng(seed)
+    membranes = membranes or []
+    rng = np.random.default_rng(config.random_seed)
+    n_replicates = config.n_replicates
     records: List[ReplicateRecord] = []
-    v_peak_ext_shared = max(external_velocities, default=0.0) if external_velocities else 0.0
 
     for r in range(n_replicates):
         if progress_callback:
@@ -647,80 +478,8 @@ def run_fragility_montecarlo(
             except Exception:
                 pass
 
-        sampled = sample_all_thresholds(paths, membranes, basement_fragility, rng)
-        resolver = make_conductance_resolver(paths, membranes, sampled)
+        result, sampled = run_replicate(config, hydro, paths, membranes, rng)
 
-        building = building_factory()
-
-        # Static (deterministic) pathways supplied by the caller — typically the
-        # ground↔basement bypass connection.  Fragile and membrane-protected
-        # paths flow through the resolver; both are merged in the engine.
-        ingress_list = list(static_pathways or [])
-
-        # Legacy basement-fragility hook: when supplied, mutate the building's
-        # singleton basement_ingress per-step.  Modern callers should instead
-        # express the basement perimeter as FragilePath rows with target='basement'
-        # and let the membrane logic protect them.
-        bi = building.basement_ingress
-        if basement_fragility is not None and bi is not None:
-            bsill = float(getattr(bi, 'height', 0.0))
-            barea = float(getattr(bi, 'area', 0.0))
-            bcd   = float(getattr(bi, 'coeff', 0.6))
-            bstep = make_basement_step_resolver(
-                basement_fragility, sampled, barea, bcd, bsill
-            )
-
-            def _full_resolver(h_ext: float, _resolver=resolver, _bstep=bstep, _bi=bi) -> list:
-                new_area, new_cd = _bstep(h_ext)
-                _bi.area  = new_area
-                _bi.coeff = new_cd
-                return _resolver(h_ext)
-
-            active_resolver = _full_resolver
-            # legacy bi flow path — keep singleton in ingress_list so engine sees it
-            ingress_list.append(bi)
-        else:
-            active_resolver = resolver
-
-        sim = Simulation(
-            building, ingress_list,
-            external_times, external_levels,
-            dt=dt,
-            external_vel_times=external_vel_times,
-            external_velocities=external_velocities,
-            conductance_resolver=active_resolver,
-            velocity_mode=velocity_mode,
-            vel_a=vel_a,
-            vel_b=vel_b,
-            floor_datum=floor_datum,
-        )
-        ret = sim.run()
-
-        if len(ret) == 4:
-            sim_times, sim_levels, sim_basement, sim_sump = ret
-        elif len(ret) == 3:
-            sim_times, sim_levels, sim_basement = ret
-            sim_sump = [0.0] * len(sim_times)
-        else:
-            sim_times, sim_levels = ret
-            sim_basement = [0.0] * len(sim_times)
-            sim_sump = [0.0] * len(sim_times)
-
-        peak_h_in       = max(sim_levels, default=0.0)
-        peak_h_basement = max(sim_basement, default=0.0)
-        peak_h_sump     = max(sim_sump, default=0.0)
-        peak_h_ext_val  = max(external_levels, default=0.0)
-
-        # Approximate total ingressed volume via trapezoidal integration of
-        # indoor level × floor area  (change in stored volume = proxy for ingress)
-        floor_area = building.floor_area
-        vol_in = 0.0
-        for i in range(1, len(sim_levels)):
-            dh = sim_levels[i] - sim_levels[i - 1]
-            if dh > 0:
-                vol_in += dh * floor_area
-
-        # Collect all thresholds for output
         cap_thresholds: Dict[str, List[float]] = {}
         cap_thresholds.update(sampled.path_thresholds)
         for gid, thr in sampled.membrane_thresholds.items():
@@ -730,18 +489,7 @@ def run_fragility_montecarlo(
             replicate_id=r,
             u_values=dict(sampled.u_values),
             capacity_thresholds=cap_thresholds,
-            peak_h_in=peak_h_in,
-            peak_h_basement=peak_h_basement,
-            peak_h_sump=peak_h_sump,
-            total_volume_in=vol_in,
-            peak_h_ext=peak_h_ext_val,
-            v_peak_ext=v_peak_ext_shared,
-            u_basement=sampled.u_values.get('basement'),
-            basement_thresholds=sampled.basement_thresholds,
-            h_in=list(sim_levels),
-            h_basement=list(sim_basement),
-            h_sump=list(sim_sump),
-            sim_times=list(sim_times),
+            result=result,
         ))
 
     if progress_callback:
@@ -750,7 +498,7 @@ def run_fragility_montecarlo(
         except Exception:
             pass
 
-    return _aggregate(records, percentile_values, paths, membranes, external_levels)
+    return _aggregate(records, config.output_percentiles, paths, membranes)
 
 
 def _aggregate(
@@ -758,14 +506,13 @@ def _aggregate(
     percentile_values: Tuple[int, ...],
     paths: List[FragilePath],
     membranes: List[Membrane],
-    external_levels: List[float],
 ) -> MonteCarloResult:
     """Compute percentiles, state frequencies, and rank correlations."""
     from scipy.stats import spearmanr
 
-    peak_h_in       = np.array([r.peak_h_in       for r in records])
-    peak_h_basement = np.array([r.peak_h_basement  for r in records])
-    total_volume    = np.array([r.total_volume_in  for r in records])
+    peak_h_in       = np.array([r.result.peak_h_in       for r in records])
+    peak_h_basement = np.array([r.result.peak_h_basement for r in records])
+    total_volume    = np.array([r.result.total_volume_in for r in records])
 
     def _pct(arr):
         return {f'P{p}': float(np.percentile(arr, p)) for p in percentile_values}
@@ -794,7 +541,7 @@ def _aggregate(
     # An element reaches state k when the peak external head above its sill
     # equals or exceeds the sampled capacity threshold h*_k.  This is exactly
     # the condition used in select_active_state() during the time loop.
-    max_h_ext = max(external_levels, default=0.0)
+    max_h_ext = max((r.result.peak_h_ext for r in records), default=0.0)
 
     state_freq: Dict[str, List[float]] = {}
     for p in paths:
@@ -871,8 +618,9 @@ def write_replicates_csv(result: MonteCarloResult, filepath: str) -> None:
             for tk in all_thr_keys:
                 for v in rec.capacity_thresholds.get(tk, []):
                     row.append(v)
-            row += [rec.peak_h_in, rec.peak_h_basement, rec.peak_h_sump,
-                    rec.peak_h_ext, rec.total_volume_in]
+            res = rec.result
+            row += [res.peak_h_in, res.peak_h_basement, res.peak_h_sump,
+                    res.peak_h_ext, res.total_volume_in]
             writer.writerow(row)
 
 
@@ -912,8 +660,8 @@ def write_state_freq_csv(result: MonteCarloResult, filepath: str) -> None:
 
 # ── unified pathway file parser ───────────────────────────────────────────────
 
-def parse_pathway_file(filepath: str) -> List[FragilePath]:
-    """Parse any pathway CSV (ingress, basement-opening, or membrane) into FragilePaths.
+def parse_pathway_text(text: str, source: str = '<text>') -> List[FragilePath]:
+    """Parse pathway CSV text (ingress, basement-opening, or membrane) into FragilePaths.
 
     Unified format (header row optional, always header-based):
         name, height_m, area_m2, Cd[, group_id[, state_name_N, median_m_N, beta_ln_N, area_m2_N, Cd_N, …]]
@@ -929,84 +677,89 @@ def parse_pathway_file(filepath: str) -> List[FragilePath]:
     header_seen = False
     col_name = col_height = col_area = col_cd = col_group = col_reversible = None
 
-    with open(filepath, newline='') as fh:
-        for lineno, raw in enumerate(fh, start=1):
-            line = raw.split('#', 1)[0].strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split(',')]
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split('#', 1)[0].strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(',')]
 
-            # Detect header row (first non-comment non-blank row that has text in col 0)
-            if not header_seen:
-                try:
-                    float(parts[0])
-                    # First col is numeric → positional legacy format (not supported)
-                    raise ValueError(
-                        f"{filepath}:{lineno}: positional ingress format (height,area,coeff,name) "
-                        "is no longer supported. Use the header-based unified pathway format: "
-                        "name, height_m, area_m2, Cd[, group_id[, reversible[, state columns]]]"
-                    )
-                except ValueError as exc:
-                    if 'positional' in str(exc):
-                        raise
-                    # Non-numeric first col → treat as header
-                    lower = [p.lower() for p in parts]
-                    col_name       = next((i for i, h in enumerate(lower) if 'name' in h), 0)
-                    col_height     = next((i for i, h in enumerate(lower) if 'height' in h), 1)
-                    col_area       = next((i for i, h in enumerate(lower) if 'area' in h and 'state' not in lower[max(0,i-1)]), 2)
-                    col_cd         = next((i for i, h in enumerate(lower) if h in ('cd', 'coeff', 'discharge')), 3)
-                    col_group      = next((i for i, h in enumerate(lower) if 'group' in h), None)
-                    col_reversible = next((i for i, h in enumerate(lower) if 'reversible' in h), None)
-                    header_seen = True
-                    continue
-
-            # Data row
-            if len(parts) < 4:
-                warnings.warn(f"{filepath}:{lineno}: row has fewer than 4 columns, skipped", stacklevel=2)
-                continue
+        # Detect header row (first non-comment non-blank row that has text in col 0)
+        if not header_seen:
             try:
-                name   = parts[col_name]
-                height = float(parts[col_height])
-                area   = float(parts[col_area])
-                cd     = float(parts[col_cd])
-                gid    = int(parts[col_group]) if col_group is not None and col_group < len(parts) else 0
-            except (ValueError, IndexError) as exc:
-                raise ValueError(f"{filepath}:{lineno}: bad base columns — {exc}") from exc
-
-            # Parse reversible flag (optional column; mandatory for fragile rows)
-            reversible: Optional[bool] = None
-            if col_reversible is not None and col_reversible < len(parts):
-                val = parts[col_reversible].strip().lower()
-                if val in ('1', 'true', 'yes'):
-                    reversible = True
-                elif val in ('0', 'false', 'no'):
-                    reversible = False
-                elif val != '':
-                    raise ValueError(
-                        f"{filepath}:{lineno}: invalid value for 'reversible' on "
-                        f"'{name}': {parts[col_reversible]!r}. Use 1/true or 0/false."
-                    )
-
-            # Fragility states start after all known meta columns
-            meta_cols = [c for c in (col_name, col_height, col_area, col_cd,
-                                     col_group, col_reversible) if c is not None]
-            frag_start = max(meta_cols) + 1
-            fragility = _parse_fragility_states_from_parts(parts, frag_start, name)
-
-            # Mandate reversible for fragile elements at parse time
-            if fragility is not None and reversible is None:
+                float(parts[0])
+                # First col is numeric → positional legacy format (not supported)
                 raise ValueError(
-                    f"{filepath}:{lineno}: fragile element '{name}' is missing the "
-                    "required 'reversible' column. Add a 'reversible' column with "
-                    "value 1 (overtopping/reversible) or 0 (failure-type/irreversible)."
+                    f"{source}:{lineno}: positional ingress format (height,area,coeff,name) "
+                    "is no longer supported. Use the header-based unified pathway format: "
+                    "name, height_m, area_m2, Cd[, group_id[, reversible[, state columns]]]"
+                )
+            except ValueError as exc:
+                if 'positional' in str(exc):
+                    raise
+                # Non-numeric first col → treat as header
+                lower = [p.lower() for p in parts]
+                col_name       = next((i for i, h in enumerate(lower) if 'name' in h), 0)
+                col_height     = next((i for i, h in enumerate(lower) if 'height' in h), 1)
+                col_area       = next((i for i, h in enumerate(lower) if 'area' in h and 'state' not in lower[max(0,i-1)]), 2)
+                col_cd         = next((i for i, h in enumerate(lower) if h in ('cd', 'coeff', 'discharge')), 3)
+                col_group      = next((i for i, h in enumerate(lower) if 'group' in h), None)
+                col_reversible = next((i for i, h in enumerate(lower) if 'reversible' in h), None)
+                header_seen = True
+                continue
+
+        # Data row
+        if len(parts) < 4:
+            warnings.warn(f"{source}:{lineno}: row has fewer than 4 columns, skipped", stacklevel=2)
+            continue
+        try:
+            name   = parts[col_name]
+            height = float(parts[col_height])
+            area   = float(parts[col_area])
+            cd     = float(parts[col_cd])
+            gid    = int(parts[col_group]) if col_group is not None and col_group < len(parts) else 0
+        except (ValueError, IndexError) as exc:
+            raise ValueError(f"{source}:{lineno}: bad base columns — {exc}") from exc
+
+        # Parse reversible flag (optional column; mandatory for fragile rows)
+        reversible: Optional[bool] = None
+        if col_reversible is not None and col_reversible < len(parts):
+            val = parts[col_reversible].strip().lower()
+            if val in ('1', 'true', 'yes'):
+                reversible = True
+            elif val in ('0', 'false', 'no'):
+                reversible = False
+            elif val != '':
+                raise ValueError(
+                    f"{source}:{lineno}: invalid value for 'reversible' on "
+                    f"'{name}': {parts[col_reversible]!r}. Use 1/true or 0/false."
                 )
 
-            paths.append(FragilePath(name, height, area, cd, gid, fragility,
-                                     reversible=reversible))
+        # Fragility states start after all known meta columns
+        meta_cols = [c for c in (col_name, col_height, col_area, col_cd,
+                                 col_group, col_reversible) if c is not None]
+        frag_start = max(meta_cols) + 1
+        fragility = _parse_fragility_states_from_parts(parts, frag_start, name)
+
+        # Mandate reversible for fragile elements at parse time
+        if fragility is not None and reversible is None:
+            raise ValueError(
+                f"{source}:{lineno}: fragile element '{name}' is missing the "
+                "required 'reversible' column. Add a 'reversible' column with "
+                "value 1 (overtopping/reversible) or 0 (failure-type/irreversible)."
+            )
+
+        paths.append(FragilePath(name, height, area, cd, gid, fragility,
+                                 reversible=reversible))
 
     if not paths:
-        raise ValueError(f"No pathway rows found in {filepath}")
+        raise ValueError(f"No pathway rows found in {source}")
     return paths
+
+
+def parse_pathway_file(filepath: str) -> List[FragilePath]:
+    """Parse a pathway CSV file into FragilePaths (see parse_pathway_text)."""
+    with open(filepath, newline='') as fh:
+        return parse_pathway_text(fh.read(), source=filepath)
 
 
 def fragile_path_to_membrane(fp: FragilePath) -> 'Membrane':
@@ -1030,75 +783,38 @@ def fragile_path_to_membrane(fp: FragilePath) -> 'Membrane':
     )
 
 
-# ── high-level public run() ───────────────────────────────────────────────────
 
-def run(config, hydro, paths: List[FragilePath],
-        membranes: Optional[List['Membrane']] = None,
-        basement_frag: Optional['BasementFragility'] = None,
-        basement_pathway=None) -> 'MonteCarloResult':
-    """Run the Monte Carlo ensemble using SimConfig + Hydrograph.
+# ── pathway assembly ──────────────────────────────────────────────────────────
 
-    This is the high-level fragility entry point.  Internally it wraps
-    run_fragility_montecarlo() using a building_factory derived from config.
+def assemble_pathways(
+    ingress: List[FragilePath] = (),
+    basement: List[FragilePath] = (),
+    membrane_rows: List[FragilePath] = (),
+) -> Tuple[List[FragilePath], List[Membrane]]:
+    """Combine parsed rows into the (paths, membranes) model input.
 
-    Parameters
-    ----------
-    config           : engine.SimConfig
-    hydro            : engine.Hydrograph (times in seconds)
-    paths            : List[FragilePath] — all ingress paths
-    membranes        : List[Membrane] or None
-    basement_frag    : BasementFragility or None
-    basement_pathway : engine.IngressPathway for exterior→basement perimeter, or None
+    `basement` rows are exterior→basement pathways (target='basement');
+    `membrane_rows` with group_id > 0 and fragility become Membranes.
+    Validates the result and assigns each membrane its representative path.
     """
-    import copy as _copy
+    paths = list(ingress)
+    for p in basement:
+        p.target = 'basement'
+        paths.append(p)
+    membranes = [fragile_path_to_membrane(fp) for fp in membrane_rows
+                 if fp.group_id > 0 and fp.fragility is not None]
+    validate_fragility_inputs(paths, membranes)
+    assign_representative_paths(paths, membranes)
+    return paths, membranes
 
-    def _building_factory():
-        from engine import Building
-        b = Building(floor_area=config.floor_area)
-        if config.basement_area > 0.0:
-            b.basement_area = config.basement_area
-            b.z_basement = config.basement_floor_elevation
-            b.basement_ceiling_elevation = config.basement_ceiling_elevation
-        if basement_pathway is not None and config.basement_area > 0.0:
-            b.basement_ingress = basement_pathway
-        if config.sumppump is not None and config.basement_area > 0.0:
-            b.sump_pump = _copy.deepcopy(config.sumppump)
-        return b
 
-    # Static pathways: the engine reads only the ingress list, not
-    # Building.basement_ingress.  With basement_frag the legacy hook in
-    # run_fragility_montecarlo adds the perimeter itself.
-    from engine import IngressPathway
-    static = []
-    if (basement_pathway is not None and config.basement_area > 0.0
-            and basement_frag is None):
-        static.append(basement_pathway)
-    if (config.basement_connection_height is not None
-            and config.basement_connection_area > 0.0
-            and config.basement_area > 0.0):
-        static.append(IngressPathway(
-            height=config.basement_connection_height,
-            area=config.basement_connection_area,
-            coeff=config.basement_connection_coeff, name='ground-basement-conn',
-            source='ground', target='basement',
-        ))
-
-    return run_fragility_montecarlo(
-        building_factory=_building_factory,
-        paths=paths,
-        membranes=membranes or [],
-        basement_fragility=basement_frag,
-        external_times=hydro.times,
-        external_levels=hydro.levels,
-        n_replicates=config.n_replicates,
-        dt=config.dt,
-        external_vel_times=hydro.vel_times,
-        external_velocities=hydro.velocities,
-        seed=config.random_seed,
-        percentile_values=config.output_percentiles,
-        velocity_mode=config.velocity_mode,
-        vel_a=config.velocity_power_law_a,
-        vel_b=config.velocity_power_law_b,
-        static_pathways=static,
-        floor_datum=config.floor_datum,
-    )
+def load_pathways(
+    ingress_file: Optional[str] = None,
+    basement_file: Optional[str] = None,
+    membrane_file: Optional[str] = None,
+) -> Tuple[List[FragilePath], List[Membrane]]:
+    """Parse the pathway CSV files and assemble them (see assemble_pathways)."""
+    def _rows(path):
+        return parse_pathway_file(path) if path else []
+    return assemble_pathways(_rows(ingress_file), _rows(basement_file),
+                             _rows(membrane_file))

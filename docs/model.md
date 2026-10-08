@@ -85,7 +85,7 @@ Three velocity modes are available (`--velocity-mode`):
 |------|-------------|
 | `zero` (default) | $0$ — purely hydrostatic, no hydrodynamic contribution |
 | `power_law` | $a \cdot h_{ext}(t)^{b}$ — Manning-style rating curve derived directly from the depth hydrograph; default $a = 1.5$, $b = 0.5$ |
-| `file` | linearly interpolated from a user-supplied time series (`--external-velocity`) |
+| `file` | linearly interpolated from the third column of the hydrograph file (`--external`) |
 
 ---
 
@@ -113,6 +113,29 @@ $$
 A_s\;\frac{dh_s}{dt} = Q_{ext \to b}(t) \;-\; Q_{pump}(t) \;-\; Q_{s \to b}(t)
 $$
 
+### Full basement (merged compartment)
+
+When the basement (and sump, if present) is full to the ceiling and there is
+water above the ground floor ($h_b = z_{ceil} - z_b$ and $h_{in} > 0$), the
+two compartments behave as one, with free surface at the ground-floor level
+$H_{in} = h_{in} + z_{floor}$:
+
+- every exterior→basement pathway discharges against $H_{in}$ instead of the
+  basement level, and its volume enters the ground-floor balance;
+- the ground↔basement bypass is internal and carries no flow;
+- the pump (if any) draws from the merged volume:
+
+$$
+S_{gf}\;\frac{dh_{in}}{dt} = \sum_{i \in \mathcal{P}_{ext \to gf}} Q_i \;+\; \sum_{j \in \mathcal{P}_{ext \to b}} Q_j(H_{ext}, H_{in}) \;-\; Q_{pump}
+$$
+
+The lower compartment stays full while merged.  If a step's net outflow
+exceeds the water above the floor, the remainder is taken from the basement
+(and sump), which then continues as a separate compartment just below the
+ceiling.  Without this rule the full basement would keep driving perimeter
+inflow against the fixed ceiling level and push the ground floor above the
+exterior level.
+
 ---
 
 ## Sump and pump
@@ -137,6 +160,10 @@ $$
 
 with empirical coefficients $C_{ov}$ and $m_{ov}$ (default exponent 1.5).
 
+> **Not applied in the current engine.** The sump and basement share one
+> stored volume and the sump spills instantly above the crest; $C_{ov}$ and
+> $m_{ov}$ have no effect (see docs/limitations.md, item D).
+
 ---
 
 ## Numerical scheme
@@ -148,7 +175,7 @@ The simulator uses a fixed-step explicit Euler scheme. For time step index $n$ (
 3. Evaluate $Q_i(t_n)$ for every opening using the orifice law above.
 4. Evaluate pump and overflow flows.
 5. Update compartment volumes: $V_{n+1} = V_n + Q_{net}\,\Delta t$.
-6. Convert volumes to depths: $h = V/S$; clip at zero.
+6. Convert volumes to depths: $h = V/S$; clip at zero.  The pump never removes more water than the sump and basement hold in that step.
 
 ### Stability guidance
 
@@ -198,52 +225,54 @@ $$
 
 ### Modules
 
-| Module | Public interface | Upstream imports |
-|--------|-----------------|------------------|
-| `engine.py` | `engine.run(config, hydro) → SimResult` | `pump`, `forces` |
-| `fragility.py` | `fragility.run(config, hydro) → MonteCarloResult` | `engine` |
-| `batch.py` | `batch.run(config, hydro_dir) → BatchResult` | `engine`, `fragility`, `loss` |
-| `pump.py` | `SumpPump`, `compute_*` helpers | — |
-| `loss.py` | `loss.load(path)`, `loss.evaluate(curve, depth)` | — |
-| `plot.py` | `plot.simulation()`, `plot.batch()`, `plot.montecarlo()` | — |
-| `report.py` | `report.generate(result)`, `report.to_csv(result, path)` | — |
-| `forces.py` | `compute_combined_forces()` | — |
-| `cli.py` | CLI entry point | all above |
-| `app.py` | Streamlit UI | all above |
+| Module | Responsibility | Public interface |
+|--------|----------------|------------------|
+| `engine.py` | Physics and model assembly; the only place a `Building` and `Simulation` are built | `engine.run(config, hydro, pathways, *, conductance_resolver, progress_callback) → SimResult`, `read_hydrograph`, `hydrograph_from_columns`, `exterior_series` |
+| `fragility.py` | Pathway parsing/assembly, threshold sampling, conductance resolver, Monte Carlo loop | `parse_pathway_text/file`, `assemble_pathways`, `load_pathways`, `run_replicate(config, hydro, paths, membranes, rng) → (SimResult, SampledThresholds)`, `run(config, hydro, paths, membranes) → MonteCarloResult` |
+| `inputs.py` | Command-line model flags shared by `cli.py` and `batch.py` | `add_model_args`, `config_from_args`, `pathways_from_args` |
+| `batch.py` | Loop over hydrograph files, tabulate and summarise | `run_batch(config, cases, paths, membranes, …)` |
+| `pump.py` | Sump/pump hydraulics | `SumpPump`, `compute_*` helpers |
+| `loss.py` | Vulnerability curves | `load_vulnerability_curve`, `VulnerabilityCurve` |
+| `plot.py` | Figures | `save_run_result`, `save_run_animation`, `save_run_schematic`, batch/MC plots |
+| `report.py` | Diagnostics from the engine trace | `diagnostics_from_trace(result.trace, config.dt)` |
+| `forces.py` | Hydrostatic and drag forces | `compute_combined_forces()` |
+| `cli.py` | Single-hydrograph CLI | — |
+| `app.py` | Streamlit UI | — |
 
-`engine` is the only module with no upstream project imports. `fragility` and `batch` call `engine.run()` and do not re-implement the physics.
+Call chain — every mode reaches the physics through the same path:
+
+```
+cli.py ──────┐
+app.py ──────┼──► fragility.run ──► fragility.run_replicate ──► engine.run ──► Simulation
+batch.py ────┘    (n replicates)    (sample thresholds,          (Building,
+  (per hydrograph)                   build resolver)              bypass, sump)
+```
+
+A deterministic run is one replicate: with no fragile elements nothing is
+sampled and the resolver returns the base-state pathways.
 
 ### Key data structures
 
 ```
-SimConfig
-├── floor_area: float              # m²
-├── dt: float                      # timestep in time_units
-├── time_units: str                # 'seconds' | 'minutes' | 'hours'
-├── ingress: List[IngressPath]     # exterior → ground-floor pathways
-├── basement: Optional[BasementConfig]
-│     ├── area, floor_elev, ceiling_elev
-│     ├── opening: IngressPath     # exterior → basement (same type)
-│     ├── connection: Optional[IngressPath]   # ground-floor ↔ basement bypass
-│     └── sump: Optional[SumpPump]
-└── montecarlo: Optional[MonteCarloConfig]
-      ├── n_replicates: int
-      └── seed: Optional[int]
+SimConfig                          # building geometry + run control (engine.py)
+├── floor_area, floor_datum
+├── dt (s), time_units
+├── basement_area, basement_floor_elevation, basement_ceiling_elevation
+├── basement_connection_height / _area / _coeff   # ground↔basement bypass
+├── sumppump: Optional[SumpPump]
+├── n_replicates, random_seed, output_percentiles
+└── velocity_mode, velocity_power_law_a / _b
 
-Hydrograph
-├── times: List[float]
-├── levels: List[float]
-├── vel_times: Optional[List[float]]
-└── vel_levels: Optional[List[float]]
+Hydrograph                         # times in seconds
+├── times, levels
+└── vel_times, velocities          # velocity_mode='file' only
+
+FragilePath                        # every pathway (fragility.py)
+├── name, height_m, area_m2, Cd
+├── group_id                       # > 0 → protected by that membrane
+├── fragility, reversible          # probabilistic paths
+└── target: 'ground' | 'basement'  # exterior → which compartment
 ```
-
-### Dispatch logic
-
-`cli.py` and `app.py` build a `SimConfig` from user inputs, then call:
-
-- `engine.run(config, hydro)` — if no fragility (`config.montecarlo is None`)
-- `fragility.run(config, hydro)` — if `config.montecarlo is not None` and a single hydrograph
-- `batch.run(config, hydro_dir)` — if a folder of hydrographs is provided; internally calls `engine.run()` or `fragility.run()` per hydrograph
 
 ### Reversibility flag
 

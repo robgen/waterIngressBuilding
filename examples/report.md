@@ -145,7 +145,7 @@ monotonically during flood and plateaus after t = 60 min.
 
 ---
 
-## Case 05 — Basement fills and surcharges the ground floor (known defect)
+## Case 05 — Basement fills and floods the ground floor
 
 **Setup:** same building as Case 04 (50 m² ground floor with no effective
 opening, 30 m² basement at −2.5 m, perimeter opening area = 0.005 m²,
@@ -156,23 +156,20 @@ Inflow at 1.0 m exterior depth:
 Q = 0.5 × 0.005 × √(2g × 1.0) ≈ **0.011 m³/s**, so the 75 m³ basement
 fills to its ceiling at t ≈ 123 min.
 
-**Expected behaviour (physical):** once the basement is full, it and the
-ground floor act as one compartment.  The perimeter inflow is then driven by
-the difference between the exterior level and the *ground-floor* level, so
-the ground floor fills towards the exterior level and stops there:
-peak h\_in ≤ 1.0 m.
-
-**Current model output (known defect):** the basement level is frozen at
-the ceiling once full, so the perimeter inflow keeps being computed against
-that fixed level and the overflow is pushed into the ground floor.  With no
-ground-floor opening to let water back out, the ground floor keeps rising
-while the flood lasts and ends at **≈ 1.8 m**, well above the 1.0 m flood.
-The case is kept as a reproducer for the fix; the regression suite marks the
-bound h\_in ≤ h\_ext as an expected failure until it is resolved.
+**Expected behaviour:** once the basement is full, it and the ground floor
+act as one compartment (see *Full basement* in docs/model.md).  The
+perimeter inflow is then driven by the difference between the exterior level
+and the *ground-floor* level, so the ground floor fills towards the exterior
+level and slows as it approaches it: peak h\_in ≈ 0.96 m < 1.0 m.  With no
+ground-floor opening, the water stays trapped after the flood recedes.
 
 **Qualitative check:** basement trace rises to 2.5 m (ceiling) at
-t ≈ 123 min; ground-floor trace then rises steadily and crosses the
-exterior level — the symptom of the defect.
+t ≈ 123 min; ground-floor trace then rises with a decreasing slope and
+never crosses the exterior level.
+
+Before the merged-compartment rule the full basement kept driving inflow
+against its fixed ceiling level, and this case ended at ≈ 1.8 m indoors,
+above the 1.0 m flood.
 
 ![](ex05/out/simulation_result.png)
 

@@ -10,7 +10,6 @@ practical dt guideline:
 Produces:
   examples/ex06/out/dt_sensitivity.png
 """
-import copy
 import math
 import os
 import sys
@@ -25,7 +24,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 import plot  # noqa: F401 — sets Agg backend and shared rcParams as side-effect
-from engine import Building, IngressPathway, Simulation, sample_with_zero_padding
+import engine
+import reference_cases as rc
 from pump import SumpPump
 
 # ── Case 06 parameters (must match run_examples.py) ──────────────────────────────
@@ -49,9 +49,10 @@ PUMP_AVAIL           = 1.0
 
 # Shared triangular hydrograph (0→0.5 m at 30 min, recession to 0 at 60 min,
 # dry tail to 360 min — same as run_examples.py)
-_HYDRO_MIN  = [(0, 0.0), (30, 0.5), (60, 0.0), (360, 0.0)]
-EXT_TIMES_S = [t * 60.0 for t, _ in _HYDRO_MIN]
-EXT_LEVELS  = [h        for _, h in _HYDRO_MIN]
+HYDRO = rc.hydro([(0, 0.0), (30, 0.5), (60, 0.0), (360, 0.0)])
+MODEL = rc.F.assemble_pathways(
+    [rc.path('never_reached', 10.0, 0.001)],   # no ground-floor path
+    [rc.path('perimeter', BASEMENT_INGRESS_H, BASEMENT_INGRESS_A, BASEMENT_INGRESS_CD)])
 
 # ── dt sweep ──────────────────────────────────────────────────────────────────
 # Ranges from the default 60-s step (unstable) down to 0.5-s reference.
@@ -82,32 +83,17 @@ def _build_sump() -> SumpPump:
 
 def run_case(dt_s: float):
     """Run Case 06 at a given dt.  Returns (times_min, h_sump, h_bsmt, h_ext)."""
-    b = Building(FLOOR_AREA)
-    b.basement_area               = BASEMENT_AREA
-    b.z_basement                  = BASEMENT_FLOOR_ELEV
-    b.basement_ceiling_elevation  = 0.0          # ground level
-    b.h_basement                  = 0.0
-    b.basement_ingress = IngressPathway(
-        height=BASEMENT_INGRESS_H,
-        area=BASEMENT_INGRESS_A,
-        coeff=BASEMENT_INGRESS_CD,
-        name='perimeter',
-        source='outside',
-        target='basement',
+    cfg = engine.SimConfig(
+        floor_area=FLOOR_AREA, dt=dt_s,
+        basement_area=BASEMENT_AREA,
+        basement_floor_elevation=BASEMENT_FLOOR_ELEV,
+        basement_ceiling_elevation=0.0,          # ground level
+        sumppump=_build_sump(),
     )
-    b.sump_pump = _build_sump()
-
-    ing = [IngressPathway(height=10.0, area=0.001, coeff=0.6,
-                          name='never_reached')]   # no ground-floor path
-
-    sim = Simulation(b, ing, EXT_TIMES_S, EXT_LEVELS, dt=dt_s)
-    result = sim.run()
-    times_s  = result[0]
-    h_bsmt   = result[2]   # basement_levels
-    h_sump   = result[3]   # sump_levels
-    h_ext    = sample_with_zero_padding(times_s, EXT_TIMES_S, EXT_LEVELS)
-    times_min = [t / 60.0 for t in times_s]
-    return times_min, h_sump, h_bsmt, h_ext
+    r = rc.run_one(cfg, HYDRO, MODEL)
+    h_ext, _ = engine.exterior_series(cfg, HYDRO, r.times)
+    times_min = [t / 60.0 for t in r.times]
+    return times_min, r.h_sump, r.h_basement, h_ext
 
 
 def _dt_crit(q_pump_peak: float) -> float:
@@ -162,7 +148,7 @@ def main():
     # exterior hydrograph (background)
     t_ext_fine  = np.linspace(0, 120, 1440)
     h_ext_fine  = np.interp(t_ext_fine,
-                            [t / 60.0 for t in EXT_TIMES_S], EXT_LEVELS)
+                            [t / 60.0 for t in HYDRO.times], HYDRO.levels)
     ax_ts.fill_between(t_ext_fine, h_ext_fine,
                        alpha=0.07, color='#7f8c8d', zorder=1)
     ax_ts.plot(t_ext_fine, h_ext_fine,

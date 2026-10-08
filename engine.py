@@ -8,20 +8,22 @@ Data structures:
     Hydrograph    — external flood time series (times in seconds)
     SimResult     — deterministic simulation output
 
-Entry point:
-    run(config, hydro, pathways, *, basement_pathway, conductance_resolver) → SimResult
+Entry point (the only place a Building and Simulation are assembled):
+    run(config, hydro, pathways, *, conductance_resolver, progress_callback) → SimResult
 
-Low-level classes (also used by fragility.py and batch.py):
+Hydrograph input:
+    read_hydrograph, hydrograph_from_columns, parse_combined_file, parse_combined_text
+
+Exterior series on the simulation grid:
+    exterior_series, sample_with_zero_padding
+
+Low-level classes:
     Building, IngressPathway, Simulation
-
-I/O helpers:
-    parse_combined_file, parse_combined_text, parse_external_text, sample_with_zero_padding
 """
 
 import copy
-import csv
 import math
-import warnings
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -44,7 +46,6 @@ class Building:
         self.h_basement = 0.0
         self.z_basement = 0.0
         self.basement_ceiling_elevation = 0.0
-        self.basement_ingress = None   # IngressPathway or None
         self.sump_pump = None          # SumpPump or None
 
     def update_water_level(self, volume_change, zone='ground'):
@@ -125,6 +126,49 @@ class Simulation:
             self._initial_h_sump = 0.0
             self._initial_pump_state = 0
 
+    # ── lower compartment (basement + sump) helpers ──────────────────────────
+
+    def _max_basement_depth(self):
+        return max(0.0, self.building.basement_ceiling_elevation - self.building.z_basement)
+
+    @staticmethod
+    def _pump_step(sp, H_out):
+        """Update the pump switch state; return (H_lift, pump_state, Q_pump)."""
+        H_lift = compute_lift_head(H_out, sp.sump_base_elevation)
+        sp.pump_state = compute_pump_switch_state(
+            sp.h_sump, sp.pump_on_level, sp.pump_off_level, sp.pump_state)
+        Q_p = compute_pump_flow(
+            sp.pump_state, sp.pump_availability,
+            sp.pump_shutoff_head, H_lift,
+            sp.pump_curve_coeff, sp.pipe_loss_coeff)
+        return H_lift, sp.pump_state, Q_p
+
+    def _lower_volume(self):
+        """Water volume below the basement ceiling (sump + basement)."""
+        sp = self.building.sump_pump
+        if sp is None:
+            return self.building.basement_area * self.building.h_basement
+        return (sp.sump_area * min(sp.h_sump, sp.overflow_level)
+                + (sp.sump_area + self.building.basement_area) * self.building.h_basement)
+
+    def _set_lower_volume(self, V_total):
+        """Distribute V_total over sump and basement (sump fills first)."""
+        sp = self.building.sump_pump
+        if sp is None:
+            self.building.h_basement = V_total / self.building.basement_area
+            return
+        V_sump_full = sp.sump_area * sp.overflow_level
+        if V_total <= V_sump_full:
+            sp.h_sump = V_total / sp.sump_area if sp.sump_area > 0 else 0.0
+            self.building.h_basement = 0.0
+        else:
+            h_above = (V_total - V_sump_full) / (sp.sump_area + self.building.basement_area)
+            sp.h_sump = sp.overflow_level + h_above
+            self.building.h_basement = h_above
+
+    def _remove_from_lower(self, volume):
+        self._set_lower_volume(max(0.0, self._lower_volume() - volume))
+
     def run(self, progress_callback=None, verbose=False):
         self.building.h_in = self._initial_h_in
         self.building.h_basement = self._initial_h_basement
@@ -190,6 +234,14 @@ class Simulation:
             elif self.velocity_mode == 'power_law':
                 v_out = self.vel_a * (max(0.0, h_out) ** self.vel_b)
 
+            # Basement (and sump) full to the ceiling with water above the
+            # ground floor: one compartment whose free surface is the
+            # ground-floor level.  Exterior→basement pathways then discharge
+            # against H_in_abs and the ground↔basement bypass is internal.
+            merged = (self.building.basement_area > 0.0
+                      and current_h_basement >= self._max_basement_depth()
+                      and current_h_in > 0.0)
+
             flow_og = 0.0
             flow_gb = 0.0
             flow_ob = 0.0
@@ -203,65 +255,66 @@ class Simulation:
                 tgt = getattr(ingress, 'target', 'ground')
                 if src == 'outside' and tgt == 'ground':
                     flow_og += ingress.compute_flow(H_out, H_in_abs, v_source=v_out)
+                elif merged and src != 'outside':
+                    continue
                 elif src == 'ground' and tgt == 'basement':
                     flow_gb += ingress.compute_flow(H_in_abs, H_basement)
                 elif src == 'basement' and tgt == 'ground':
                     flow_gb -= ingress.compute_flow(H_basement, H_in_abs)
                 elif src == 'outside' and tgt == 'basement':
                     if sp is not None:
-                        flow_os += ingress.compute_flow(H_out, H_sump_abs, v_source=v_out)
+                        H_tgt = H_in_abs if merged else H_sump_abs
+                        flow_os += ingress.compute_flow(H_out, H_tgt, v_source=v_out)
                     else:
-                        flow_ob += ingress.compute_flow(H_out, H_basement, v_source=v_out)
-
-            vol_ground = (flow_og - flow_gb) * self.dt
-            self.building.update_water_level(vol_ground, zone='ground')
-            current_h_in = self.building.h_in
+                        H_tgt = H_in_abs if merged else H_basement
+                        flow_ob += ingress.compute_flow(H_out, H_tgt, v_source=v_out)
 
             current_h_sump = 0.0
             Q_s_bs = 0.0
             H_lift = 0.0
             Q_p = 0.0
             pump_state_t = 0
-
             if sp is not None:
-                sump_depth = sp.overflow_level
-                V_sump_full = sp.sump_area * sump_depth
-                V_total = (sp.sump_area * min(sp.h_sump, sump_depth)
-                           + (sp.sump_area + self.building.basement_area) * current_h_basement)
-                H_lift = compute_lift_head(H_out, sp.sump_base_elevation)
-                sp.pump_state = compute_pump_switch_state(
-                    sp.h_sump, sp.pump_on_level, sp.pump_off_level, sp.pump_state)
-                pump_state_t = sp.pump_state
-                Q_p = compute_pump_flow(
-                    sp.pump_state, sp.pump_availability,
-                    sp.pump_shutoff_head, H_lift,
-                    sp.pump_curve_coeff, sp.pipe_loss_coeff)
-                dV = (flow_os + flow_gb - Q_p) * self.dt
-                V_total = max(0.0, V_total + dV)
-                if V_total <= V_sump_full:
-                    sp.h_sump = V_total / sp.sump_area if sp.sump_area > 0 else 0.0
-                    self.building.h_basement = 0.0
+                H_lift, pump_state_t, Q_p = self._pump_step(sp, H_out)
+
+            if merged:
+                # Lower compartment stays full; all exchange goes through the
+                # ground-floor balance.  A net outflow larger than the water
+                # above the floor is taken from the lower compartment.
+                h_new = current_h_in + (flow_og + flow_ob + flow_os - Q_p) * self.dt / self.building.floor_area
+                if h_new >= 0.0:
+                    self.building.h_in = h_new
                 else:
-                    V_above = V_total - V_sump_full
-                    h_above = V_above / (sp.sump_area + self.building.basement_area)
-                    sp.h_sump = sump_depth + h_above
-                    self.building.h_basement = h_above
-                max_bsmt = max(0.0, self.building.basement_ceiling_elevation
-                               - self.building.z_basement)
-                if self.building.h_basement > max_bsmt:
-                    excess = self.building.h_basement - max_bsmt
-                    overflow_vol = excess * (sp.sump_area + self.building.basement_area)
-                    self.building.h_basement = max_bsmt
-                    sp.h_sump = sump_depth + max_bsmt
-                    self.building.update_water_level(overflow_vol, zone='ground')
-                current_h_sump = sp.h_sump
-                current_h_basement = self.building.h_basement
+                    self.building.h_in = 0.0
+                    self._remove_from_lower(-h_new * self.building.floor_area)
             else:
-                vol_basement = (flow_ob + flow_gb) * self.dt
-                overflow = self.building.update_water_level(vol_basement, zone='basement')
-                if overflow and overflow > 0.0:
-                    self.building.update_water_level(overflow, zone='ground')
-                current_h_basement = self.building.h_basement
+                vol_ground = (flow_og - flow_gb) * self.dt
+                self.building.update_water_level(vol_ground, zone='ground')
+
+                if sp is not None:
+                    V_new = self._lower_volume() + (flow_os + flow_gb - Q_p) * self.dt
+                    if V_new < 0.0:
+                        # The pump cannot remove more water than is stored.
+                        Q_p = max(0.0, Q_p + V_new / self.dt)
+                        V_new = 0.0
+                    self._set_lower_volume(V_new)
+                    max_bsmt = self._max_basement_depth()
+                    if self.building.h_basement > max_bsmt:
+                        excess = self.building.h_basement - max_bsmt
+                        overflow_vol = excess * (sp.sump_area + self.building.basement_area)
+                        self.building.h_basement = max_bsmt
+                        sp.h_sump = sp.overflow_level + max_bsmt
+                        self.building.update_water_level(overflow_vol, zone='ground')
+                else:
+                    vol_basement = (flow_ob + flow_gb) * self.dt
+                    overflow = self.building.update_water_level(vol_basement, zone='basement')
+                    if overflow and overflow > 0.0:
+                        self.building.update_water_level(overflow, zone='ground')
+
+            current_h_in = self.building.h_in
+            current_h_basement = self.building.h_basement
+            if sp is not None:
+                current_h_sump = sp.h_sump
 
             times.append(t)
             indoor_levels.append(current_h_in)
@@ -303,42 +356,14 @@ class Simulation:
 
 # ── I/O helpers ───────────────────────────────────────────────────────────────
 
-def parse_combined_file(filepath):
-    """Parse a 2- or 3-column CSV (time, depth[, velocity]).
+TIME_UNIT_SECONDS = {'seconds': 1.0, 'minutes': 60.0, 'hours': 3600.0}
+
+
+def parse_combined_text(text, source='hydrograph text'):
+    """Parse a 2- or 3-column text block (time, depth[, velocity]).
 
     Returns (times, levels, velocities_or_None).  Inline comment lines
     (starting with #) and malformed rows are silently skipped.
-    """
-    times, levels, velocities = [], [], []
-    has_velocity = None
-    with open(filepath) as f:
-        for raw in f:
-            line = raw.split('#', 1)[0].strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) < 2:
-                continue
-            try:
-                t = float(parts[0])
-                d = float(parts[1])
-            except ValueError:
-                continue
-            if has_velocity is None:
-                has_velocity = len(parts) >= 3
-            times.append(t)
-            levels.append(d)
-            if has_velocity:
-                velocities.append(float(parts[2]) if len(parts) >= 3 else 0.0)
-    if not times:
-        raise ValueError(f'No data found in external file: {filepath}')
-    return times, levels, velocities if has_velocity else None
-
-
-def parse_combined_text(text):
-    """Parse a 2- or 3-column text block (time, depth[, velocity]).
-
-    Returns (times, levels, velocities_or_None).
     """
     times, levels, velocities = [], [], []
     has_velocity = None
@@ -361,24 +386,14 @@ def parse_combined_text(text):
         if has_velocity:
             velocities.append(float(parts[2]) if len(parts) >= 3 else 0.0)
     if not times:
-        raise ValueError('No data found in hydrograph text')
+        raise ValueError(f'No data found in {source}')
     return times, levels, velocities if has_velocity else None
 
 
-def parse_external_text(text):
-    """Parse a 2-column text block (time, level). Ignores any third column."""
-    times, levels, _ = parse_combined_text(text)
-    return times, levels
-
-
-def parse_ingress_file(filepath):
-    """Parse ingress from a positional CSV file: height, area, coeff[, name].
-
-    Deprecated: prefer header-based CSV via fragility.parse_pathway_file().
-    """
-    import warnings
+def parse_combined_file(filepath):
+    """Parse a 2- or 3-column CSV file (time, depth[, velocity])."""
     with open(filepath) as f:
-        return parse_ingress_text(f.read())
+        return parse_combined_text(f.read(), source=f'external file: {filepath}')
 
 
 def sample_with_zero_padding(target_times, src_times, src_vals):
@@ -398,6 +413,8 @@ def sample_with_zero_padding(target_times, src_times, src_vals):
         else:
             sampled.append(0.0 if t > src_times[-1] else src_vals[-1])
     return sampled
+
+
 
 
 # ── data structures ───────────────────────────────────────────────────────────
@@ -467,48 +484,89 @@ class SimResult:
 
 # ── public API ────────────────────────────────────────────────────────────────
 
-def run(config: SimConfig, hydro: Hydrograph, pathways: list, *,
-        basement_pathway: Optional[IngressPathway] = None,
-        conductance_resolver=None) -> SimResult:
-    """Run one deterministic simulation and return SimResult.
+def hydrograph_from_columns(times, levels, velocities=None, *,
+                            time_units='minutes', velocity_mode='zero', name=''):
+    """Build a Hydrograph from parsed columns given in `time_units`.
 
-    Parameters
-    ----------
-    config            : SimConfig — building geometry and run parameters
-    hydro             : Hydrograph — external flood event (times in seconds)
-    pathways          : List[IngressPathway] — exterior→ground-floor openings
-    basement_pathway  : optional IngressPathway for exterior→basement perimeter
-    conductance_resolver : optional callable(h_ext) → List[IngressPathway],
-                          used by fragility.py to inject per-replicate active paths
+    Velocities are kept only for velocity_mode='file', which requires them.
     """
-    building = Building(floor_area=config.floor_area)
+    times_s = [t * TIME_UNIT_SECONDS[time_units] for t in times]
+    vel_times, vel = None, None
+    if velocity_mode == 'file':
+        if velocities is None:
+            raise ValueError(
+                f"velocity_mode='file' requires a 3-column hydrograph "
+                f"(time, depth, velocity) but {name or 'the input'} has only 2 columns.")
+        vel_times, vel = list(times_s), list(velocities)
+    return Hydrograph(times=times_s, levels=list(levels),
+                      vel_times=vel_times, velocities=vel, name=name)
 
+
+def read_hydrograph(filepath, *, time_units='minutes', velocity_mode='zero'):
+    """Read a hydrograph CSV into a Hydrograph (times converted to seconds)."""
+    times, levels, velocities = parse_combined_file(filepath)
+    return hydrograph_from_columns(
+        times, levels, velocities, time_units=time_units,
+        velocity_mode=velocity_mode,
+        name=os.path.splitext(os.path.basename(filepath))[0])
+
+
+def exterior_series(config: SimConfig, hydro: Hydrograph, times) -> Tuple[list, list]:
+    """Return (h_ext, v_ext): exterior depth and velocity sampled on `times`."""
+    h_ext = sample_with_zero_padding(times, hydro.times, hydro.levels)
+    if config.velocity_mode == 'file' and hydro.vel_times and hydro.velocities:
+        v_ext = sample_with_zero_padding(times, hydro.vel_times, hydro.velocities)
+    elif config.velocity_mode == 'power_law':
+        v_ext = [config.velocity_power_law_a * (max(0.0, h) ** config.velocity_power_law_b)
+                 for h in h_ext]
+    else:
+        v_ext = [0.0] * len(times)
+    return h_ext, v_ext
+
+
+def _build_building(config: SimConfig) -> Building:
+    building = Building(floor_area=config.floor_area)
     if config.basement_area > 0.0:
         building.basement_area = config.basement_area
         building.z_basement = config.basement_floor_elevation
         building.basement_ceiling_elevation = config.basement_ceiling_elevation
+        if config.sumppump is not None:
+            building.sump_pump = copy.deepcopy(config.sumppump)
+    return building
 
-    if basement_pathway is not None and config.basement_area > 0.0:
-        building.basement_ingress = basement_pathway
 
-    if config.sumppump is not None and config.basement_area > 0.0:
-        building.sump_pump = copy.deepcopy(config.sumppump)
-
-    ing = list(pathways)
-    if basement_pathway is not None and config.basement_area > 0.0:
-        ing.append(basement_pathway)
-    if (config.basement_connection_height is not None
-            and config.basement_connection_area > 0.0
-            and config.basement_area > 0.0):
-        ing.append(IngressPathway(
+def _internal_pathways(config: SimConfig) -> List[IngressPathway]:
+    """Pathways defined by the building geometry: the ground↔basement bypass."""
+    if (config.basement_area > 0.0
+            and config.basement_connection_height is not None
+            and config.basement_connection_area > 0.0):
+        return [IngressPathway(
             height=config.basement_connection_height,
             area=config.basement_connection_area,
             coeff=config.basement_connection_coeff, name='ground-basement-conn',
             source='ground', target='basement',
-        ))
+        )]
+    return []
 
+
+def run(config: SimConfig, hydro: Hydrograph, pathways=(), *,
+        conductance_resolver=None, progress_callback=None) -> SimResult:
+    """Run one simulation and return SimResult.
+
+    This is the only place where a Building and its Simulation are assembled.
+
+    Parameters
+    ----------
+    config               : SimConfig — building geometry and run parameters
+    hydro                : Hydrograph — external flood event (times in seconds)
+    pathways             : IngressPathways with fixed conductance (any source/target)
+    conductance_resolver : optional callable(h_ext) → List[IngressPathway] adding
+                           the pathways whose conductance varies with the head
+                           (fragility.make_conductance_resolver)
+    progress_callback    : optional callable(fraction) forwarded to Simulation.run
+    """
     sim = Simulation(
-        building, ing,
+        _build_building(config), list(pathways) + _internal_pathways(config),
         hydro.times, hydro.levels,
         dt=config.dt,
         external_vel_times=hydro.vel_times,
@@ -519,32 +577,19 @@ def run(config: SimConfig, hydro: Hydrograph, pathways: list, *,
         vel_b=config.velocity_power_law_b,
         floor_datum=config.floor_datum,
     )
-    raw = sim.run()
+    raw = sim.run(progress_callback=progress_callback)
 
     if len(raw) == 4:
         times, h_in, h_basement, h_sump = raw
     elif len(raw) == 3:
         times, h_in, h_basement = raw
-        h_sump = [0.0] * len(times)
+        h_sump = []
     else:
         times, h_in = raw
         h_basement = []
         h_sump = []
 
-    sampled_ext = sample_with_zero_padding(times, hydro.times, hydro.levels)
-    peak_h_ext = max(sampled_ext) if sampled_ext else 0.0
-    peak_h_in = max(h_in, default=0.0)
-    peak_h_basement = max(h_basement, default=0.0) if h_basement else 0.0
-    peak_h_sump = max(h_sump, default=0.0) if h_sump else 0.0
-
-    if config.velocity_mode == 'file' and hydro.vel_times and hydro.velocities:
-        sampled_vel = sample_with_zero_padding(times, hydro.vel_times, hydro.velocities)
-        v_peak_ext = max(sampled_vel) if sampled_vel else 0.0
-    elif config.velocity_mode == 'power_law':
-        v_peak_ext = (config.velocity_power_law_a * (max(sampled_ext) ** config.velocity_power_law_b)
-                      if sampled_ext else 0.0)
-    else:
-        v_peak_ext = 0.0
+    h_ext, v_ext = exterior_series(config, hydro, times)
 
     total_volume_in = 0.0
     for idx in range(1, len(h_in)):
@@ -557,56 +602,11 @@ def run(config: SimConfig, hydro: Hydrograph, pathways: list, *,
         h_in=h_in,
         h_basement=h_basement,
         h_sump=h_sump,
-        peak_h_in=peak_h_in,
-        peak_h_basement=peak_h_basement,
-        peak_h_sump=peak_h_sump,
-        peak_h_ext=peak_h_ext,
-        v_peak_ext=v_peak_ext,
+        peak_h_in=max(h_in, default=0.0),
+        peak_h_basement=max(h_basement, default=0.0),
+        peak_h_sump=max(h_sump, default=0.0),
+        peak_h_ext=max(h_ext, default=0.0),
+        v_peak_ext=max(v_ext, default=0.0),
         total_volume_in=total_volume_in,
         trace=sim._last_trace or {},
     )
-
-
-# ── legacy text-format parser (kept for backward compatibility) ───────────────
-
-def parse_ingress_text(text):
-    """Parse ingress from a plain text block: height, area, coeff[, name].
-
-    Raises ValueError for extra columns (routing or legacy always_open).
-    Deprecated: prefer header-based CSV via fragility.parse_pathway_file().
-    """
-    import warnings
-    ingress = []
-    n_skipped = 0
-    for lineno, raw in enumerate(text.splitlines(), start=1):
-        line = raw.split('#', 1)[0].strip()
-        if not line:
-            continue
-        parts = [p.strip() for p in line.split(',') if p.strip()]
-        if len(parts) < 3:
-            n_skipped += 1
-            continue
-        if len(parts) > 4:
-            raise ValueError(
-                "Unsupported ingress text format: expected "
-                "height, area, coeff[,name] with no extra columns "
-                "(legacy always_open and source/target fields are not supported)"
-            )
-        try:
-            h     = float(parts[0])
-            area  = float(parts[1])
-            coeff = float(parts[2])
-        except ValueError as exc:
-            warnings.warn(
-                f"Non-numeric value in ingress text at line {lineno}: {exc}",
-                stacklevel=2)
-            n_skipped += 1
-            continue
-        name = parts[3] if len(parts) >= 4 else f"ing{len(ingress)}"
-        ingress.append(IngressPathway(height=h, area=area, coeff=coeff, name=name))
-    if n_skipped:
-        warnings.warn(f"{n_skipped} malformed line(s) skipped in ingress text",
-                      stacklevel=2)
-    if not ingress:
-        raise ValueError('No ingress entries provided')
-    return ingress

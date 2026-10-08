@@ -1,75 +1,48 @@
 #!/usr/bin/env python3
 """
-Batch run wrapper for the water ingress simulation.
+Batch run of the water ingress simulation over a set of hydrograph files.
 
-Runs one deterministic simulation per hydrograph file in a supplied directory
-and aggregates the results.  The randomness in the ensemble comes from the
-pre-generated hydrograph files (see hydrographs/generate.py); this
-script itself performs no parameter sampling.
-
-For each case the script:
-  1. Runs one full simulation with the external depth (and optionally velocity)
-     time series for that case.
-  2. Extracts:
+For each hydrograph the script runs fragility.run() — config.n_replicates
+replicates, one when there is nothing to sample — and records per replicate:
        h_peak_ext        – peak exterior water depth  (m)
        h_peak_int        – peak interior water depth  (m)
        dur_hXXXcm_<tu>  – time (in selected time units) that the
                            interior depth is >= each fixed absolute
                            threshold (e.g. dur_h030cm_min for 0.30 m).
-                           Returns 0 when the threshold is not reached.
-  3. Writes results to batch_results.csv and a statistical summary to
-     batch_summary.csv in the specified output directory.
-
-See docs/model.md for the planned Monte Carlo / fragility architecture.
+Results go to batch_results.csv; deterministic runs (one replicate) also get a
+statistical summary in batch_summary.csv.
 
 Inputs
 ------
-Two directory layouts are supported:
+  --depth-dir DIR            every *.csv in DIR (2 or 3 columns: time, depth[, velocity])
+  --hydrograph-files PATHS   explicit files or dir/regex patterns
+Files are ordered by the numeric suffix in their names.
 
-  A) Two separate directories  (current dataset layout)
-       depth_dir/     depth_001.csv … depth_100.csv
-       velocity_dir/  velocity_001.csv … velocity_100.csv   (optional)
-     Files are matched by the numeric suffix in their names.
-
-  B) Single combined-file directory
-     Each CSV has three columns: time, depth, velocity.
-     Pass --depth-dir pointing to this directory; omit --velocity-dir.
+Building, pathway and run-control flags are shared with cli.py (inputs.py).
 
 Usage
 -----
   python3 batch.py \\
-      --depth-dir    "hydrographs/depth"      \\
-      --velocity-dir "hydrographs/velocity"   \\
-      --ingress      examples/ex01/ingress.csv          \\
-      --contents-vulnerability path/to/vulnerability.csv   \\
-      --floor        50                              \\
-      --time-units   minutes                         \\
-      --dt           1                               \\
-      --thresholds   0.10 0.20 0.30 0.50 1.00 1.50   \\
+      --depth-dir    hydrographs/generated     \\
+      --ingress      examples/ex01/ingress.csv \\
+      --floor        50                        \\
+      --time-units   minutes                   \\
+      --dt           1                         \\
+      --thresholds   0.10 0.20 0.30 0.50 1.00  \\
       --outdir       batch_results/
 """
 
 import argparse
-import copy
 import csv
-import math
 import os
 import re
 import sys
 
+import engine
+import fragility
+import inputs
+import plot
 from loss import load_vulnerability_curve
-from engine import (
-    Building,
-    IngressPathway,
-    Simulation,
-    SimResult,
-    parse_combined_file,
-    sample_with_zero_padding,
-)
-from pump import SumpPump
-
-_MUL = {'seconds': 1.0, 'minutes': 60.0, 'hours': 3600.0}
-
 
 # ── file discovery ────────────────────────────────────────────────────────────
 
@@ -131,124 +104,6 @@ def _discover_cases_from_files(patterns):
                         seen.add(path)
                         cases.append((_numeric_suffix(fname), path))
     return sorted(cases, key=lambda x: x[0])
-
-
-# ── combined-file detection ───────────────────────────────────────────────────
-
-def _parse_depth_file_maybe_combined(filepath):
-    """Delegates to engine.parse_combined_file."""
-    return parse_combined_file(filepath)
-
-
-# ── single simulation run ─────────────────────────────────────────────────────
-
-def _run_case(depth_path, ingress_list, floor_area,
-              dt_s, mul, velocity_mode='zero', vel_a=1.5, vel_b=0.5,
-              basement_area=0.0, basement_floor_elev=None,
-              basement_ceiling_elev=0.0,
-              basement_ingress=None,
-              basement_conn_height=None, basement_conn_area=0.0,
-              basement_conn_coeff=0.6,
-              sump_pump=None, floor_datum=0.0):
-    """
-    Run one simulation and return
-    (sim_times_s, sim_levels, sim_basement, sim_sump,
-     h_peak_ext, h_peak_int, h_peak_basement, h_peak_sump).
-
-    sim_times_s are in seconds (internal units).  h values in metres.
-    sim_basement and sim_sump are None when the respective zones are not active.
-    sump_pump is deep-copied per case so mutable state (h_sump, pump_state)
-    is reset between runs.
-    """
-    times_raw, depths, inline_vel = _parse_depth_file_maybe_combined(depth_path)
-    times_s = [t * mul for t in times_raw]
-
-    v_times_s, v_vals = None, None
-    if velocity_mode == 'file':
-        if inline_vel is not None:
-            v_times_s = list(times_s)
-            v_vals = inline_vel
-        else:
-            raise ValueError(
-                f'velocity_mode=file but {depth_path} has only 2 columns (no inline velocity).'
-            )
-
-    building = Building(floor_area)
-    if basement_area and basement_area > 0.0:
-        building.basement_area = float(basement_area)
-        building.h_basement = 0.0
-        if basement_floor_elev is not None:
-            building.z_basement = float(basement_floor_elev)
-        building.basement_ceiling_elevation = float(basement_ceiling_elev)
-
-    # Lumped exterior perimeter opening (spec §16.8)
-    if basement_ingress is not None and basement_area > 0.0:
-        building.basement_ingress = basement_ingress  # shared read-only object
-
-    # Sump+pump — deep-copy to reset mutable state (h_sump, pump_state) per case
-    if sump_pump is not None and basement_area > 0.0:
-        building.sump_pump = copy.deepcopy(sump_pump)
-
-    # Ground↔basement bypass connection (goes in ingress list)
-    ing = list(ingress_list)
-    if basement_area and basement_area > 0.0 and basement_conn_area > 0.0 and basement_conn_height is not None:
-        ing.append(IngressPathway(
-            height=float(basement_conn_height),
-            area=float(basement_conn_area),
-            coeff=float(basement_conn_coeff),
-            name='ground-basement-conn',
-            source='ground',
-            target='basement',
-        ))
-
-    sim = Simulation(building, ing, times_s, depths, dt=dt_s,
-                     external_vel_times=v_times_s, external_velocities=v_vals,
-                     velocity_mode=velocity_mode, vel_a=vel_a, vel_b=vel_b,
-                     floor_datum=floor_datum)
-    result = sim.run()
-
-    if len(result) == 4:
-        sim_times, sim_levels, sim_basement, sim_sump = result
-    elif len(result) == 3:
-        sim_times, sim_levels, sim_basement = result
-        sim_sump = None
-    else:
-        sim_times, sim_levels = result
-        sim_basement = None
-        sim_sump = None
-
-    sampled_ext = sample_with_zero_padding(sim_times, times_s, depths)
-    h_peak_ext      = max(sampled_ext)   if sampled_ext   else 0.0
-    h_peak_int      = max(sim_levels)    if sim_levels    else 0.0
-    h_peak_basement = max(sim_basement)  if sim_basement  else 0.0
-    h_peak_sump     = max(sim_sump)      if sim_sump      else 0.0
-    if velocity_mode == 'file' and v_times_s and v_vals:
-        sampled_vel = sample_with_zero_padding(sim_times, v_times_s, v_vals)
-        v_peak_ext = max(sampled_vel) if sampled_vel else 0.0
-    elif velocity_mode == 'power_law':
-        v_peak_ext = vel_a * (h_peak_ext ** vel_b) if h_peak_ext > 0 else 0.0
-    else:
-        v_peak_ext = 0.0
-
-    total_volume_in = sum(
-        (sim_levels[i] - sim_levels[i - 1]) * floor_area
-        for i in range(1, len(sim_levels))
-        if sim_levels[i] > sim_levels[i - 1]
-    )
-
-    return SimResult(
-        times=sim_times,
-        h_in=sim_levels,
-        h_basement=sim_basement or [],
-        h_sump=sim_sump or [],
-        peak_h_in=h_peak_int,
-        peak_h_basement=h_peak_basement,
-        peak_h_sump=h_peak_sump,
-        peak_h_ext=h_peak_ext,
-        v_peak_ext=v_peak_ext,
-        total_volume_in=total_volume_in,
-    )
-
 
 # ── duration calculation ──────────────────────────────────────────────────────
 
@@ -340,277 +195,110 @@ def _write_timeseries_csv(path, sim_times, h_in, h_ext,
                 row.append(round(h_sump[i]     if i < len(h_sump)     else 0.0, 4))
             w.writerow(row)
 
+def _result_row(case_id, depth_file, rec, n_replicates, thresholds, dur_cols,
+                config, building_vuln, basement_vuln):
+    """One batch_results.csv row for one replicate."""
+    res = rec.result
+    row = {'case_id': case_id}
+    if n_replicates > 1:
+        row['replicate'] = rec.replicate_id
+    row.update({
+        'depth_file':      depth_file,
+        'h_peak_ext':      round(res.peak_h_ext, 4),
+        'h_peak_int':      round(res.peak_h_in, 4),
+        'h_peak_basement': round(res.peak_h_basement, 4),
+        'v_peak_ext':      round(res.v_peak_ext, 4),
+    })
+    if config.sumppump is not None:
+        row['h_peak_sump'] = round(res.peak_h_sump, 4)
+    building_loss = (round(building_vuln.interpolate_loss(res.peak_h_in), 2)
+                     if building_vuln is not None else None)
+    basement_loss = (round(basement_vuln.interpolate_loss(res.peak_h_basement), 2)
+                     if basement_vuln is not None else None)
+    if building_loss is not None:
+        row['building_content_loss'] = building_loss
+    if basement_loss is not None:
+        row['basement_content_loss'] = basement_loss
+    if building_loss is not None or basement_loss is not None:
+        row['aggregate_content_loss'] = round(
+            (building_loss or 0.0) + (basement_loss or 0.0), 2)
+    mul = engine.TIME_UNIT_SECONDS[config.time_units]
+    for col, dur in zip(dur_cols, _compute_durations(res.h_in, thresholds, config.dt, mul)):
+        row[col] = dur
+    return row
+
 
 # ── main batch loop ───────────────────────────────────────────────────────────
 
 _DEFAULT_THRESHOLDS = [round(0.10 * i, 2) for i in range(1, 16)]  # 0.10 … 1.50 m
 
 
-def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
-              time_units='minutes', dt=1.0, thresholds=None,
+def run_batch(config, cases, paths, membranes=(), *, thresholds=None,
               building_content_vulnerability=None,
-              outdir='batch_results', verbose=True,
               basement_content_vulnerability=None,
-              basement_area=0.0, basement_floor_elev=None,
-              basement_ceiling_elev=0.0,
-              basement_ingress=None,
-              basement_conn_height=None, basement_conn_area=0.0,
-              basement_conn_coeff=0.6,
-              sump_pump=None,
-              frag_paths=None, membranes=None,
-              n_replicates=1, random_seed=None,
-              velocity_mode='zero', vel_a=1.5, vel_b=0.5,
-              floor_datum=0.0,
-              hydrograph_files=None,
-              save_timeseries=False):
-    """
-    Run the full batch ensemble and write results.
-
-    Each case is a single deterministic simulation driven by one pre-generated
-    hydrograph file.  For true Monte Carlo (sampling ingress and building
-    parameters from distributions), see docs/NOTE_montecarlo.md.
+              outdir='batch_results', save_timeseries=False, verbose=True):
+    """Run every hydrograph in `cases` and write the batch outputs.
 
     Parameters
     ----------
-    depth_dir       : directory containing depth CSV files
-    velocity_dir    : directory with matching velocity CSVs, or None
-    ingress_list    : list of IngressPathway objects (shared, stateless)
-    floor_area      : building floor area (m²)
-    time_units      : 'seconds' | 'minutes' | 'hours'
-    dt              : simulation timestep in the selected time units
-    thresholds      : list of absolute interior depth thresholds (m) at which
-                      exceedance duration is reported (e.g. [0.10, 0.30, 1.00])
-    velocity_mode   : 'zero', 'power_law', or 'file' (file requires 3-column CSVs)
-    vel_a / vel_b   : power-law coefficients (used when velocity_mode='power_law')
-    building_content_vulnerability : optional VulnerabilityCurve mapping h_peak_int
-                      (ground-floor peak depth) to building contents loss
-    basement_content_vulnerability : optional VulnerabilityCurve mapping h_peak_basement
-                      to basement contents loss
-    basement_area   : basement floor area (m²); 0 disables basement zone
-    basement_floor_elev : basement floor elevation relative to ground-floor datum (m)
-    basement_ceiling_elev : basement ceiling elevation on same datum (m)
-    basement_conn_height : sill height of ground↔basement connection (m)
-    basement_conn_area   : area of ground↔basement connection (m²)
-    basement_conn_coeff  : discharge coefficient Cd of ground↔basement connection (–)
-    outdir          : directory for output CSVs
-    verbose         : print progress to stdout
+    config    : engine.SimConfig (n_replicates > 1 → Monte Carlo per hydrograph)
+    cases     : list of (case_id, hydrograph_path)
+    paths     : List[FragilePath] — all pathways (ground floor and basement)
+    membranes : List[Membrane]
+    thresholds: absolute interior depth thresholds (m) for exceedance duration
+    building_content_vulnerability / basement_content_vulnerability :
+                optional VulnerabilityCurve for ground-floor / basement loss
+    outdir    : directory for output CSVs and figures
 
     Returns
     -------
-    list of result dicts (one per successfully completed case)
+    list of result dicts (one per replicate per successfully completed case)
     """
     if thresholds is None:
         thresholds = _DEFAULT_THRESHOLDS
-    mul  = _MUL.get(time_units, 60.0)
-    dt_s = dt * mul
     os.makedirs(outdir, exist_ok=True)
+    membranes = list(membranes)
 
-    if hydrograph_files:
-        pairs = _discover_cases_from_files(hydrograph_files)
-        if not pairs:
-            raise ValueError(f'No CSV files matched by --hydrograph-files: {hydrograph_files}')
-    else:
-        pairs = _discover_cases(depth_dir)
-        if not pairs:
-            raise ValueError(f'No CSV files found in: {depth_dir}')
-
-    has_fragile_paths = (frag_paths is not None
-                         and any(p.fragility is not None for p in frag_paths))
-    use_mc = (has_fragile_paths or bool(membranes)) and n_replicates > 1
-    if use_mc:
-        import fragility as _frag
-
-    n_total   = len(pairs)
+    use_mc    = config.n_replicates > 1
+    mul       = engine.TIME_UNIT_SECONDS[config.time_units]
+    n_total   = len(cases)
     results   = []
     n_failed  = 0
-    tu_abbrev = time_units[:3]
+    tu_abbrev = config.time_units[:3]
 
     # Column names encode the threshold value: dur_h030cm_min for 0.30 m
     dur_cols = [f'dur_h{int(round(h*100)):03d}cm_{tu_abbrev}' for h in thresholds]
 
     if verbose:
-        mode_str = f'fragility MC  n={n_replicates}' if use_mc else 'deterministic'
+        mode_str = f'fragility MC  n={config.n_replicates}' if use_mc else 'deterministic'
         print(f'Batch run: {n_total} cases  |  {mode_str}  |  '
-              f'dt={dt} {time_units}  |  '
+              f'dt={config.dt / mul} {config.time_units}  |  '
               f'thresholds={[round(h, 2) for h in thresholds]} m')
 
-    for idx, (case_id, depth_path) in enumerate(pairs):
+    for idx, (case_id, depth_path) in enumerate(cases):
         if verbose:
             print(f'  [{idx+1:3d}/{n_total}]  case {case_id:03d}  '
                   f'{os.path.basename(depth_path):<30s}', end='\r', flush=True)
         try:
-            times_raw, depths, inline_vel = _parse_depth_file_maybe_combined(depth_path)
-            times_s = [t * mul for t in times_raw]
+            hydro = engine.read_hydrograph(depth_path, time_units=config.time_units,
+                                           velocity_mode=config.velocity_mode)
+            mc = fragility.run(config, hydro, paths, membranes)
+            for rec in mc.replicates:
+                results.append(_result_row(
+                    case_id, os.path.basename(depth_path), rec, config.n_replicates,
+                    thresholds, dur_cols, config,
+                    building_content_vulnerability, basement_content_vulnerability))
 
-            v_times_s, v_vals = None, None
-            if velocity_mode == 'file':
-                if inline_vel is not None:
-                    v_times_s = list(times_s)
-                    v_vals = inline_vel
-                else:
-                    raise ValueError(
-                        f'velocity_mode=file but {os.path.basename(depth_path)} '
-                        f'has only 2 columns (no inline velocity).'
-                    )
-
-            if use_mc:
-                _ba = float(basement_area) if basement_area else 0.0
-
-                def _building_factory(_ba=_ba):
-                    from engine import Building
-                    b = Building(floor_area)
-                    if _ba > 0.0:
-                        b.basement_area = _ba
-                        if basement_floor_elev is not None:
-                            b.z_basement = float(basement_floor_elev)
-                        b.basement_ceiling_elevation = float(basement_ceiling_elev)
-                        if basement_ingress is not None:
-                            b.basement_ingress = basement_ingress
-                        if sump_pump is not None:
-                            b.sump_pump = copy.deepcopy(sump_pump)
-                    return b
-
-                # Bypass (ground↔basement) is a deterministic static pathway and
-                # must reach the simulation in MC mode too.  Pass it through
-                # static_pathways so it joins the resolver's per-step paths.
-                static_paths = []
-                if (_ba > 0.0
-                        and basement_conn_height is not None
-                        and basement_conn_area > 0.0):
-                    from engine import IngressPathway
-                    static_paths.append(IngressPathway(
-                        height=float(basement_conn_height),
-                        area=float(basement_conn_area),
-                        coeff=float(basement_conn_coeff), name='ground-basement-conn',
-                        source='ground', target='basement',
-                    ))
-
-                mc = _frag.run_fragility_montecarlo(
-                    building_factory   = _building_factory,
-                    paths              = frag_paths,
-                    membranes          = membranes,
-                    basement_fragility = None,
-                    external_times     = times_s,
-                    external_levels    = depths,
-                    n_replicates       = n_replicates,
-                    dt                 = dt_s,
-                    external_vel_times = v_times_s,
-                    external_velocities= v_vals,
-                    seed               = random_seed,
-                    velocity_mode      = velocity_mode,
-                    vel_a              = vel_a,
-                    vel_b              = vel_b,
-                    static_pathways    = static_paths,
-                    floor_datum        = floor_datum,
-                )
-                for rep in mc.replicates:
-                    row = {
-                        'case_id':         case_id,
-                        'replicate':       rep.replicate_id,
-                        'depth_file':      os.path.basename(depth_path),
-                        'h_peak_ext':      round(rep.peak_h_ext, 4),
-                        'h_peak_int':      round(rep.peak_h_in, 4),
-                        'h_peak_basement': round(rep.peak_h_basement, 4),
-                        'v_peak_ext':      round(rep.v_peak_ext, 4),
-                    }
-                    if sump_pump is not None:
-                        row['h_peak_sump'] = round(rep.peak_h_sump, 4)
-                    building_loss = (
-                        round(building_content_vulnerability.interpolate_loss(rep.peak_h_in), 2)
-                        if building_content_vulnerability is not None else None
-                    )
-                    basement_loss = (
-                        round(basement_content_vulnerability.interpolate_loss(rep.peak_h_basement), 2)
-                        if basement_content_vulnerability is not None else None
-                    )
-                    if building_loss is not None:
-                        row['building_content_loss'] = building_loss
-                    if basement_loss is not None:
-                        row['basement_content_loss'] = basement_loss
-                    if building_loss is not None or basement_loss is not None:
-                        row['aggregate_content_loss'] = round(
-                            (building_loss or 0.0) + (basement_loss or 0.0), 2
-                        )
-                    rep_durations = _compute_durations(rep.h_in, thresholds, dt_s, mul)
-                    for col, dur in zip(dur_cols, rep_durations):
-                        row[col] = dur
-                    results.append(row)
-
-                if save_timeseries:
-                    import plot as _viz
-                    rep = mc.replicates[0]
-                    ext_s = sample_with_zero_padding(rep.sim_times, times_s, depths)
-                    rep_tag = '' if n_replicates == 1 else f'_r{rep.replicate_id:02d}'
-                    ts_path = os.path.join(outdir, f'timeseries_{case_id:03d}{rep_tag}.csv')
-                    _write_timeseries_csv(ts_path, rep.sim_times, rep.h_in, ext_s,
-                                         rep.h_basement, rep.h_sump, mul, time_units)
-                    if n_replicates == 1:
-                        _viz.save_simulation_result(
-                            rep.sim_times, rep.h_in, ext_s,
-                            ts_path.replace('.csv', '.png'),
-                            time_unit=time_units,
-                            basement_levels=rep.h_basement if any(v > 1e-9 for v in (rep.h_basement or [])) else None,
-                            sump_levels=rep.h_sump         if any(v > 1e-9 for v in (rep.h_sump     or [])) else None,
-                        )
-
-            else:
-                res = _run_case(
-                    depth_path, ingress_list,
-                    floor_area, dt_s, mul, velocity_mode, vel_a, vel_b,
-                    basement_area=basement_area,
-                    basement_floor_elev=basement_floor_elev,
-                    basement_ceiling_elev=basement_ceiling_elev,
-                    basement_ingress=basement_ingress,
-                    basement_conn_height=basement_conn_height,
-                    basement_conn_area=basement_conn_area,
-                    basement_conn_coeff=basement_conn_coeff,
-                    sump_pump=sump_pump,
-                    floor_datum=floor_datum,
-                )
-                durations = _compute_durations(res.h_in, thresholds, dt_s, mul)
-                row = {
-                    'case_id':         case_id,
-                    'depth_file':      os.path.basename(depth_path),
-                    'h_peak_ext':      round(res.peak_h_ext, 4),
-                    'h_peak_int':      round(res.peak_h_in, 4),
-                    'h_peak_basement': round(res.peak_h_basement, 4),
-                    'v_peak_ext':      round(res.v_peak_ext, 4),
-                }
-                if sump_pump is not None:
-                    row['h_peak_sump'] = round(res.peak_h_sump, 4)
-                building_loss = (
-                    round(building_content_vulnerability.interpolate_loss(res.peak_h_in), 2)
-                    if building_content_vulnerability is not None else None
-                )
-                basement_loss = (
-                    round(basement_content_vulnerability.interpolate_loss(res.peak_h_basement), 2)
-                    if basement_content_vulnerability is not None else None
-                )
-                if building_loss is not None:
-                    row['building_content_loss'] = building_loss
-                if basement_loss is not None:
-                    row['basement_content_loss'] = basement_loss
-                if building_loss is not None or basement_loss is not None:
-                    row['aggregate_content_loss'] = round(
-                        (building_loss or 0.0) + (basement_loss or 0.0), 2
-                    )
-                for col, dur in zip(dur_cols, durations):
-                    row[col] = dur
-                results.append(row)
-
-                if save_timeseries:
-                    import plot as _viz
-                    ext_s = sample_with_zero_padding(res.times, times_s, depths)
-                    ts_path = os.path.join(outdir, f'timeseries_{case_id:03d}.csv')
-                    _write_timeseries_csv(ts_path, res.times, res.h_in, ext_s,
-                                         res.h_basement, res.h_sump, mul, time_units)
-                    _viz.save_simulation_result(
-                        res.times, res.h_in, ext_s,
-                        ts_path.replace('.csv', '.png'),
-                        time_unit=time_units,
-                        basement_levels=res.h_basement if any(v > 1e-9 for v in (res.h_basement or [])) else None,
-                        sump_levels=res.h_sump         if any(v > 1e-9 for v in (res.h_sump     or [])) else None,
-                    )
+            if save_timeseries:
+                rec = mc.replicates[0]
+                rep_tag = '' if not use_mc else f'_r{rec.replicate_id:02d}'
+                ts_path = os.path.join(outdir, f'timeseries_{case_id:03d}{rep_tag}.csv')
+                h_ext, _ = engine.exterior_series(config, hydro, rec.result.times)
+                _write_timeseries_csv(ts_path, rec.result.times, rec.result.h_in, h_ext,
+                                      rec.result.h_basement, rec.result.h_sump,
+                                      mul, config.time_units)
+                plot.save_run_result(ts_path.replace('.csv', '.png'),
+                                     config, hydro, rec.result)
 
         except Exception as exc:
             n_failed += 1
@@ -618,14 +306,12 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
                 print(f'\n  WARNING case {case_id} skipped: {exc}')
 
     if verbose:
-        print(f'\n  Completed: {len(results)}/{n_total}'
+        print(f'\n  Completed: {n_total - n_failed}/{n_total}'
               + (f'  ({n_failed} failed)' if n_failed else ''))
 
     if not results:
         print('No results produced.', file=sys.stderr)
         return results
-
-    import plot as viz
 
     # ── write batch_results.csv ───────────────────────────────────────────────
     results_path = os.path.join(outdir, 'batch_results.csv')
@@ -634,29 +320,20 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
         w.writeheader()
         w.writerows(results)
 
+
     # ── write batch_summary.csv ───────────────────────────────────────────────
-    summary_path = _write_summary(results, time_units, outdir) if not use_mc else None
+    summary_path = _write_summary(results, config.time_units, outdir) if not use_mc else None
 
     # ── write batch figures ───────────────────────────────────────────────────
     try:
-        _bsmt_d = (abs(float(basement_floor_elev))
-                   if basement_area and basement_floor_elev is not None else None)
-        _bsmt_pw = [basement_ingress] if basement_ingress is not None else []
-        viz.save_run_schematic(
-            os.path.join(outdir, 'schematic.png'),
-            gf_pathways=ingress_list,
-            bsmt_pathways=_bsmt_pw,
-            basement_depth=_bsmt_d,
-            has_sump=sump_pump is not None,
-            has_pump=sump_pump is not None,
-            bypass_height=float(basement_conn_height or 0.0),
-        )
+        plot.save_run_schematic(os.path.join(outdir, 'schematic.png'),
+                                pathways=paths, membranes=membranes, config=config)
     except Exception:
         pass
 
     peak_scatter_path = os.path.join(outdir, 'peak_exterior_vs_peak_interior.png')
     _v_vals = [r.get('v_peak_ext') for r in results]
-    viz.save_batch_scatter(
+    plot.save_batch_scatter(
         [r['h_peak_ext'] for r in results],
         [r['h_peak_int'] for r in results],
         peak_scatter_path,
@@ -666,7 +343,7 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
     if not use_mc and any(r.get('h_peak_basement', 0.0) > 1e-6 for r in results):
         bsmt_scatter_path = os.path.join(outdir, 'peak_exterior_vs_peak_basement.png')
         _v_bsmt = [r.get('v_peak_ext') for r in results]
-        viz.save_basement_scatter(
+        plot.save_basement_scatter(
             [r['h_peak_ext']      for r in results],
             [r['h_peak_basement'] for r in results],
             bsmt_scatter_path,
@@ -682,7 +359,7 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
         print(f'  Schematic → {os.path.join(outdir, "schematic.png")}')
         print(f'  Peaks    → {peak_scatter_path}')
         if not use_mc:
-            _print_summary_table(results, time_units)
+            _print_summary_table(results)
 
     if not use_mc and 'aggregate_content_loss' in results[0]:
         _v_loss = [r.get('v_peak_ext') for r in results]
@@ -693,15 +370,15 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
             gf_path   = os.path.join(outdir, 'ground_floor_loss.png')
             bsmt_path = os.path.join(outdir, 'basement_loss.png')
             agg_path  = os.path.join(outdir, 'aggregate_loss.png')
-            viz.save_ground_loss_scatter(
+            plot.save_ground_loss_scatter(
                 [r['h_peak_int']            for r in results],
                 [r['building_content_loss'] for r in results],
                 gf_path, v_peak=_vp)
-            viz.save_basement_loss_scatter(
+            plot.save_basement_loss_scatter(
                 [r['h_peak_basement']       for r in results],
                 [r['basement_content_loss'] for r in results],
                 bsmt_path, v_peak=_vp)
-            viz.save_loss_scatter(
+            plot.save_loss_scatter(
                 [r['h_peak_ext']            for r in results],
                 [r['aggregate_content_loss'] for r in results],
                 agg_path, v_peak=_vp)
@@ -711,7 +388,7 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
                 print(f'  Aggregate loss    → {agg_path}')
         else:
             loss_path = os.path.join(outdir, 'peak_exterior_vs_aggregate_loss.png')
-            viz.save_loss_scatter(
+            plot.save_loss_scatter(
                 [r['h_peak_ext']             for r in results],
                 [r['aggregate_content_loss'] for r in results],
                 loss_path, v_peak=_vp)
@@ -721,10 +398,8 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
     return results
 
 
-def _print_summary_table(results, time_units):
+def _print_summary_table(results):
     """Print a short summary table to stdout."""
-    tu = time_units[:3]
-
     def _stats(vals):
         s = sorted(vals)
         med = _percentile(s, 50)
@@ -752,85 +427,32 @@ def _print_summary_table(results, time_units):
             print(f"  {loss_col:<30s}  {mn:8.2f}  {md:8.2f}  {mx:8.2f}")
     print()
 
-
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _parse_args(argv=None):
     p = argparse.ArgumentParser(
-        description='Batch run of the water ingress simulation over an ensemble '
-                    'of pre-generated flood hydrographs. '
-                    'For true Monte Carlo see docs/NOTE_montecarlo.md.',
+        description='Batch run of the water ingress simulation over a set of '
+                    'hydrograph files.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     input_group = p.add_mutually_exclusive_group(required=True)
     input_group.add_argument('--depth-dir',
-                   help='Directory containing depth CSV files.')
+                   help='Directory containing hydrograph CSV files.')
     input_group.add_argument('--hydrograph-files', nargs='+', metavar='PATH_OR_REGEX',
                    help='One or more explicit file paths or regex patterns '
                         '(e.g. "hydrographs/0083.csv" or "hydrographs/008[0-9]\\.csv"). '
                         'Mutually exclusive with --depth-dir.')
-    p.add_argument('--ingress',      required=True,
-                   help='Ingress pathways CSV (header-based unified format).')
-    p.add_argument('--basement-ingress', default=None,
-                   help='Single-row CSV defining the lumped exterior→basement perimeter opening.')
-    p.add_argument('--membrane',     default=None,
-                   help='Membrane CSV (header-based unified format). Enables fragility MC.')
-    p.add_argument('--floor',        type=float, default=50.0,
-                   help='Building floor area (m²).')
-    p.add_argument('--time-units',   default='minutes',
-                   choices=['seconds', 'minutes', 'hours'],
-                   help='Time units used in the hydrograph files.')
-    p.add_argument('--dt',           type=float, default=1.0,
-                   help='Simulation timestep in the selected time units.')
-    p.add_argument('--n-replicates', type=int, default=1,
-                   help='Monte Carlo replicates per hydrograph (requires --membrane).')
-    p.add_argument('--random-seed',  type=int, default=None)
+    inputs.add_model_args(p)
     p.add_argument('--thresholds',   type=float, nargs='+',
                    default=_DEFAULT_THRESHOLDS,
                    metavar='H',
                    help='Absolute interior depth thresholds (m) for exceedance duration.')
-    p.add_argument('--velocity-mode', default='zero',
-                   choices=['zero', 'power_law', 'file'],
-                   help="Velocity mode: 'zero' (default), 'power_law' (v=a·h^b), or 'file' (CSV).")
-    p.add_argument('--velocity-power-law-a', type=float, default=1.5,
-                   help='Power-law coefficient a in v=a·h^b. Default: 1.5.')
-    p.add_argument('--velocity-power-law-b', type=float, default=0.5,
-                   help='Power-law exponent b in v=a·h^b. Default: 0.5.')
     p.add_argument('--building-vulnerability', default=None,
                    help='CSV vulnerability curve: peak ground-floor depth → loss.')
     p.add_argument('--basement-vulnerability', default=None,
                    help='CSV vulnerability curve: peak basement depth → loss.')
     p.add_argument('--contents-loss-column', default='mean_repair_loss_GBP',
                    help='Loss column to read from the vulnerability CSVs.')
-    p.add_argument('--basement-area', type=float, default=0.0,
-                   help='Basement floor area (m²). If >0, a basement zone is created.')
-    p.add_argument('--basement-floor-elevation', type=float, default=None,
-                   help='Basement floor elevation relative to ground-floor datum (m).')
-    p.add_argument('--basement-ceiling-elevation', type=float, default=None,
-                   help='Basement ceiling elevation in the external-ground frame (m). '
-                        'Defaults to --floor-datum (ceiling flush with internal floor).')
-    p.add_argument('--basement-bypass-height', type=float, default=None,
-                   help='Sill height of ground↔basement connection (m).')
-    p.add_argument('--basement-bypass-area', type=float, default=0.0,
-                   help='Area of ground↔basement connection (m²).')
-    p.add_argument('--basement-bypass-coeff', type=float, default=0.6,
-                   help='Discharge coefficient Cd of ground↔basement connection (–). Default: 0.6.')
-    # Sump + pump (unified --sumppump-* prefix, matching cli.py)
-    p.add_argument('--sumppump-area', type=float, default=0.0,
-                   help='Sump chamber area (m²). If >0 a sump+pump zone is created.')
-    p.add_argument('--sumppump-base-elevation',    type=float, default=None)
-    p.add_argument('--sumppump-overflow-level',    type=float, default=None)
-    p.add_argument('--sumppump-overflow-coeff',    type=float, default=1.8)
-    p.add_argument('--sumppump-overflow-exponent', type=float, default=1.5)
-    p.add_argument('--sumppump-on-level',          type=float, default=None)
-    p.add_argument('--sumppump-off-level',          type=float, default=None)
-    p.add_argument('--sumppump-shutoff-head',       type=float, default=None)
-    p.add_argument('--sumppump-curve-coeff',        type=float, default=None)
-    p.add_argument('--sumppump-pipe-loss-coeff',    type=float, default=0.0)
-    p.add_argument('--sumppump-availability',       type=float, default=1.0)
-    p.add_argument('--floor-datum',  type=float, default=0.0,
-                   help='Internal floor elevation above external ground datum (m). '
-                        'Use 0.10 for a building with a 10 cm doorstep.')
     p.add_argument('--outdir',       default='batch_results',
                    help='Output directory for batch_results.csv and batch_summary.csv.')
     p.add_argument('--save-timeseries', action='store_true', default=False,
@@ -841,173 +463,32 @@ def _parse_args(argv=None):
 
 def main(argv=None):
     args = _parse_args(argv)
-    if args.basement_ceiling_elevation is None:
-        args.basement_ceiling_elevation = args.floor_datum
-    import fragility as _frag
-    frag_paths = _frag.parse_pathway_file(args.ingress)
-    ingress_list = [
-        IngressPathway(height=p.height_m, area=p.area_m2, coeff=p.Cd, name=p.name)
-        for p in frag_paths
-    ]
-    loss_col = args.contents_loss_column
+    config = inputs.config_from_args(args)
+    paths, membranes = inputs.pathways_from_args(args)
 
-    building_content_vulnerability = None
-    if args.building_vulnerability:
-        building_content_vulnerability = load_vulnerability_curve(
-            args.building_vulnerability, loss_column=loss_col,
-        )
+    if args.hydrograph_files:
+        cases = _discover_cases_from_files(args.hydrograph_files)
+        if not cases:
+            raise ValueError(f'No CSV files matched by --hydrograph-files: {args.hydrograph_files}')
+    else:
+        cases = _discover_cases(args.depth_dir)
+        if not cases:
+            raise ValueError(f'No CSV files found in: {args.depth_dir}')
 
-    basement_content_vulnerability = None
-    if args.basement_vulnerability:
-        basement_content_vulnerability = load_vulnerability_curve(
-            args.basement_vulnerability, loss_column=loss_col,
-        )
-
-    # Basement perimeter pathways (--basement-ingress PATH).
-    # Every row of the file is parsed as a FragilePath with target='basement'
-    # and merged into frag_paths so the conductance resolver and any matching
-    # membrane (by group_id) treat them like ground-floor paths.  The legacy
-    # building.basement_ingress slot still receives the first row for plotting
-    # and for the (deprecated) BasementFragility hook.
-    basement_ingress = None
-    if args.basement_ingress:
-        bsmt_paths = _frag.parse_pathway_file(args.basement_ingress)
-        for fp in bsmt_paths:
-            fp.target = 'basement'
-        frag_paths = list(frag_paths) + bsmt_paths
-        ingress_list = [
-            IngressPathway(height=p.height_m, area=p.area_m2, coeff=p.Cd,
-                           name=p.name, target=p.target)
-            for p in frag_paths
-        ]
-        if bsmt_paths:
-            bp = bsmt_paths[0]
-            basement_ingress = IngressPathway(
-                height=bp.height_m, area=bp.area_m2, coeff=bp.Cd,
-                name=bp.name, source='outside', target='basement')
-
-    # Sump+pump (--sumppump-* flags)
-    sump_pump = None
-    if args.sumppump_area and args.sumppump_area > 0.0:
-        required = ['sumppump_base_elevation', 'sumppump_overflow_level',
-                    'sumppump_on_level', 'sumppump_off_level',
-                    'sumppump_shutoff_head', 'sumppump_curve_coeff']
-        missing = [k for k in required if getattr(args, k, None) is None]
-        if missing:
-            print(f'WARNING: sump enabled but missing params: {missing}. Sump disabled.')
-        else:
-            sump_pump = SumpPump(
-                sump_area           = float(args.sumppump_area),
-                sump_base_elevation = float(args.sumppump_base_elevation),
-                overflow_level      = float(args.sumppump_overflow_level),
-                overflow_coeff      = float(args.sumppump_overflow_coeff),
-                overflow_exponent   = float(args.sumppump_overflow_exponent),
-                pump_on_level       = float(args.sumppump_on_level),
-                pump_off_level      = float(args.sumppump_off_level),
-                pump_shutoff_head   = float(args.sumppump_shutoff_head),
-                pump_curve_coeff    = float(args.sumppump_curve_coeff),
-                pipe_loss_coeff     = float(args.sumppump_pipe_loss_coeff),
-                pump_availability   = float(args.sumppump_availability),
-            )
-
-    # Membrane fragility (--membrane PATH)
-    membranes = []
-    if args.membrane:
-        raw = _frag.parse_pathway_file(args.membrane)
-        membranes = [_frag.fragile_path_to_membrane(fp)
-                     for fp in raw if fp.group_id > 0 and fp.fragility is not None]
-        if membranes:
-            _frag.assign_representative_paths(frag_paths, membranes)
+    def _vuln(path):
+        return (load_vulnerability_curve(path, loss_column=args.contents_loss_column)
+                if path else None)
 
     run_batch(
-        depth_dir                      = args.depth_dir,
-        hydrograph_files               = args.hydrograph_files,
-        ingress_list                   = ingress_list,
-        frag_paths                     = frag_paths,
-        membranes                      = membranes,
-        n_replicates                   = args.n_replicates,
-        random_seed                    = args.random_seed,
-        floor_area                     = args.floor,
-        time_units                     = args.time_units,
-        dt                             = args.dt,
-        thresholds                     = args.thresholds,
-        velocity_mode                  = args.velocity_mode,
-        vel_a                          = args.velocity_power_law_a,
-        vel_b                          = args.velocity_power_law_b,
-        building_content_vulnerability = building_content_vulnerability,
-        basement_content_vulnerability = basement_content_vulnerability,
-        basement_area                  = args.basement_area,
-        basement_floor_elev            = args.basement_floor_elevation,
-        basement_ceiling_elev          = args.basement_ceiling_elevation,
-        basement_ingress               = basement_ingress,
-        basement_conn_height           = args.basement_bypass_height,
-        basement_conn_area             = args.basement_bypass_area,
-        basement_conn_coeff            = args.basement_bypass_coeff,
-        sump_pump                      = sump_pump,
-        floor_datum                    = args.floor_datum,
-        outdir                         = args.outdir,
-        save_timeseries                = args.save_timeseries,
-        verbose                        = True,
+        config, cases, paths, membranes,
+        thresholds=args.thresholds,
+        building_content_vulnerability=_vuln(args.building_vulnerability),
+        basement_content_vulnerability=_vuln(args.basement_vulnerability),
+        outdir=args.outdir,
+        save_timeseries=args.save_timeseries,
+        verbose=True,
     )
 
 
 if __name__ == '__main__':
     main()
-
-
-# ── high-level public run() ───────────────────────────────────────────────────
-
-def run(config, hydro_dir: str, pathways: list, *,
-        basement_pathway=None,
-        thresholds=None,
-        building_vulnerability=None,
-        basement_vulnerability=None,
-        outdir='batch_results',
-        verbose=True) -> list:
-    """Run the full batch ensemble using SimConfig and a directory of hydrographs.
-
-    Parameters
-    ----------
-    config                : engine.SimConfig — building geometry and run parameters
-    hydro_dir             : path to directory of depth CSV files (2 or 3 columns)
-    pathways              : List[IngressPathway] — ingress paths (fixed across all cases)
-    basement_pathway      : optional IngressPathway for exterior→basement perimeter
-    thresholds            : list of depth thresholds (m) for duration reporting
-    building_vulnerability: optional VulnerabilityCurve for ground-floor loss
-    basement_vulnerability: optional VulnerabilityCurve for basement loss
-    outdir                : output directory for batch CSVs and figures
-    verbose               : print progress to stdout
-
-    Returns
-    -------
-    List of result dicts (one per successfully completed case)
-    """
-    if thresholds is None:
-        thresholds = _DEFAULT_THRESHOLDS
-
-    sump_pump = config.sumppump
-
-    return run_batch(
-        depth_dir=hydro_dir,
-        ingress_list=pathways,
-        floor_area=config.floor_area,
-        time_units=config.time_units,
-        dt=config.dt / {'seconds': 1.0, 'minutes': 60.0, 'hours': 3600.0}.get(config.time_units, 60.0),
-        thresholds=thresholds,
-        velocity_mode=config.velocity_mode,
-        vel_a=config.velocity_power_law_a,
-        vel_b=config.velocity_power_law_b,
-        building_content_vulnerability=building_vulnerability,
-        basement_content_vulnerability=basement_vulnerability,
-        basement_area=config.basement_area,
-        basement_floor_elev=config.basement_floor_elevation if config.basement_area > 0 else None,
-        basement_ceiling_elev=config.basement_ceiling_elevation,
-        basement_ingress=basement_pathway,
-        basement_conn_height=config.basement_connection_height,
-        basement_conn_area=config.basement_connection_area,
-        basement_conn_coeff=config.basement_connection_coeff,
-        sump_pump=sump_pump,
-        floor_datum=config.floor_datum,
-        outdir=outdir,
-        verbose=verbose,
-    )

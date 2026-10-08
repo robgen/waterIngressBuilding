@@ -6,26 +6,14 @@ docs/INTERPRETATION_DASHBOARD_TUTORIAL.md and spec section 17.2.
 
 Design principle (spec §17.2)
 ------------------------------
-Diagnostics are built from the per-step trace emitted by Simulation.run()
-(stored as sim._last_trace).  There is no independent replay loop here —
+Diagnostics are built from the per-step trace emitted by the engine
+(SimResult.trace).  There is no independent replay loop here —
 all hydraulic arithmetic lives in Simulation.run() and pump.py.
-
-``run_diagnostics`` is a convenience wrapper that creates a Simulation,
-calls run(), and returns the diagnostics dict.  When you already have a
-Simulation that has been run, call ``diagnostics_from_trace`` directly
-to avoid a second simulation pass.
 
 Usage
 -----
-    # Preferred — single simulation pass
-    sim = Simulation(building, ingress, times_s, levels, dt=dt_s)
-    sim.run()
-    diag = diagnostics_from_trace(sim._last_trace, sim.dt)
-
-    # Convenience wrapper (creates and runs a fresh Simulation internally)
-    from report import run_diagnostics
-    diag = run_diagnostics(building, ingress_list, times_s, levels, dt=dt_s,
-                           v_times=v_t, v_vals=v_v)
+    result = engine.run(config, hydro, pathways)
+    diag = diagnostics_from_trace(result.trace, config.dt)
 
 Keys returned
 -------------
@@ -49,8 +37,6 @@ vol_sump_overflow_cum : cumulative sump overflow volume (m³)
 events             : dict of named event timings (keyed strings → time in seconds)
 """
 
-import copy
-
 
 def diagnostics_from_trace(trace, dt):
     """Build the diagnostics dict from a per-step trace emitted by Simulation.run().
@@ -58,14 +44,14 @@ def diagnostics_from_trace(trace, dt):
     Parameters
     ----------
     trace : dict
-        The ``_last_trace`` dict populated by ``Simulation.run()``.
+        SimResult.trace (the per-step dict populated by ``Simulation.run()``).
     dt : float
         Simulation timestep (same units as trace['times']).
 
     Returns
     -------
     dict
-        Full diagnostics dict (same structure as returned by run_diagnostics).
+        Full diagnostics dict.
     """
     dt = float(dt)
 
@@ -160,30 +146,6 @@ def diagnostics_from_trace(trace, dt):
         'vol_sump_overflow_cum': vol_sump_ov_cum,
         'events':                events,
     }
-
-
-def run_diagnostics(building, ingress_list, external_times, external_levels,
-                    dt=60.0, v_times=None, v_vals=None):
-    """Run a fresh simulation and return pathway-resolved diagnostics.
-
-    Convenience wrapper: creates a Simulation, calls run(), then calls
-    diagnostics_from_trace().  The building state is deep-copied so the
-    caller's building is not modified.
-
-    When you already have a Simulation that has been run, prefer:
-        diag = diagnostics_from_trace(sim._last_trace, sim.dt)
-    """
-    from engine import Simulation
-
-    bldg = copy.deepcopy(building)
-    sim = Simulation(
-        bldg, ingress_list, external_times, external_levels,
-        dt=dt,
-        external_vel_times=v_times,
-        external_velocities=v_vals,
-    )
-    sim.run()
-    return diagnostics_from_trace(sim._last_trace, sim.dt)
 
 
 def _cumsum(flow_list, dt):

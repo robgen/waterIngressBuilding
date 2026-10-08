@@ -4,7 +4,8 @@ import tempfile
 import pytest
 
 from loss import VulnerabilityCurve, load_vulnerability_curve
-from engine import Building, IngressPathway, Simulation, parse_ingress_text
+from engine import Building, IngressPathway, Simulation
+from fragility import parse_pathway_text
 
 
 def test_no_ingress_no_change():
@@ -84,11 +85,12 @@ def test_load_vulnerability_curve_averages_duplicate_heights():
         os.remove(path)
 
 
-def test_parse_ingress_text_rejects_routing_columns():
-    with pytest.raises(ValueError):
-        parse_ingress_text("0.0, 0.01, 0.6, crack, outside, basement")
+def test_parse_pathway_text_rejects_positional_format():
+    with pytest.raises(ValueError, match='positional'):
+        parse_pathway_text("0.0, 0.01, 0.6, crack")
 
 
-def test_parse_ingress_text_rejects_legacy_always_open_column():
-    with pytest.raises(ValueError):
-        parse_ingress_text("0.0, 0.01, 0.6, crack, 1")
+def test_parse_pathway_text_reads_header_format():
+    paths = parse_pathway_text("name, height_m, area_m2, Cd\ncrack, 0.0, 0.01, 0.6\n")
+    assert [(p.name, p.height_m, p.area_m2, p.Cd, p.target) for p in paths] == \
+        [('crack', 0.0, 0.01, 0.6, 'ground')]

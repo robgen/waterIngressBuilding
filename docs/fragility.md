@@ -131,7 +131,7 @@ A membrane is a perimeter protection element that shields multiple ingress pathw
 | Intact (state 0) | $h < h^*_1$ | Representative path carries membrane $(A, C)$; all others suppressed ($10^{-9}$ m²) |
 | Overtopped (state 1) | $h \geq h^*_1$ | All protected pathways restored to their own ingress-file parameters |
 
-The representative pathway is the first row in the ingress file sharing the membrane's `group_id`.
+The representative pathway is the first row sharing the membrane's `group_id`, taking `--ingress` rows before `--basement-ingress` rows.
 
 Protected pathways must not carry their own fragility states (validated at load time): when the membrane overtops, exposed pathways are treated as deterministic openings.
 
@@ -139,7 +139,7 @@ Protected pathways must not carry their own fragility states (validated at load 
 
 ## Basement perimeter opening
 
-The exterior-to-basement perimeter opening supports the same fragility logic as any ingress pathway. It is defined in a separate file (`--basement-ingress`) using the same unified CSV format, and is sampled independently from ground-floor pathways and membranes.
+Exterior-to-basement pathways support the same fragility logic as any ingress pathway. They are defined in a separate file (`--basement-ingress`) using the same unified CSV format. A fragile basement row is sampled independently; a basement row with a `group_id` is protected by that membrane together with any ground-floor rows of the same group.
 
 ---
 
@@ -147,16 +147,18 @@ The exterior-to-basement perimeter opening supports the same fragility logic as 
 
 For each replicate:
 
-1. Draw $u \sim \mathcal{U}(0,1)$ independently for each probabilistic element (paths, membranes, basement opening).
+1. Draw $u \sim \mathcal{U}(0,1)$ independently for each probabilistic element (fragile paths, ground-floor or basement, and membranes).
 2. Invert all fragility curves to capacity thresholds $h^*_k$.
-3. Run `engine.run()` with a conductance resolver that evaluates thresholds at each timestep.
-4. Record: capacity thresholds, $u$ values, peak depths, ingress volumes, active state at peak external depth.
+3. Run `engine.run()` with a conductance resolver that evaluates thresholds at each timestep (`fragility.run_replicate`).
+4. Record: $u$ values, capacity thresholds, and the replicate's `SimResult` (peak depths, ingress volume, time series).
+
+A run with `--n-replicates 1` is a single replicate; when no element is fragile nothing is sampled.
 
 After all replicates:
 
 - Compute percentile distributions (P10, P25, P50, P75, P90) for peak metrics.
-- Compute state frequency tables: fraction of replicates in which each element reached each degraded state.
-- Compute rank correlations between each element's $u$ and key output metrics.
+- Compute state frequency tables: fraction of replicates in which the peak external head reached each element's sampled thresholds.
+- Compute Spearman rank correlations between each element's $u$ and the peak ground-floor depth.
 
 ---
 

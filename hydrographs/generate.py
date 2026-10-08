@@ -13,7 +13,7 @@ Velocity is derived directly from depth at each timestep (no independent shaping
 
 The full case list is the Cartesian product of all parameter grids.
 Output: one 3-column CSV per case (time, depth, velocity) written to
-<script_dir>/depth/.
+<script_dir>/generated/NNNN.csv, plus <script_dir>/metadata.csv.
 
 Edit the constants below to change coverage or resolution.
 """

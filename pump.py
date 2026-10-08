@@ -18,16 +18,15 @@ Design principles
 
 Routing convention
 ------------------
-The lumped exterior perimeter inflow (Q_ext_s or Q_ext_b) is owned by
-Building.basement_ingress, not by the user-authored ingress file.  When a
-sump is configured, Simulation.run() redirects that pathway to the sump.
-When no sump is configured it feeds the basement directly.  This keeps the
-user-facing ingress file as exterior-to-building-only pathways.
+Exterior→basement pathways (target='basement', from the --basement-ingress
+file) carry the perimeter inflow (Q_ext_s or Q_ext_b).  When a sump is
+configured, Simulation.run() routes them to the sump; otherwise they feed the
+basement directly.
 """
 
 import math
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
