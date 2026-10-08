@@ -11,19 +11,20 @@ Cases in order of complexity — 2×2 matrix (single/batch × no-fragility/membr
   02 – Ground floor, raised sill at 0.3 m
   03 – Ground floor, two openings with different sill heights
   04 – Basement compartment (no ground-floor opening)
-  05 – Basement + sump/pump that keeps up
-  06 – Basement + sump/pump that is overwhelmed
+  05 – Basement fills and surcharges the ground floor (long 1.0 m flood; known defect)
+  06 – Basement + sump/pump that keeps up
+  07 – Basement + sump/pump that is overwhelmed
 
   Single hydrograph, fragility / membrane MC:
-  07 – Fragility MC: single probabilistic seal (50 % failure at peak depth)
-  08 – Fragility MC: membrane-protected group (50 % membrane failure)
-  09 – Deterministic membrane: design capacity above flood peak (no failure)
+  08 – Fragility MC: single probabilistic seal (50 % failure at peak depth)
+  09 – Fragility MC: membrane-protected group (50 % membrane failure)
+  10 – Deterministic membrane: design capacity above flood peak (no failure)
 
   Batch (20 hydrographs, peaks 0.10–1.05 m), no fragility:
-  10 – Batch deterministic: single ground-floor opening across 20 hydrographs
+  11 – Batch deterministic: single ground-floor opening across 20 hydrographs
 
   Batch (20 hydrographs), fragility / membrane MC:
-  11 – Batch + fragility MC: membrane-protected group, 50 replicates per hydrograph
+  12 – Batch + fragility MC: membrane-protected group, 50 replicates per hydrograph
 """
 
 import argparse
@@ -59,11 +60,12 @@ CASE_DURATION = {
     'ex02': 120,   # raised sill; residual trapped, no dynamics after ~70 min
     'ex03': 360,   # slow crack drainage must reach zero
     'ex04': 120,   # basement permanently trapped; level flat after t = 60 min
-    'ex05': 90,    # strong pump keeps sump dry throughout
-    'ex06': 150,   # sump overflows and basement fills; level flat after ~80 min
-    'ex07': 120,   # fragility MC; fill/drain settles by ~100 min
-    'ex08': 120,
-    'ex09': 90,    # membrane intact, near-zero interior; nothing to show past 90 min
+    'ex05': 360,   # long 1.0 m flood; basement full at ~123 min
+    'ex06': 90,    # strong pump keeps sump dry throughout
+    'ex07': 150,   # sump overflows and basement fills; level flat after ~80 min
+    'ex08': 120,   # fragility MC; fill/drain settles by ~100 min
+    'ex09': 120,
+    'ex10': 90,    # membrane intact, near-zero interior; nothing to show past 90 min
 }
 
 # ── batch hydrograph ensemble ─────────────────────────────────────────────────
@@ -233,14 +235,34 @@ run('ex04', [
     mkdir(os.path.join(ex04, 'out')),
     hydro_path=os.path.join(ex04, 'hydro.csv'))
 
-# ── Ex 05: basement + sump/pump that keeps up ────────────────────────────────
+# ── Ex 05: basement fills and surcharges the ground floor ────────────────────
+# Same building as Ex 04 under a more aggressive flood: 1.0 m held from 30 to
+# 240 min.  The basement fills to its ceiling (≈ 75 m³) at t ≈ 123 min.
+# Known defect: once full, the basement level is frozen at the ceiling, so the
+# perimeter keeps driving inflow against it and the excess is pushed into the
+# ground floor, which rises above the exterior level.
+print('\nEx 05 – basement fills, long 1.0 m flood (known defect)')
+ex05 = mkdir(os.path.join(HERE, 'ex05'))
+write_csv_rows(os.path.join(ex05, 'hydro.csv'),
+               [(0, 0.00), (30, 1.00), (240, 1.00), (270, 0.00),
+                (CASE_DURATION['ex05'], 0.00)])
+run('ex05', [
+    '--basement-ingress', os.path.join(shared, 'basement_opening.csv'),
+    '--floor', '50',
+    '--basement-area',            '30',
+    '--basement-floor-elevation', '-2.5',
+] + (['--animate'] if ANIMATE.animate else []),
+    mkdir(os.path.join(ex05, 'out')),
+    hydro_path=os.path.join(ex05, 'hydro.csv'))
+
+# ── Ex 06: basement + sump/pump that keeps up ────────────────────────────────
 # Same inflow as Ex 04.  Strong pump: Q_pump ≈ 0.045 m³/s >> Q_in_max ≈ 0.008 m³/s.
 # Q_pump = sqrt((H_shut − H_lift) / k_pump) = sqrt((5.0 − 3.0) / 1000) ≈ 0.045 m³/s
 # H_lift = |h_ext − z_sump| = |0.5 − (−2.5)| = 3.0 m at peak flood.
-print('\nEx 05 – basement + sump/pump (keeps up)')
-ex05 = mkdir(os.path.join(HERE, 'ex05'))
-write_csv_rows(os.path.join(ex05, 'hydro.csv'), make_hydro(CASE_DURATION['ex05']))
-run('ex05', [
+print('\nEx 06 – basement + sump/pump (keeps up)')
+ex06 = mkdir(os.path.join(HERE, 'ex06'))
+write_csv_rows(os.path.join(ex06, 'hydro.csv'), make_hydro(CASE_DURATION['ex06']))
+run('ex06', [
     '--basement-ingress', os.path.join(shared, 'basement_opening.csv'),
     '--floor', '50',
     '--basement-area',               '30',
@@ -257,22 +279,22 @@ run('ex05', [
     '--sumppump-pipe-loss-coeff',    '0',
     '--sumppump-availability',       '1.0',
 ] + (['--animate'] if ANIMATE.animate else []),
-    mkdir(os.path.join(ex05, 'out')),
-    hydro_path=os.path.join(ex05, 'hydro.csv'))
+    mkdir(os.path.join(ex06, 'out')),
+    hydro_path=os.path.join(ex06, 'hydro.csv'))
 
-# Timestep sensitivity study for Ex 05
-print('  Generating dt sensitivity figure for ex05...')
+# Timestep sensitivity study for Ex 06
+print('  Generating dt sensitivity figure for ex06...')
 subprocess.run([PY, os.path.join(HERE, 'plot_dt_sensitivity_sump.py')],
                capture_output=True, text=True, cwd=ROOT)
-print('  OK  ex05 dt-sensitivity')
+print('  OK  ex06 dt-sensitivity')
 
-# ── Ex 06: basement + sump/pump overwhelmed ───────────────────────────────────
-# Same inflow as Ex 04/05 but 100× weaker pump → sump overflows → basement fills.
+# ── Ex 07: basement + sump/pump overwhelmed ───────────────────────────────────
+# Same inflow as Ex 04/06 but 100× weaker pump → sump overflows → basement fills.
 # Q_pump = sqrt((5.0 − 3.0) / 100000) ≈ 0.0045 m³/s  <  Q_in_max ≈ 0.008 m³/s
-print('\nEx 06 – basement + sump/pump (overwhelmed)')
-ex06 = mkdir(os.path.join(HERE, 'ex06'))
-write_csv_rows(os.path.join(ex06, 'hydro.csv'), make_hydro(CASE_DURATION['ex06']))
-run('ex06', [
+print('\nEx 07 – basement + sump/pump (overwhelmed)')
+ex07 = mkdir(os.path.join(HERE, 'ex07'))
+write_csv_rows(os.path.join(ex07, 'hydro.csv'), make_hydro(CASE_DURATION['ex07']))
+run('ex07', [
     '--basement-ingress', os.path.join(shared, 'basement_opening.csv'),
     '--floor', '50',
     '--basement-area',               '30',
@@ -289,88 +311,88 @@ run('ex06', [
     '--sumppump-pipe-loss-coeff',    '0',
     '--sumppump-availability',       '1.0',
 ] + (['--animate'] if ANIMATE.animate else []),
-    mkdir(os.path.join(ex06, 'out')),
-    hydro_path=os.path.join(ex06, 'hydro.csv'))
+    mkdir(os.path.join(ex07, 'out')),
+    hydro_path=os.path.join(ex07, 'hydro.csv'))
 
-# ── Ex 07: fragility MC – single probabilistic path, 50 % failure ─────────────
+# ── Ex 08: fragility MC – single probabilistic path, 50 % failure ─────────────
 # One path: base state is a nearly sealed door (area ≈ 0).
 # State 1 (seal fails): area = 0.005 m², median = 0.5 m, β = 0.3.
 # P(activated at peak) = P(h* < 0.5 m) = Φ(0) = 50 %.
 # With floor = 50 m² the fill rate is slow (τ ≈ 44 min): when the seal fails
 # the interior fills to ≈ 0.25 m during the 30-min rising limb.
 # Result: bimodal peak_h_in — half near 0, half near 0.25 m.
-print('\nEx 07 – fragility MC, single probabilistic path (50 % failure)')
-ex07 = mkdir(os.path.join(HERE, 'ex07'))
-write_text(os.path.join(ex07, 'ingress_frag.csv'),
+print('\nEx 08 – fragility MC, single probabilistic path (50 % failure)')
+ex08 = mkdir(os.path.join(HERE, 'ex08'))
+write_text(os.path.join(ex08, 'ingress_frag.csv'),
            'name, height_m, area_m2, Cd, group_id, reversible,'
            ' state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
            'seal_door, 0.0, 1.0e-7, 0.6, 0, 0, failed, 0.5, 0.3, 5.0e-3, 0.6\n')
-write_csv_rows(os.path.join(ex07, 'hydro.csv'), make_hydro(CASE_DURATION['ex07']))
-run('ex07', [
-    '--ingress', os.path.join(ex07, 'ingress_frag.csv'),
-    '--floor', '50',
-    '--n-replicates', '500',
-    '--random-seed', '42',
-], mkdir(os.path.join(ex07, 'out')),
-    hydro_path=os.path.join(ex07, 'hydro.csv'))
-
-# ── Ex 08: fragility MC – membrane-protected group, 50 % membrane failure ─────
-# Two pathways (airbrick + door gap) sit behind a membrane.
-# Membrane: sill = 0 m, base leakage ≈ 0, median capacity = 0.5 m, β = 0.1.
-# P(membrane overtopped at peak 0.5 m) = Φ(0) = 50 %.
-# When intact:   total area ≈ 0   → near-zero ingress.
-# When overtopped: paths restored → airbrick (6 e-3) + door gap (2 e-3) m² active.
-print('\nEx 08 – fragility MC, membrane-protected group (50 % failure)')
-ex08 = mkdir(os.path.join(HERE, 'ex08'))
-write_text(os.path.join(ex08, 'ingress_frag.csv'),
-           'name, height_m, area_m2, Cd, group_id\n'
-           'airbrick, 0.1, 6.0e-3, 0.6, 1\n'
-           'door_gap, 0.0, 2.0e-3, 0.6, 1\n')
-write_text(os.path.join(ex08, 'membrane.csv'),
-           'name, height_m, area_m2, Cd, group_id, reversible,'
-           ' state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
-           'membrane_1, 0.0, 1.0e-6, 0.6, 1, 1, overtopped, 0.5, 0.1, 1.0e-9, 0.6\n')
 write_csv_rows(os.path.join(ex08, 'hydro.csv'), make_hydro(CASE_DURATION['ex08']))
 run('ex08', [
-    '--ingress',    os.path.join(ex08, 'ingress_frag.csv'),
-    '--membrane',   os.path.join(ex08, 'membrane.csv'),
+    '--ingress', os.path.join(ex08, 'ingress_frag.csv'),
     '--floor', '50',
     '--n-replicates', '500',
     '--random-seed', '42',
 ], mkdir(os.path.join(ex08, 'out')),
     hydro_path=os.path.join(ex08, 'hydro.csv'))
 
-# ── Ex 09: deterministic membrane — design capacity above flood peak ──────────
-# Same two pathways as Ex 08 (airbrick + door_gap behind membrane group_id=1).
-# Membrane: sill = 0 m, base leakage ≈ 0.  Capacity = 0.6 m, β = 0 (deterministic).
-# Peak flood = 0.5 m < 0.6 m = capacity  →  membrane never overtopped in any replicate.
-# Expected: 0/500 overtopping events, interior depth ≈ 0 throughout.
-# Contrasts with Ex 08 where the same membrane (capacity 0.5 m, β = 0.1) fails in ≈ 50 %.
-print('\nEx 09 – deterministic membrane (design capacity above flood peak)')
+# ── Ex 09: fragility MC – membrane-protected group, 50 % membrane failure ─────
+# Two pathways (airbrick + door gap) sit behind a membrane.
+# Membrane: sill = 0 m, base leakage ≈ 0, median capacity = 0.5 m, β = 0.1.
+# P(membrane overtopped at peak 0.5 m) = Φ(0) = 50 %.
+# When intact:   total area ≈ 0   → near-zero ingress.
+# When overtopped: paths restored → airbrick (6 e-3) + door gap (2 e-3) m² active.
+print('\nEx 09 – fragility MC, membrane-protected group (50 % failure)')
 ex09 = mkdir(os.path.join(HERE, 'ex09'))
-write_text(os.path.join(ex09, 'membrane_det.csv'),
+write_text(os.path.join(ex09, 'ingress_frag.csv'),
+           'name, height_m, area_m2, Cd, group_id\n'
+           'airbrick, 0.1, 6.0e-3, 0.6, 1\n'
+           'door_gap, 0.0, 2.0e-3, 0.6, 1\n')
+write_text(os.path.join(ex09, 'membrane.csv'),
            'name, height_m, area_m2, Cd, group_id, reversible,'
            ' state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
-           'membrane_1, 0.0, 1.0e-6, 0.6, 1, 1, overtopped, 0.6, 0.0, 1.0e-9, 0.6\n')
+           'membrane_1, 0.0, 1.0e-6, 0.6, 1, 1, overtopped, 0.5, 0.1, 1.0e-9, 0.6\n')
 write_csv_rows(os.path.join(ex09, 'hydro.csv'), make_hydro(CASE_DURATION['ex09']))
 run('ex09', [
-    '--ingress',  os.path.join(ex08, 'ingress_frag.csv'),   # same airbrick + door_gap
-    '--membrane', os.path.join(ex09, 'membrane_det.csv'),
+    '--ingress',    os.path.join(ex09, 'ingress_frag.csv'),
+    '--membrane',   os.path.join(ex09, 'membrane.csv'),
     '--floor', '50',
     '--n-replicates', '500',
     '--random-seed', '42',
 ], mkdir(os.path.join(ex09, 'out')),
     hydro_path=os.path.join(ex09, 'hydro.csv'))
 
-# Generate MC result figures for ex07, ex08, ex09
+# ── Ex 10: deterministic membrane — design capacity above flood peak ──────────
+# Same two pathways as Ex 09 (airbrick + door_gap behind membrane group_id=1).
+# Membrane: sill = 0 m, base leakage ≈ 0.  Capacity = 0.6 m, β = 0 (deterministic).
+# Peak flood = 0.5 m < 0.6 m = capacity  →  membrane never overtopped in any replicate.
+# Expected: 0/500 overtopping events, interior depth ≈ 0 throughout.
+# Contrasts with Ex 09 where the same membrane (capacity 0.5 m, β = 0.1) fails in ≈ 50 %.
+print('\nEx 10 – deterministic membrane (design capacity above flood peak)')
+ex10 = mkdir(os.path.join(HERE, 'ex10'))
+write_text(os.path.join(ex10, 'membrane_det.csv'),
+           'name, height_m, area_m2, Cd, group_id, reversible,'
+           ' state_name_1, median_m_1, beta_ln_1, area_m2_1, Cd_1\n'
+           'membrane_1, 0.0, 1.0e-6, 0.6, 1, 1, overtopped, 0.6, 0.0, 1.0e-9, 0.6\n')
+write_csv_rows(os.path.join(ex10, 'hydro.csv'), make_hydro(CASE_DURATION['ex10']))
+run('ex10', [
+    '--ingress',  os.path.join(ex09, 'ingress_frag.csv'),   # same airbrick + door_gap
+    '--membrane', os.path.join(ex10, 'membrane_det.csv'),
+    '--floor', '50',
+    '--n-replicates', '500',
+    '--random-seed', '42',
+], mkdir(os.path.join(ex10, 'out')),
+    hydro_path=os.path.join(ex10, 'hydro.csv'))
+
+# Generate MC result figures for ex08, ex09, ex10
 print('\nGenerating fragility MC figures ...')
 for _case_dir, _title in [
-    (os.path.join(HERE, 'ex07'),
-     'Case 07 — Fragility MC: single probabilistic seal  (n = 500, seed = 42)'),
     (os.path.join(HERE, 'ex08'),
-     'Case 08 — Fragility MC: membrane-protected group  (n = 500, seed = 42)'),
+     'Case 08 — Fragility MC: single probabilistic seal  (n = 500, seed = 42)'),
     (os.path.join(HERE, 'ex09'),
-     'Case 09 — Deterministic membrane: design capacity above flood peak  (n = 500, seed = 42)'),
+     'Case 09 — Fragility MC: membrane-protected group  (n = 500, seed = 42)'),
+    (os.path.join(HERE, 'ex10'),
+     'Case 10 — Deterministic membrane: design capacity above flood peak  (n = 500, seed = 42)'),
 ]:
     _reps  = _load_csv(os.path.join(_case_dir, 'out', 'fragility_replicates.csv'))
     _sfreq = _load_csv(os.path.join(_case_dir, 'out', 'fragility_state_freq.csv'))
@@ -392,58 +414,58 @@ for i, peak in enumerate(BATCH_PEAKS):
     )
 print(f'  OK  {len(BATCH_PEAKS)} hydrographs  (peaks {BATCH_PEAKS[0]}–{BATCH_PEAKS[-1]} m)')
 
-# ── Ex 10: batch, deterministic ───────────────────────────────────────────────
+# ── Ex 11: batch, deterministic ───────────────────────────────────────────────
 # Same building as Ex 01 (50 m² floor, door_gap sill=0, area=0.05 m²).
 # Run over 20 hydrographs with peaks 0.10–1.05 m.
 # Demonstrates monotonic scaling: larger floods → deeper interior inundation.
-print('\nEx 10 – batch deterministic (20 hydrographs, single opening)')
-ex10 = mkdir(os.path.join(HERE, 'ex10'))
-run_batch_case('ex10', [
+print('\nEx 11 – batch deterministic (20 hydrographs, single opening)')
+ex11 = mkdir(os.path.join(HERE, 'ex11'))
+run_batch_case('ex11', [
     '--depth-dir', batch_hydros_dir,
     '--ingress',   os.path.join(ex01, 'ingress.csv'),
     '--floor', '50',
-], mkdir(os.path.join(ex10, 'out')))
+], mkdir(os.path.join(ex11, 'out')))
 
-# ── Ex 11: batch + fragility MC ───────────────────────────────────────────────
-# Same membrane-protected building as Ex 08 (airbrick + door_gap, membrane η=0.5 m).
+# ── Ex 12: batch + fragility MC ───────────────────────────────────────────────
+# Same membrane-protected building as Ex 09 (airbrick + door_gap, membrane η=0.5 m).
 # 20 hydrographs × 50 replicates = 1 000 simulations.
 # Below η=0.5 m: membrane almost always intact → near-zero ingress.
 # Above η=0.5 m: failure probability increases → rising P50 interior depth.
 # Produces a fragility curve: P(significant ingress) vs h_ext.
-print('\nEx 11 – batch + fragility MC (20 hydrographs × 50 replicates, membrane)')
-ex11 = mkdir(os.path.join(HERE, 'ex11'))
-run_batch_case('ex11', [
+print('\nEx 12 – batch + fragility MC (20 hydrographs × 50 replicates, membrane)')
+ex12 = mkdir(os.path.join(HERE, 'ex12'))
+run_batch_case('ex12', [
     '--depth-dir', batch_hydros_dir,
-    '--ingress',   os.path.join(ex08, 'ingress_frag.csv'),
-    '--membrane',  os.path.join(ex08, 'membrane.csv'),
+    '--ingress',   os.path.join(ex09, 'ingress_frag.csv'),
+    '--membrane',  os.path.join(ex09, 'membrane.csv'),
     '--floor', '50',
     '--n-replicates', '50',
     '--random-seed',  '42',
-], mkdir(os.path.join(ex11, 'out')))
+], mkdir(os.path.join(ex12, 'out')))
 
 # Generate batch figures
 print('\nGenerating batch figures ...')
-_rows10 = _load_csv(os.path.join(HERE, 'ex10', 'out', 'batch_results.csv'))
-_out10  = os.path.join(HERE, 'ex10', 'out', 'batch_result.png')
-viz.save_batch_deterministic(
-    [float(r['h_peak_ext']) for r in _rows10],
-    [float(r['h_peak_int']) for r in _rows10],
-    'Case 10 — Batch deterministic: 20 hydrographs, single ground-floor opening',
-    _out10,
-    v_peak=[float(r['v_peak_ext']) for r in _rows10] if 'v_peak_ext' in _rows10[0] else None,
-)
-print(f'  OK  {_out10}')
-
 _rows11 = _load_csv(os.path.join(HERE, 'ex11', 'out', 'batch_results.csv'))
-_out11  = os.path.join(HERE, 'ex11', 'out', 'batch_mc_result.png')
-viz.save_batch_mc_fragility(
+_out11  = os.path.join(HERE, 'ex11', 'out', 'batch_result.png')
+viz.save_batch_deterministic(
     [float(r['h_peak_ext']) for r in _rows11],
     [float(r['h_peak_int']) for r in _rows11],
-    'Case 11 — Batch + fragility MC: 20 hydrographs × 50 replicates, membrane',
+    'Case 11 — Batch deterministic: 20 hydrographs, single ground-floor opening',
     _out11,
-    membrane_median_m=0.5,
+    v_peak=[float(r['v_peak_ext']) for r in _rows11] if 'v_peak_ext' in _rows11[0] else None,
 )
 print(f'  OK  {_out11}')
+
+_rows12 = _load_csv(os.path.join(HERE, 'ex12', 'out', 'batch_results.csv'))
+_out12  = os.path.join(HERE, 'ex12', 'out', 'batch_mc_result.png')
+viz.save_batch_mc_fragility(
+    [float(r['h_peak_ext']) for r in _rows12],
+    [float(r['h_peak_int']) for r in _rows12],
+    'Case 12 — Batch + fragility MC: 20 hydrographs × 50 replicates, membrane',
+    _out12,
+    membrane_median_m=0.5,
+)
+print(f'  OK  {_out12}')
 
 # ── generate building schematics ─────────────────────────────────────────────
 print('\nGenerating building schematics ...')
@@ -470,18 +492,19 @@ def mc_table(case_dir, filename):
 report = textwrap.dedent("""\
 # Water Ingress Simulation — Validation Case Studies
 
-Eleven cases arranged in a **2 × 2 matrix** of
+Twelve cases arranged in a **2 × 2 matrix** of
 (single hydrograph / batch ensemble) × (deterministic / fragility MC):
 
 | | Single hydrograph | Batch (20 hydrographs, peaks 0.10–1.05 m) |
 |---|---|---|
-| **No fragility / membrane** | Cases 01–06 | **Case 10** |
-| **Fragility / membrane MC** | Cases 07–09 | **Case 11** |
+| **No fragility / membrane** | Cases 01–07 | **Case 11** |
+| **Fragility / membrane MC** | Cases 08–10 | **Case 12** |
 
 All cases share the same **triangular hydrograph shape**
 (rise to peak at t = 30 min, drain to zero by t = 60 min,
 dry tail to t = 360 min).
-Single-hydrograph cases use a **0.5 m peak**.
+Single-hydrograph cases use a **0.5 m peak**, except Case 05, which
+uses a long 1.0 m flood to fill the basement.
 Batch cases sweep peaks from **0.10 m to 1.05 m** (20 files, 0.05 m steps).
 
 Ground-floor cases: **50 m²** floor area (small UK terraced house).
@@ -614,7 +637,42 @@ monotonically during flood and plateaus after t = 60 min.
 
 ---
 
-## Case 05 — Basement + sump/pump (pump keeps up)
+## Case 05 — Basement fills and surcharges the ground floor (known defect)
+
+**Setup:** same building as Case 04 (50 m² ground floor with no effective
+opening, 30 m² basement at −2.5 m, perimeter opening area = 0.005 m²,
+C_d = 0.5, no pump).  More aggressive hydrograph: rise to **1.0 m** at
+t = 30 min, held until t = 240 min, receding to zero by t = 270 min.
+
+Inflow at 1.0 m exterior depth:
+Q = 0.5 × 0.005 × √(2g × 1.0) ≈ **0.011 m³/s**, so the 75 m³ basement
+fills to its ceiling at t ≈ 123 min.
+
+**Expected behaviour (physical):** once the basement is full, it and the
+ground floor act as one compartment.  The perimeter inflow is then driven by
+the difference between the exterior level and the *ground-floor* level, so
+the ground floor fills towards the exterior level and stops there:
+peak h\_in ≤ 1.0 m.
+
+**Current model output (known defect):** the basement level is frozen at
+the ceiling once full, so the perimeter inflow keeps being computed against
+that fixed level and the overflow is pushed into the ground floor.  With no
+ground-floor opening to let water back out, the ground floor keeps rising
+while the flood lasts and ends at **≈ 1.8 m**, well above the 1.0 m flood.
+The case is kept as a reproducer for the fix; the regression suite marks the
+bound h\_in ≤ h\_ext as an expected failure until it is resolved.
+
+**Qualitative check:** basement trace rises to 2.5 m (ceiling) at
+t ≈ 123 min; ground-floor trace then rises steadily and crosses the
+exterior level — the symptom of the defect.
+
+![]({sim05})
+
+{gif05}
+
+---
+
+## Case 06 — Basement + sump/pump (pump keeps up)
 
 **Setup:** identical inflow to Case 04 (30 m² basement, z = −2.5 m).
 Added sump (area = 0.5 m², base at −2.5 m, overflow crest at 0.8 m
@@ -632,9 +690,9 @@ flood the pump drains any residual sump water.
 **Qualitative check:** sump trace stays near zero (≤ 0.10 m); basement
 and ground-floor traces remain at zero throughout.
 
-![]({sim05})
+![]({sim06})
 
-{gif05}
+{gif06}
 
 ### Timestep sensitivity — sump/pump oscillation
 
@@ -648,7 +706,7 @@ cause spurious basement flooding.
 
 > Δt  ≤  dt\_crit  =  A\_sump × h\_on / Q\_pump
 
-For Case 05 (A\_sump = 0.5 m², h\_on = 0.10 m, Q\_pump ≈ 0.045 m³/s):
+For Case 06 (A\_sump = 0.5 m², h\_on = 0.10 m, Q\_pump ≈ 0.045 m³/s):
 
 > dt\_crit ≈ 1.1 s  →  recommended Δt ≤ **1 s** (50 % margin)
 
@@ -657,13 +715,13 @@ The figure below shows sump depth time-series for Δt = 60 s down to 0.5 s
 producing a spurious 2 mm basement depth.  At Δt ≤ 2 s the level is
 smooth and the basement remains dry throughout.
 
-![]({dt_sens05})
+![]({dt_sens06})
 
 ---
 
-## Case 06 — Basement + sump/pump (pump overwhelmed)
+## Case 07 — Basement + sump/pump (pump overwhelmed)
 
-**Setup:** same as Case 05 but 100× weaker pump: k\_pump = 100 000.
+**Setup:** same as Case 06 but 100× weaker pump: k\_pump = 100 000.
 At peak flood:
 Q\_pump = √((5.0 − 3.0) / 100 000) ≈ **0.0045 m³/s** < Q\_in\_max ≈ 0.008 m³/s.
 
@@ -671,19 +729,19 @@ Q\_pump = √((5.0 − 3.0) / 100 000) ≈ **0.0045 m³/s** < Q\_in\_max ≈ 0.0
 level rises quickly (excess rate ≈ 0.003 m³/s over 0.5 m² ≈ 7 mm/s)
 and reaches the overflow crest (0.8 m) within ≈ 2 min.  Excess water
 spills into the basement, which then fills.  Contrast directly with
-Case 05 where the sump never overflows.
+Case 06 where the sump never overflows.
 
 **Qualitative check:** sump trace rises to the overflow crest and
 saturates there; basement trace becomes positive soon after; sump
 overflow crest visible as a horizontal asymptote.
 
-![]({sim06})
+![]({sim07})
 
-{gif06}
+{gif07}
 
 ---
 
-## Case 07 — Fragility Monte Carlo: single probabilistic seal (500 replicates)
+## Case 08 — Fragility Monte Carlo: single probabilistic seal (500 replicates)
 
 **Setup:** 50 m² ground floor.  One fragility path `seal_door` —
 * Base state: area ≈ 0 m² (sealed)
@@ -705,19 +763,19 @@ external peak of 0.5 m.
 sharp discontinuity between P50 (≈ 0) and P75 (> 0); P10–P90 range is
 wide.
 
-![]({sim07})
+![]({sim08})
 
 ### Percentile summary (peak_h_in, peak_h_basement, total_volume_in)
 
-{tbl07_summary}
+{tbl08_summary}
 
 ### State frequency table
 
-{tbl07_states}
+{tbl08_states}
 
 ---
 
-## Case 08 — Fragility Monte Carlo: membrane-protected group (500 replicates)
+## Case 09 — Fragility Monte Carlo: membrane-protected group (500 replicates)
 
 **Setup:** 50 m² ground floor.  Two pathways behind a flood-protection
 membrane (group\_id = 1) —
@@ -738,46 +796,12 @@ When the membrane fails, total area = 0.008 m² → τ ≈ 28 min; the
 The tight β = 0.1 means the two clusters are well-separated with
 little intermediate probability mass.
 
-**Observed (seed = 42, n = 500):** same 251/249 split as Case 07
+**Observed (seed = 42, n = 500):** same 251/249 split as Case 08
 (same seed and uniform draws).
 
-**Qualitative check:** same bimodal pattern as Case 07; slightly lower
-"failed" cluster peak than Case 07 because the airbrick sill (0.1 m)
+**Qualitative check:** same bimodal pattern as Case 08; slightly lower
+"failed" cluster peak than Case 08 because the airbrick sill (0.1 m)
 delays part of the inflow.
-
-![]({sim08})
-
-### Percentile summary
-
-{tbl08_summary}
-
-### State frequency table
-
-{tbl08_states}
-
----
-
-## Case 09 — Deterministic membrane (design capacity above flood peak)
-
-**Setup:** identical pathways to Case 08 (airbrick + door\_gap behind membrane
-group\_id = 1, 50 m² floor).  The membrane capacity is **deterministic**:
-β = 0, median η = **0.6 m** — fixed capacity, no uncertainty.
-
-With the triangular hydrograph peaking at **0.5 m < 0.6 m**, the demand
-never reaches the membrane capacity.  The membrane remains intact in every
-replicate.
-
-While intact, the membrane presents only its base-state leakage conductance
-(area = 1 × 10⁻⁶ m²) to the flood; the pathways behind it are suppressed to
-1 × 10⁻⁹ m².  This results in negligible interior depth throughout.
-
-**Comparison with Case 08:** in Case 08 the same membrane has η = 0.5 m and
-β = 0.1, giving P(failure) = 50 %.  Case 09 shows that raising the design
-capacity by 0.1 m (to just above the flood peak) eliminates all ingress when
-there is no uncertainty.
-
-**Qualitative check:** scatter and CDF both cluster at h\_in ≈ 0;
-state frequency shows State 0 = 100 %, State 1 = 0 %.
 
 ![]({sim09})
 
@@ -791,7 +815,41 @@ state frequency shows State 0 = 100 %, State 1 = 0 %.
 
 ---
 
-## Case 10 — Batch deterministic: 20 hydrographs, single opening
+## Case 10 — Deterministic membrane (design capacity above flood peak)
+
+**Setup:** identical pathways to Case 09 (airbrick + door\_gap behind membrane
+group\_id = 1, 50 m² floor).  The membrane capacity is **deterministic**:
+β = 0, median η = **0.6 m** — fixed capacity, no uncertainty.
+
+With the triangular hydrograph peaking at **0.5 m < 0.6 m**, the demand
+never reaches the membrane capacity.  The membrane remains intact in every
+replicate.
+
+While intact, the membrane presents only its base-state leakage conductance
+(area = 1 × 10⁻⁶ m²) to the flood; the pathways behind it are suppressed to
+1 × 10⁻⁹ m².  This results in negligible interior depth throughout.
+
+**Comparison with Case 09:** in Case 09 the same membrane has η = 0.5 m and
+β = 0.1, giving P(failure) = 50 %.  Case 10 shows that raising the design
+capacity by 0.1 m (to just above the flood peak) eliminates all ingress when
+there is no uncertainty.
+
+**Qualitative check:** scatter and CDF both cluster at h\_in ≈ 0;
+state frequency shows State 0 = 100 %, State 1 = 0 %.
+
+![]({sim10})
+
+### Percentile summary
+
+{tbl10_summary}
+
+### State frequency table
+
+{tbl10_states}
+
+---
+
+## Case 11 — Batch deterministic: 20 hydrographs, single opening
 
 **Setup:** same building as Case 01 (50 m² ground floor, `door_gap` at
 sill = 0 m, area = 0.05 m², C_d = 0.6).  The same orifice model is
@@ -810,27 +868,27 @@ the 50 m² floor.
 **Qualitative check:** monotonically rising scatter; ratio h\_in/h\_ext
 ≈ constant near 1; no scatter around the response curve (deterministic).
 
-![]({scatter10})
+![]({scatter11})
 
 ### First 5 rows of batch\_results.csv
 
-{tbl10_results}
+{tbl11_results}
 
 ### Batch summary statistics
 
-{tbl10_summary}
+{tbl11_summary}
 
 ---
 
-## Case 11 — Batch + fragility MC: 20 hydrographs × 50 replicates, membrane
+## Case 12 — Batch + fragility MC: 20 hydrographs × 50 replicates, membrane
 
-**Setup:** same membrane-protected building as Case 08 —
+**Setup:** same membrane-protected building as Case 09 —
 * `airbrick`: sill = 0.1 m, area = 0.006 m², behind membrane group 1
 * `door_gap`: sill = 0.0 m, area = 0.002 m², behind membrane group 1
 * Membrane: sill = 0 m, base leakage ≈ 0; lognormal capacity
   **η = 0.5 m, β = 0.1** (tight near-deterministic threshold)
 
-The same 20 hydrographs as Case 10 are used.  For each hydrograph,
+The same 20 hydrographs as Case 11 are used.  For each hydrograph,
 **50 Monte Carlo replicates** are drawn (seed = 42), giving
 **1 000 total simulations**.  The seed is reset identically for each
 hydrograph, making the per-hydrograph MC independent.
@@ -847,11 +905,11 @@ The left panel shows the replicate cloud with P10 / P50 / P90 bands.
 The right panel shows the fragility curve — the fraction of replicates
 with significant ingress as a function of peak exterior depth.
 
-**Comparison with Case 08:** the h\_ext = 0.5 m slice of Case 11 is
-statistically equivalent to Case 08 (same building, same hydrograph,
+**Comparison with Case 09:** the h\_ext = 0.5 m slice of Case 12 is
+statistically equivalent to Case 09 (same building, same hydrograph,
 same seed, n = 50 replicates).
 
-![]({scatter11})
+![]({scatter12})
 """)
 
 def csv_head(path, n=5):
@@ -876,27 +934,29 @@ report = report.format(
     sim03=img(os.path.join(HERE, 'ex03')),
     sim04=img(os.path.join(HERE, 'ex04')),
     sim05=img(os.path.join(HERE, 'ex05')),
-    dt_sens05=img(os.path.join(HERE, 'ex05'), 'dt_sensitivity.png'),
     sim06=img(os.path.join(HERE, 'ex06')),
-    sim07=img(os.path.join(HERE, 'ex07'), 'mc_result.png'),
+    dt_sens06=img(os.path.join(HERE, 'ex06'), 'dt_sensitivity.png'),
+    sim07=img(os.path.join(HERE, 'ex07')),
     sim08=img(os.path.join(HERE, 'ex08'), 'mc_result.png'),
     sim09=img(os.path.join(HERE, 'ex09'), 'mc_result.png'),
+    sim10=img(os.path.join(HERE, 'ex10'), 'mc_result.png'),
     gif01=gif_link(os.path.join(HERE, 'ex01')),
     gif02=gif_link(os.path.join(HERE, 'ex02')),
     gif03=gif_link(os.path.join(HERE, 'ex03')),
     gif04=gif_link(os.path.join(HERE, 'ex04')),
     gif05=gif_link(os.path.join(HERE, 'ex05')),
     gif06=gif_link(os.path.join(HERE, 'ex06')),
-    tbl07_summary=mc_table(os.path.join(HERE, 'ex07'), 'fragility_summary.csv') or '_not generated_',
-    tbl07_states =mc_table(os.path.join(HERE, 'ex07'), 'fragility_state_freq.csv') or '_not generated_',
+    gif07=gif_link(os.path.join(HERE, 'ex07')),
     tbl08_summary=mc_table(os.path.join(HERE, 'ex08'), 'fragility_summary.csv') or '_not generated_',
     tbl08_states =mc_table(os.path.join(HERE, 'ex08'), 'fragility_state_freq.csv') or '_not generated_',
     tbl09_summary=mc_table(os.path.join(HERE, 'ex09'), 'fragility_summary.csv') or '_not generated_',
     tbl09_states =mc_table(os.path.join(HERE, 'ex09'), 'fragility_state_freq.csv') or '_not generated_',
-    scatter10=img(os.path.join(HERE, 'ex10'), 'batch_result.png'),
-    tbl10_results=csv_head(os.path.join(HERE, 'ex10', 'out', 'batch_results.csv')) or '_not generated_',
-    tbl10_summary=mc_table(os.path.join(HERE, 'ex10'), 'batch_summary.csv') or '_not generated_',
-    scatter11=img(os.path.join(HERE, 'ex11'), 'batch_mc_result.png'),
+    tbl10_summary=mc_table(os.path.join(HERE, 'ex10'), 'fragility_summary.csv') or '_not generated_',
+    tbl10_states =mc_table(os.path.join(HERE, 'ex10'), 'fragility_state_freq.csv') or '_not generated_',
+    scatter11=img(os.path.join(HERE, 'ex11'), 'batch_result.png'),
+    tbl11_results=csv_head(os.path.join(HERE, 'ex11', 'out', 'batch_results.csv')) or '_not generated_',
+    tbl11_summary=mc_table(os.path.join(HERE, 'ex11'), 'batch_summary.csv') or '_not generated_',
+    scatter12=img(os.path.join(HERE, 'ex12'), 'batch_mc_result.png'),
 )
 
 report_path = os.path.join(HERE, 'report.md')

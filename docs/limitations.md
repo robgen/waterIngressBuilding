@@ -96,7 +96,7 @@ $$
 \Delta t \;\leq\; \frac{A_s\,h_{on}}{Q_{pump}}
 $$
 
-Setting $\Delta t \leq 0.5\,\Delta t_{crit}$ provides adequate margin. See the timestep sensitivity case studies (ex01, ex05) for quantitative guidance.
+Setting $\Delta t \leq 0.5\,\Delta t_{crit}$ provides adequate margin. See the timestep sensitivity case studies (ex01, ex06) for quantitative guidance.
 
 ---
 

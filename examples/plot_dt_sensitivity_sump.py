@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Timestep sensitivity analysis for Case 05 (basement + sump/pump that keeps up).
+"""Timestep sensitivity analysis for Case 06 (basement + sump/pump that keeps up).
 
 Demonstrates that the explicit-Euler sump/pump update oscillates when dt
 exceeds the pump drain time of the active sump volume.  Derives the
@@ -8,7 +8,7 @@ practical dt guideline:
     dt  ≤  dt_crit  =  A_sump × h_on / Q_pump_peak
 
 Produces:
-  examples/ex05/out/dt_sensitivity.png
+  examples/ex06/out/dt_sensitivity.png
 """
 import copy
 import math
@@ -28,7 +28,7 @@ import plot  # noqa: F401 — sets Agg backend and shared rcParams as side-effec
 from engine import Building, IngressPathway, Simulation, sample_with_zero_padding
 from pump import SumpPump
 
-# ── Case 05 parameters (must match run_examples.py) ──────────────────────────────
+# ── Case 06 parameters (must match run_examples.py) ──────────────────────────────
 FLOOR_AREA           = 50.0
 BASEMENT_AREA        = 30.0
 BASEMENT_FLOOR_ELEV  = -2.5
@@ -81,7 +81,7 @@ def _build_sump() -> SumpPump:
 
 
 def run_case(dt_s: float):
-    """Run Case 05 at a given dt.  Returns (times_min, h_sump, h_bsmt, h_ext)."""
+    """Run Case 06 at a given dt.  Returns (times_min, h_sump, h_bsmt, h_ext)."""
     b = Building(FLOOR_AREA)
     b.basement_area               = BASEMENT_AREA
     b.z_basement                  = BASEMENT_FLOOR_ELEV
@@ -125,7 +125,7 @@ def _q_pump_peak() -> float:
 
 
 def main():
-    outdir = os.path.join(HERE, 'ex05', 'out')
+    outdir = os.path.join(HERE, 'ex06', 'out')
     os.makedirs(outdir, exist_ok=True)
 
     Q_peak   = _q_pump_peak()
@@ -181,7 +181,7 @@ def main():
     ax_ts.set_xlabel('Time  (min)')
     ax_ts.set_ylabel('Sump depth  $h_{sump}$  (m)')
     ax_ts.set_title('Sump depth time-series — explicit Euler at varying Δt\n'
-                    f'Case 05: A_sump = {SUMP_AREA} m²,  '
+                    f'Case 06: A_sump = {SUMP_AREA} m²,  '
                     f'h_on = {PUMP_ON_LEVEL} m,  '
                     f'Q_pump_peak ≈ {Q_peak:.3f} m³/s,  '
                     f'dt_crit ≈ {dt_crit:.1f} s')
@@ -228,13 +228,13 @@ def main():
         'This can trigger a spurious sump overflow.\n\n'
         'Stability criterion:\n\n'
         '   dt  ≤  dt_crit  =  A_sump × h_on / Q_pump\n\n'
-        f'Case 05 values:\n'
+        f'Case 06 values:\n'
         f'   A_sump = {SUMP_AREA} m²\n'
         f'   h_on   = {PUMP_ON_LEVEL} m\n'
         f'   Q_pump ≈ {Q_peak:.4f} m³/s  (at peak flood)\n\n'
         f'   →  dt_crit ≈ {dt_crit:.1f} s\n\n'
         'Recommended:  dt ≤ dt_crit / 2  for ≥ 50 %\n'
-        'margin.  For Case 05:  dt ≤ 1 s.\n\n'
+        'margin.  For Case 06:  dt ≤ 1 s.\n\n'
         'Note: where no sump is configured, the\n'
         'tighter basement fill timescale governs\n'
         '(τ_bsmt = A_bsmt × Δz / Q_in).'
@@ -248,7 +248,7 @@ def main():
 
     # ── figure title ──────────────────────────────────────────────────────────
     fig.suptitle(
-        'Case 05 — Timestep sensitivity: sump/pump oscillation at large Δt',
+        'Case 06 — Timestep sensitivity: sump/pump oscillation at large Δt',
         fontsize=12, fontweight='bold', color='#1e2433', y=0.96)
 
     out = os.path.join(outdir, 'dt_sensitivity.png')

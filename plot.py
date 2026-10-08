@@ -1567,27 +1567,32 @@ SCHEMATIC_CASES = [
          gf_paths=[],
          bsmt_paths=[dict(sill=0.0, name='bsmt crack', style='det')],
          membrane=None),
-    dict(label='Case 05', subtitle='Basement + pump\n(keeps up)',
+    dict(label='Case 05', subtitle='Basement fills\n(long flood)',
+         floor_h=2.5, bsmt_d=2.5, sump=False, pump=False,
+         gf_paths=[],
+         bsmt_paths=[dict(sill=0.0, name='bsmt crack', style='det')],
+         membrane=None),
+    dict(label='Case 06', subtitle='Basement + pump\n(keeps up)',
          floor_h=2.5, bsmt_d=2.5, sump=True, pump=True,
          gf_paths=[],
          bsmt_paths=[dict(sill=0.0, name='bsmt crack', style='det')],
          membrane=None),
-    dict(label='Case 06', subtitle='Basement + pump\n(overwhelmed)',
+    dict(label='Case 07', subtitle='Basement + pump\n(overwhelmed)',
          floor_h=2.5, bsmt_d=2.5, sump=True, pump=True,
          gf_paths=[],
          bsmt_paths=[dict(sill=0.0, name='bsmt crack', style='det')],
          membrane=None),
-    dict(label='Case 07', subtitle='Probabilistic seal\n(MC fragility)',
+    dict(label='Case 08', subtitle='Probabilistic seal\n(MC fragility)',
          floor_h=2.5, bsmt_d=None, sump=False, pump=False,
          gf_paths=[dict(sill=0.0, name='seal door', style='prob')],
          bsmt_paths=[], membrane=None),
-    dict(label='Case 08', subtitle='Membrane group\n(probabilistic)',
+    dict(label='Case 09', subtitle='Membrane group\n(probabilistic)',
          floor_h=2.5, bsmt_d=None, sump=False, pump=False,
          gf_paths=[dict(sill=0.0, name='door gap', style='behind'),
                    dict(sill=0.1, name='airbrick', style='behind')],
          bsmt_paths=[],
          membrane=dict(sill=0.0, capacity=0.5, style='prob')),
-    dict(label='Case 09', subtitle='Membrane\n(deterministic)',
+    dict(label='Case 10', subtitle='Membrane\n(deterministic)',
          floor_h=2.5, bsmt_d=None, sump=False, pump=False,
          gf_paths=[dict(sill=0.0, name='door gap', style='behind'),
                    dict(sill=0.1, name='airbrick', style='behind')],
@@ -1768,7 +1773,7 @@ def save_all_schematics(outpath, cases=None):
     outpath : str
         Destination path for the PNG.
     cases : list of dict, optional
-        Case configs to draw.  Defaults to ``SCHEMATIC_CASES`` (Cases 01–09).
+        Case configs to draw.  Defaults to ``SCHEMATIC_CASES`` (Cases 01–10).
     """
     if cases is None:
         cases = SCHEMATIC_CASES
@@ -1776,14 +1781,31 @@ def save_all_schematics(outpath, cases=None):
     plt.rcParams.update({'font.family': 'sans-serif',
                          'font.sans-serif': ['Helvetica Neue', 'Arial',
                                              'DejaVu Sans']})
+    # One row per run of consecutive cases with/without a basement (split at
+    # ncols), so panels sharing a row share a vertical extent.
+    ncols = 4
+    rows = []
+    for cfg in cases:
+        has_b = bool(cfg.get('bsmt_d'))
+        if rows and rows[-1][0] == has_b and len(rows[-1][1]) < ncols:
+            rows[-1][1].append(cfg)
+        else:
+            rows.append((has_b, [cfg]))
+    ratios = [1.9 if has_b else 1.0 for has_b, _ in rows]
+
     fig, axes = plt.subplots(
-        3, 3, figsize=(13, 13),
-        gridspec_kw={'height_ratios': [1.0, 1.9, 1.0],
-                     'hspace': 0.14, 'wspace': 0.10})
+        len(rows), ncols, figsize=(17, 13 * sum(ratios) / 3.9),
+        gridspec_kw={'height_ratios': ratios,
+                     'hspace': 0.14, 'wspace': 0.10},
+        squeeze=False)
     fig.patch.set_facecolor('white')
 
-    for ax, cfg in zip(axes.flat, cases):
-        draw_schematic(ax, cfg)
+    for r, (_, row_cases) in enumerate(rows):
+        for c in range(ncols):
+            if c < len(row_cases):
+                draw_schematic(axes[r][c], row_cases[c])
+            else:
+                axes[r][c].axis('off')
 
     legend_items = [
         _mpatches.Patch(fc=_SCH_RED,  ec=_SCH_RED,  lw=0,

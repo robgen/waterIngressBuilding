@@ -4,15 +4,14 @@
 Interface contract being tested
 --------------------------------
 - pump.py: pure helper functions and SumpPump dataclass
-- Simulation.run(): corrected routing via Building.basement_ingress
-  (spec §16.1, §16.3, §16.8)
+- Simulation.run(): routing of outside→basement pathways (spec §16.1, §16.3, §16.8)
 
 Key interface rule (spec §16.3)
 ---------------------------------
-Exterior perimeter inflow is configured through Building.basement_ingress
-(an IngressPathway), NOT through source/target routing in the ingress file.
-When a SumpPump is attached, that pathway is redirected to the sump
-automatically.  The ingress file must contain exterior→building paths only.
+Exterior perimeter inflow is an IngressPathway with source='outside',
+target='basement' in the Simulation ingress list (Building.basement_ingress
+is metadata only and is not read by the engine).  When a SumpPump is
+attached, such pathways are redirected to the sump automatically.
 """
 
 import math
@@ -104,7 +103,7 @@ def test_pump_flow_no_negative_sqrt():
 # ── integration: sump fills and overflows to basement (no pump) ───────────────
 
 def test_sump_fills_and_overflows_to_basement():
-    """Sump receives exterior perimeter inflow via Building.basement_ingress.
+    """Sump receives exterior perimeter inflow from an outside→basement pathway.
     Once depth exceeds overflow crest, water spills to basement.  Pump is
     effectively disabled (pump_on_level very high).  Ground floor stays dry.
     """
@@ -113,10 +112,11 @@ def test_sump_fills_and_overflows_to_basement():
     building.z_basement = -2.5
     building.basement_ceiling_elevation = 0.0
 
-    # Lumped exterior perimeter opening — set via Building.basement_ingress (spec §16.3)
+    # Lumped exterior perimeter opening (spec §16.3)
     # Area is small enough that the basement doesn't overflow to ground floor
-    building.basement_ingress = IngressPathway(
-        height=0.0, area=0.008, coeff=0.6, name='ext-perimeter')
+    bsmt = IngressPathway(
+        height=0.0, area=0.008, coeff=0.6, name='ext-perimeter',
+        source='outside', target='basement')
 
     building.sump_pump = SumpPump(
         sump_area          = 2.0,
@@ -132,7 +132,7 @@ def test_sump_fills_and_overflows_to_basement():
     )
 
     # ingress_list: exterior→building paths only (no sump routing here)
-    ingress = []   # no direct building ingress needed for this test
+    ingress = [bsmt]   # perimeter only; no direct building ingress
 
     times  = [0.0, 3600.0]
     levels = [0.0, 1.0]
@@ -158,8 +158,9 @@ def test_pump_controls_sump_level():
     building.z_basement = -2.5
     building.basement_ceiling_elevation = 0.0
 
-    building.basement_ingress = IngressPathway(
-        height=0.0, area=0.005, coeff=0.6, name='ext-perimeter')
+    bsmt = IngressPathway(
+        height=0.0, area=0.005, coeff=0.6, name='ext-perimeter',
+        source='outside', target='basement')
 
     building.sump_pump = SumpPump(
         sump_area          = 4.0,
@@ -177,7 +178,7 @@ def test_pump_controls_sump_level():
     times  = [0.0, 7200.0]
     levels = [0.0, 0.5]   # modest external level so lift head stays low
 
-    sim = Simulation(building, [], times, levels, dt=60.0)
+    sim = Simulation(building, [bsmt], times, levels, dt=60.0)
     _, _, sim_basement, sim_sump = sim.run()
 
     assert max(sim_sump) < 0.5, (
@@ -194,8 +195,9 @@ def test_pump_on_off_hysteresis():
     building.z_basement = -2.5
     building.basement_ceiling_elevation = 0.0
 
-    building.basement_ingress = IngressPathway(
-        height=0.0, area=0.005, coeff=0.6, name='ext-perimeter')
+    bsmt = IngressPathway(
+        height=0.0, area=0.005, coeff=0.6, name='ext-perimeter',
+        source='outside', target='basement')
 
     building.sump_pump = SumpPump(
         sump_area          = 2.0,
@@ -213,7 +215,7 @@ def test_pump_on_off_hysteresis():
     times  = [0.0, 3600.0, 7200.0]
     levels = [0.0, 0.5,    0.0]
 
-    sim = Simulation(building, [], times, levels, dt=60.0)
+    sim = Simulation(building, [bsmt], times, levels, dt=60.0)
     _, _, _, sim_sump = sim.run()
 
     peak_idx = sim_sump.index(max(sim_sump))
@@ -250,10 +252,11 @@ def test_basement_ingress_without_sump():
     building.basement_area = 50.0
     building.z_basement = -2.5
     building.basement_ceiling_elevation = 0.0
-    building.basement_ingress = IngressPathway(
-        height=0.0, area=0.01, coeff=0.6, name='ext-perimeter')
+    bsmt = IngressPathway(
+        height=0.0, area=0.01, coeff=0.6, name='ext-perimeter',
+        source='outside', target='basement')
 
-    sim = Simulation(building, [], [0.0, 3600.0], [0.0, 1.0], dt=60.0)
+    sim = Simulation(building, [bsmt], [0.0, 3600.0], [0.0, 1.0], dt=60.0)
     result = sim.run()
 
     assert len(result) == 3
@@ -270,8 +273,9 @@ def test_perimeter_inflow_redirected_to_sump_when_sump_enabled():
         building.basement_area = 50.0
         building.z_basement = -2.5
         building.basement_ceiling_elevation = 0.0
-        building.basement_ingress = IngressPathway(
-            height=0.0, area=0.03, coeff=0.6, name='ext-perimeter')
+        bsmt = IngressPathway(
+            height=0.0, area=0.03, coeff=0.6, name='ext-perimeter',
+            source='outside', target='basement')
         if with_sump:
             building.sump_pump = SumpPump(
                 sump_area          = 5.0,
@@ -285,7 +289,7 @@ def test_perimeter_inflow_redirected_to_sump_when_sump_enabled():
                 pump_curve_coeff   = 10.0,
                 pipe_loss_coeff    = 2.0,
             )
-        sim = Simulation(building, [], [0.0, 1800.0], [0.0, 0.5], dt=60.0)
+        sim = Simulation(building, [bsmt], [0.0, 1800.0], [0.0, 0.5], dt=60.0)
         return sim.run()
 
     result_no_sump = _run(with_sump=False)

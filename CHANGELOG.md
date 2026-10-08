@@ -81,3 +81,13 @@ All notable changes to this project are documented in this file.
 
 - New `--basement-bypass-coeff` flag (`cli.py`, `batch.py`) and "Cd" input in the Streamlit dashboard set the discharge coefficient of the ground↔basement bypass. Default 0.6.
 - Previously hardcoded: 0.6 in `cli.py`, 1.0 in `batch.py` and `app.py`. Batch and dashboard runs with a bypass now use 0.6 by default; pass `--basement-bypass-coeff 1.0` to reproduce earlier results.
+
+### Fixes
+
+- Basement perimeter inflow was silently ignored in Monte Carlo runs (`cli.py --n-replicates > 1`, dashboard MC) and in the dashboard single run. Since the unified basement parsing, `Simulation` reads only its ingress list, but these callers still set only `Building.basement_ingress`. `fragility.run` and `app.py` now pass the perimeter (and the ground↔basement bypass, also missing in MC) as pathways.
+- Regression and unit tests (`test_regression` ex04/06/07, `test_sump_pump`, `test_diagnostics`) and `examples/make_reference.py` updated the same way; all tests pass. Reference values unchanged.
+
+### Examples
+
+- New Case 05 (basement fills under a long 1.0 m flood) reproduces the known basement-surcharge defect: the full basement keeps driving perimeter inflow into the ground floor, which ends at 1.82 m. Its bound test is marked `xfail(strict=True)` until fixed.
+- Former Cases 05–11 renumbered to 06–12 (directories, references, tests, report, schematics). Schematic grid now groups cases into rows of four by building type.

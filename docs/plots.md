@@ -314,7 +314,7 @@ peak_h_ext = [r.peak_h_ext for r in result.replicates]
 state_freq_rows = []  # omit for no bar chart
 
 plot.save_mc_result(peak_h_in, peak_h_ext, state_freq_rows,
-                   'Case 07 — single probabilistic seal (n = 500)',
+                   'Case 08 — single probabilistic seal (n = 500)',
                    'out/mc_result.png')
 ```
 
@@ -364,7 +364,7 @@ plt.close(fig)
 **Function:** `save_all_schematics(outpath, cases=None)`
 
 Draws all nine case-study building schematics in a 3 × 3 grid with a shared
-legend.  `cases` defaults to `plot.SCHEMATIC_CASES` (Cases 01–09).
+legend.  `cases` defaults to `plot.SCHEMATIC_CASES` (Cases 01–10).
 
 ```python
 import plot

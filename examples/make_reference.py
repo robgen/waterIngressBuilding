@@ -35,9 +35,13 @@ os.makedirs(REFDIR, exist_ok=True)
 HYDRO_T = [t * 60 for t in [0.0, 30.0, 60.0, 360.0]]
 HYDRO_H = [0.00, 0.50, 0.00, 0.00]
 
+# Ex 05 long-duration hydrograph (minutes): 1.0 m peak held 30–240 min
+HYDRO05_T = [t * 60 for t in [0.0, 30.0, 240.0, 270.0, 360.0]]
+HYDRO05_H = [0.00, 1.00, 1.00, 0.00, 0.00]
+
 # Timesteps in seconds
 DT_6S  = 0.1 * 60   # 6 s  (used for ex01/02 to match run_examples.py)
-DT_60S = 1.0 * 60   # 60 s (default for ex03-09)
+DT_60S = 1.0 * 60   # 60 s (default for ex03-10)
 
 
 def _save(name, metrics):
@@ -80,20 +84,35 @@ print('ex04 – basement compartment')
 b = _building()
 b.basement_area = 30.0
 b.z_basement = -2.5
-b.basement_ingress = IngressPathway(
+bsmt = IngressPathway(
     height=0.0, area=0.005, coeff=0.5, name='ext_basement',
     source='outside', target='basement',
 )
-ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached')]
+ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached'), bsmt]
 _, h_in, h_basement = Simulation(b, ingress, HYDRO_T, HYDRO_H, dt=DT_60S).run()
 _save('ex04', {'peak_h_in': max(h_in), 'peak_h_basement': max(h_basement)})
 
-# ── Ex 05: basement + sump/pump (keeps up) ────────────────────────────────────
-print('ex05 – basement + strong sump/pump')
+# ── Ex 05: basement fills and surcharges the ground floor ─────────────────────
+# Same building as Ex 04; 1.0 m flood held for 3.5 h so the basement fills.
+# Known defect: peak_h_in exceeds the exterior peak (basement surcharge bug).
+print('ex05 – basement fills, long 1.0 m flood')
 b = _building()
 b.basement_area = 30.0
 b.z_basement = -2.5
-b.basement_ingress = IngressPathway(
+bsmt = IngressPathway(
+    height=0.0, area=0.005, coeff=0.5, name='ext_basement',
+    source='outside', target='basement',
+)
+ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached'), bsmt]
+_, h_in, h_basement = Simulation(b, ingress, HYDRO05_T, HYDRO05_H, dt=DT_60S).run()
+_save('ex05', {'peak_h_in': max(h_in), 'peak_h_basement': max(h_basement)})
+
+# ── Ex 06: basement + sump/pump (keeps up) ────────────────────────────────────
+print('ex06 – basement + strong sump/pump')
+b = _building()
+b.basement_area = 30.0
+b.z_basement = -2.5
+bsmt = IngressPathway(
     height=0.0, area=0.005, coeff=0.5, name='ext_basement',
     source='outside', target='basement',
 )
@@ -104,20 +123,20 @@ b.sump_pump = SumpPump(
     pump_shutoff_head=5.0, pump_curve_coeff=1000,
     pipe_loss_coeff=0.0, pump_availability=1.0,
 )
-ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached')]
+ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached'), bsmt]
 _, h_in, h_basement, h_sump = Simulation(b, ingress, HYDRO_T, HYDRO_H, dt=DT_60S).run()
-_save('ex05', {
+_save('ex06', {
     'peak_h_in': max(h_in),
     'peak_h_basement': max(h_basement),
     'peak_h_sump': max(h_sump),
 })
 
-# ── Ex 06: basement + sump/pump (overwhelmed) ─────────────────────────────────
-print('ex06 – basement + weak sump/pump (overwhelmed)')
+# ── Ex 07: basement + sump/pump (overwhelmed) ─────────────────────────────────
+print('ex07 – basement + weak sump/pump (overwhelmed)')
 b = _building()
 b.basement_area = 30.0
 b.z_basement = -2.5
-b.basement_ingress = IngressPathway(
+bsmt = IngressPathway(
     height=0.0, area=0.005, coeff=0.5, name='ext_basement',
     source='outside', target='basement',
 )
@@ -128,17 +147,17 @@ b.sump_pump = SumpPump(
     pump_shutoff_head=5.0, pump_curve_coeff=100000,
     pipe_loss_coeff=0.0, pump_availability=1.0,
 )
-ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached')]
+ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached'), bsmt]
 _, h_in, h_basement, h_sump = Simulation(b, ingress, HYDRO_T, HYDRO_H, dt=DT_60S).run()
-_save('ex06', {
+_save('ex07', {
     'peak_h_in': max(h_in),
     'peak_h_basement': max(h_basement),
     'peak_h_sump': max(h_sump),
 })
 
-# ── Ex 07: fragility MC – single probabilistic path ───────────────────────────
-print('ex07 – fragility MC, single path, 500 replicates')
-paths_07 = [
+# ── Ex 08: fragility MC – single probabilistic path ───────────────────────────
+print('ex08 – fragility MC, single path, 500 replicates')
+paths_08 = [
     FragilePath(
         name='seal_door', height_m=0.0, area_m2=1e-7, Cd=0.6, group_id=0,
         fragility=FragilityDefinition(states=[
@@ -147,44 +166,10 @@ paths_07 = [
         reversible=False,  # door seal: physically irreversible failure
     ),
 ]
-result_07 = run_fragility_montecarlo(
-    building_factory=lambda: _building(),
-    paths=paths_07,
-    membranes=[],
-    basement_fragility=None,
-    external_times=HYDRO_T,
-    external_levels=HYDRO_H,
-    n_replicates=500,
-    dt=DT_60S,
-    seed=42,
-)
-pct_07 = result_07.percentiles
-_save('ex07', {
-    'p10_peak_h_in': pct_07['peak_h_in']['P10'],
-    'p50_peak_h_in': pct_07['peak_h_in']['P50'],
-    'p90_peak_h_in': pct_07['peak_h_in']['P90'],
-    'p50_total_volume_in': pct_07['total_volume_in']['P50'],
-})
-
-# ── Ex 08: fragility MC – membrane-protected group ────────────────────────────
-print('ex08 – fragility MC, membrane group, 500 replicates')
-paths_08 = [
-    FragilePath(name='airbrick', height_m=0.1, area_m2=6e-3, Cd=0.6, group_id=1),
-    FragilePath(name='door_gap', height_m=0.0, area_m2=2e-3, Cd=0.6, group_id=1),
-]
-membranes_08 = [
-    Membrane(
-        group_id=1, height_m=0.0, area_m2=1e-6, Cd=0.6,
-        fragility=FragilityDefinition(states=[
-            FragilityState(state_name='overtopped', median_m=0.5, beta_ln=0.1, area_m2=1e-9, Cd=0.6),
-        ]),
-        reversible=True,  # flood membrane: overtopping-type, reversible
-    ),
-]
 result_08 = run_fragility_montecarlo(
     building_factory=lambda: _building(),
     paths=paths_08,
-    membranes=membranes_08,
+    membranes=[],
     basement_fragility=None,
     external_times=HYDRO_T,
     external_levels=HYDRO_H,
@@ -200,14 +185,17 @@ _save('ex08', {
     'p50_total_volume_in': pct_08['total_volume_in']['P50'],
 })
 
-# ── Ex 09: deterministic membrane (design capacity above flood peak) ───────────
-print('ex09 – deterministic membrane, no failure expected')
-paths_09 = paths_08  # same airbrick + door_gap behind membrane group 1
+# ── Ex 09: fragility MC – membrane-protected group ────────────────────────────
+print('ex09 – fragility MC, membrane group, 500 replicates')
+paths_09 = [
+    FragilePath(name='airbrick', height_m=0.1, area_m2=6e-3, Cd=0.6, group_id=1),
+    FragilePath(name='door_gap', height_m=0.0, area_m2=2e-3, Cd=0.6, group_id=1),
+]
 membranes_09 = [
     Membrane(
         group_id=1, height_m=0.0, area_m2=1e-6, Cd=0.6,
         fragility=FragilityDefinition(states=[
-            FragilityState(state_name='overtopped', median_m=0.6, beta_ln=0.0, area_m2=1e-9, Cd=0.6),
+            FragilityState(state_name='overtopped', median_m=0.5, beta_ln=0.1, area_m2=1e-9, Cd=0.6),
         ]),
         reversible=True,  # flood membrane: overtopping-type, reversible
     ),
@@ -231,33 +219,64 @@ _save('ex09', {
     'p50_total_volume_in': pct_09['total_volume_in']['P50'],
 })
 
-# ── Ex 10: batch deterministic (20 hydrographs) ───────────────────────────────
-print('ex10 – batch deterministic, 20 hydrographs')
+# ── Ex 10: deterministic membrane (design capacity above flood peak) ───────────
+print('ex10 – deterministic membrane, no failure expected')
+paths_10 = paths_09  # same airbrick + door_gap behind membrane group 1
+membranes_10 = [
+    Membrane(
+        group_id=1, height_m=0.0, area_m2=1e-6, Cd=0.6,
+        fragility=FragilityDefinition(states=[
+            FragilityState(state_name='overtopped', median_m=0.6, beta_ln=0.0, area_m2=1e-9, Cd=0.6),
+        ]),
+        reversible=True,  # flood membrane: overtopping-type, reversible
+    ),
+]
+result_10 = run_fragility_montecarlo(
+    building_factory=lambda: _building(),
+    paths=paths_10,
+    membranes=membranes_10,
+    basement_fragility=None,
+    external_times=HYDRO_T,
+    external_levels=HYDRO_H,
+    n_replicates=500,
+    dt=DT_60S,
+    seed=42,
+)
+pct_10 = result_10.percentiles
+_save('ex10', {
+    'p10_peak_h_in': pct_10['peak_h_in']['P10'],
+    'p50_peak_h_in': pct_10['peak_h_in']['P50'],
+    'p90_peak_h_in': pct_10['peak_h_in']['P90'],
+    'p50_total_volume_in': pct_10['total_volume_in']['P50'],
+})
+
+# ── Ex 11: batch deterministic (20 hydrographs) ───────────────────────────────
+print('ex11 – batch deterministic, 20 hydrographs')
 BATCH_PEAKS = [round(0.10 + i * 0.05, 2) for i in range(20)]
 ingress_10 = [IngressPathway(height=0.0, area=0.05, coeff=0.6, name='door_gap')]
 
-peak_h_ints_10 = []
+peak_h_ints_11 = []
 for peak in BATCH_PEAKS:
     b = _building()
     hydro_t_b = [0, 30 * 60, 60 * 60, 360 * 60]
     hydro_h_b = [0.0, peak, 0.0, 0.0]
     _, h_in = Simulation(b, ingress_10, hydro_t_b, hydro_h_b, dt=DT_60S).run()
-    peak_h_ints_10.append(max(h_in))
+    peak_h_ints_11.append(max(h_in))
 
 idx_05 = BATCH_PEAKS.index(0.50)
-_save('ex10', {
+_save('ex11', {
     'n_results':          len(BATCH_PEAKS),
-    'peak_h_int_at_h05':  peak_h_ints_10[idx_05],
-    'peak_h_int_max':     max(peak_h_ints_10),
+    'peak_h_int_at_h05':  peak_h_ints_11[idx_05],
+    'peak_h_int_max':     max(peak_h_ints_11),
 })
 
-# ── Ex 11: batch + fragility MC (20 hydrographs × 50 replicates) ─────────────
-print('ex11 – batch + fragility MC, 20 × 50 = 1 000 replicates')
-paths_11 = [
+# ── Ex 12: batch + fragility MC (20 hydrographs × 50 replicates) ─────────────
+print('ex12 – batch + fragility MC, 20 × 50 = 1 000 replicates')
+paths_12 = [
     FragilePath(name='airbrick', height_m=0.1, area_m2=6e-3, Cd=0.6, group_id=1),
     FragilePath(name='door_gap', height_m=0.0, area_m2=2e-3, Cd=0.6, group_id=1),
 ]
-membranes_11 = [
+membranes_12 = [
     Membrane(
         group_id=1, height_m=0.0, area_m2=1e-6, Cd=0.6,
         fragility=FragilityDefinition(states=[
@@ -277,8 +296,8 @@ for peak in BATCH_PEAKS:
     hydro_h_b = [0.0, peak, 0.0, 0.0]
     mc = run_fragility_montecarlo(
         building_factory=lambda: _building(),
-        paths=paths_11,
-        membranes=membranes_11,
+        paths=paths_12,
+        membranes=membranes_12,
         basement_fragility=None,
         external_times=hydro_t_b,
         external_levels=hydro_h_b,
@@ -294,7 +313,7 @@ for peak in BATCH_PEAKS:
     if abs(peak - 1.00) < 1e-9:
         p50_at_h10_11 = p50
 
-_save('ex11', {
+_save('ex12', {
     'n_results':              total_reps_11,
     'p50_peak_h_int_at_h05':  p50_at_h05_11,
     'p50_peak_h_int_at_h10':  p50_at_h10_11,

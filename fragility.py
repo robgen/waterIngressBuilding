@@ -1065,6 +1065,24 @@ def run(config, hydro, paths: List[FragilePath],
             b.sump_pump = _copy.deepcopy(config.sumppump)
         return b
 
+    # Static pathways: the engine reads only the ingress list, not
+    # Building.basement_ingress.  With basement_frag the legacy hook in
+    # run_fragility_montecarlo adds the perimeter itself.
+    from engine import IngressPathway
+    static = []
+    if (basement_pathway is not None and config.basement_area > 0.0
+            and basement_frag is None):
+        static.append(basement_pathway)
+    if (config.basement_connection_height is not None
+            and config.basement_connection_area > 0.0
+            and config.basement_area > 0.0):
+        static.append(IngressPathway(
+            height=config.basement_connection_height,
+            area=config.basement_connection_area,
+            coeff=config.basement_connection_coeff, name='ground-basement-conn',
+            source='ground', target='basement',
+        ))
+
     return run_fragility_montecarlo(
         building_factory=_building_factory,
         paths=paths,
@@ -1081,5 +1099,6 @@ def run(config, hydro, paths: List[FragilePath],
         velocity_mode=config.velocity_mode,
         vel_a=config.velocity_power_law_a,
         vel_b=config.velocity_power_law_b,
+        static_pathways=static,
         floor_datum=config.floor_datum,
     )

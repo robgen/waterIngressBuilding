@@ -1,17 +1,18 @@
 # Water Ingress Simulation — Validation Case Studies
 
-Eleven cases arranged in a **2 × 2 matrix** of
+Twelve cases arranged in a **2 × 2 matrix** of
 (single hydrograph / batch ensemble) × (deterministic / fragility MC):
 
 | | Single hydrograph | Batch (20 hydrographs, peaks 0.10–1.05 m) |
 |---|---|---|
-| **No fragility / membrane** | Cases 01–06 | **Case 10** |
-| **Fragility / membrane MC** | Cases 07–09 | **Case 11** |
+| **No fragility / membrane** | Cases 01–07 | **Case 11** |
+| **Fragility / membrane MC** | Cases 08–10 | **Case 12** |
 
 All cases share the same **triangular hydrograph shape**
 (rise to peak at t = 30 min, drain to zero by t = 60 min,
 dry tail to t = 360 min).
-Single-hydrograph cases use a **0.5 m peak**.
+Single-hydrograph cases use a **0.5 m peak**, except Case 05, which
+uses a long 1.0 m flood to fill the basement.
 Batch cases sweep peaks from **0.10 m to 1.05 m** (20 files, 0.05 m steps).
 
 Ground-floor cases: **50 m²** floor area (small UK terraced house).
@@ -144,7 +145,42 @@ monotonically during flood and plateaus after t = 60 min.
 
 ---
 
-## Case 05 — Basement + sump/pump (pump keeps up)
+## Case 05 — Basement fills and surcharges the ground floor (known defect)
+
+**Setup:** same building as Case 04 (50 m² ground floor with no effective
+opening, 30 m² basement at −2.5 m, perimeter opening area = 0.005 m²,
+C_d = 0.5, no pump).  More aggressive hydrograph: rise to **1.0 m** at
+t = 30 min, held until t = 240 min, receding to zero by t = 270 min.
+
+Inflow at 1.0 m exterior depth:
+Q = 0.5 × 0.005 × √(2g × 1.0) ≈ **0.011 m³/s**, so the 75 m³ basement
+fills to its ceiling at t ≈ 123 min.
+
+**Expected behaviour (physical):** once the basement is full, it and the
+ground floor act as one compartment.  The perimeter inflow is then driven by
+the difference between the exterior level and the *ground-floor* level, so
+the ground floor fills towards the exterior level and stops there:
+peak h\_in ≤ 1.0 m.
+
+**Current model output (known defect):** the basement level is frozen at
+the ceiling once full, so the perimeter inflow keeps being computed against
+that fixed level and the overflow is pushed into the ground floor.  With no
+ground-floor opening to let water back out, the ground floor keeps rising
+while the flood lasts and ends at **≈ 1.8 m**, well above the 1.0 m flood.
+The case is kept as a reproducer for the fix; the regression suite marks the
+bound h\_in ≤ h\_ext as an expected failure until it is resolved.
+
+**Qualitative check:** basement trace rises to 2.5 m (ceiling) at
+t ≈ 123 min; ground-floor trace then rises steadily and crosses the
+exterior level — the symptom of the defect.
+
+![](ex05/out/simulation_result.png)
+
+
+
+---
+
+## Case 06 — Basement + sump/pump (pump keeps up)
 
 **Setup:** identical inflow to Case 04 (30 m² basement, z = −2.5 m).
 Added sump (area = 0.5 m², base at −2.5 m, overflow crest at 0.8 m
@@ -162,9 +198,9 @@ flood the pump drains any residual sump water.
 **Qualitative check:** sump trace stays near zero (≤ 0.10 m); basement
 and ground-floor traces remain at zero throughout.
 
-![](ex05/out/simulation_result.png)
+![](ex06/out/simulation_result.png)
 
-[Animation (GIF)](ex05/out/simulation_animation.gif)
+[Animation (GIF)](ex06/out/simulation_animation.gif)
 
 ### Timestep sensitivity — sump/pump oscillation
 
@@ -178,7 +214,7 @@ cause spurious basement flooding.
 
 > Δt  ≤  dt\_crit  =  A\_sump × h\_on / Q\_pump
 
-For Case 05 (A\_sump = 0.5 m², h\_on = 0.10 m, Q\_pump ≈ 0.045 m³/s):
+For Case 06 (A\_sump = 0.5 m², h\_on = 0.10 m, Q\_pump ≈ 0.045 m³/s):
 
 > dt\_crit ≈ 1.1 s  →  recommended Δt ≤ **1 s** (50 % margin)
 
@@ -187,13 +223,13 @@ The figure below shows sump depth time-series for Δt = 60 s down to 0.5 s
 producing a spurious 2 mm basement depth.  At Δt ≤ 2 s the level is
 smooth and the basement remains dry throughout.
 
-![](ex05/out/dt_sensitivity.png)
+![](ex06/out/dt_sensitivity.png)
 
 ---
 
-## Case 06 — Basement + sump/pump (pump overwhelmed)
+## Case 07 — Basement + sump/pump (pump overwhelmed)
 
-**Setup:** same as Case 05 but 100× weaker pump: k\_pump = 100 000.
+**Setup:** same as Case 06 but 100× weaker pump: k\_pump = 100 000.
 At peak flood:
 Q\_pump = √((5.0 − 3.0) / 100 000) ≈ **0.0045 m³/s** < Q\_in\_max ≈ 0.008 m³/s.
 
@@ -201,19 +237,19 @@ Q\_pump = √((5.0 − 3.0) / 100 000) ≈ **0.0045 m³/s** < Q\_in\_max ≈ 0.0
 level rises quickly (excess rate ≈ 0.003 m³/s over 0.5 m² ≈ 7 mm/s)
 and reaches the overflow crest (0.8 m) within ≈ 2 min.  Excess water
 spills into the basement, which then fills.  Contrast directly with
-Case 05 where the sump never overflows.
+Case 06 where the sump never overflows.
 
 **Qualitative check:** sump trace rises to the overflow crest and
 saturates there; basement trace becomes positive soon after; sump
 overflow crest visible as a horizontal asymptote.
 
-![](ex06/out/simulation_result.png)
+![](ex07/out/simulation_result.png)
 
-[Animation (GIF)](ex06/out/simulation_animation.gif)
+[Animation (GIF)](ex07/out/simulation_animation.gif)
 
 ---
 
-## Case 07 — Fragility Monte Carlo: single probabilistic seal (500 replicates)
+## Case 08 — Fragility Monte Carlo: single probabilistic seal (500 replicates)
 
 **Setup:** 50 m² ground floor.  One fragility path `seal_door` —
 * Base state: area ≈ 0 m² (sealed)
@@ -235,7 +271,7 @@ external peak of 0.5 m.
 sharp discontinuity between P50 (≈ 0) and P75 (> 0); P10–P90 range is
 wide.
 
-![](ex07/out/mc_result.png)
+![](ex08/out/mc_result.png)
 
 ### Percentile summary (peak_h_in, peak_h_basement, total_volume_in)
 
@@ -253,7 +289,7 @@ wide.
 
 ---
 
-## Case 08 — Fragility Monte Carlo: membrane-protected group (500 replicates)
+## Case 09 — Fragility Monte Carlo: membrane-protected group (500 replicates)
 
 **Setup:** 50 m² ground floor.  Two pathways behind a flood-protection
 membrane (group\_id = 1) —
@@ -274,14 +310,14 @@ When the membrane fails, total area = 0.008 m² → τ ≈ 28 min; the
 The tight β = 0.1 means the two clusters are well-separated with
 little intermediate probability mass.
 
-**Observed (seed = 42, n = 500):** same 251/249 split as Case 07
+**Observed (seed = 42, n = 500):** same 251/249 split as Case 08
 (same seed and uniform draws).
 
-**Qualitative check:** same bimodal pattern as Case 07; slightly lower
-"failed" cluster peak than Case 07 because the airbrick sill (0.1 m)
+**Qualitative check:** same bimodal pattern as Case 08; slightly lower
+"failed" cluster peak than Case 08 because the airbrick sill (0.1 m)
 delays part of the inflow.
 
-![](ex08/out/mc_result.png)
+![](ex09/out/mc_result.png)
 
 ### Percentile summary
 
@@ -299,9 +335,9 @@ delays part of the inflow.
 
 ---
 
-## Case 09 — Deterministic membrane (design capacity above flood peak)
+## Case 10 — Deterministic membrane (design capacity above flood peak)
 
-**Setup:** identical pathways to Case 08 (airbrick + door\_gap behind membrane
+**Setup:** identical pathways to Case 09 (airbrick + door\_gap behind membrane
 group\_id = 1, 50 m² floor).  The membrane capacity is **deterministic**:
 β = 0, median η = **0.6 m** — fixed capacity, no uncertainty.
 
@@ -313,15 +349,15 @@ While intact, the membrane presents only its base-state leakage conductance
 (area = 1 × 10⁻⁶ m²) to the flood; the pathways behind it are suppressed to
 1 × 10⁻⁹ m².  This results in negligible interior depth throughout.
 
-**Comparison with Case 08:** in Case 08 the same membrane has η = 0.5 m and
-β = 0.1, giving P(failure) = 50 %.  Case 09 shows that raising the design
+**Comparison with Case 09:** in Case 09 the same membrane has η = 0.5 m and
+β = 0.1, giving P(failure) = 50 %.  Case 10 shows that raising the design
 capacity by 0.1 m (to just above the flood peak) eliminates all ingress when
 there is no uncertainty.
 
 **Qualitative check:** scatter and CDF both cluster at h\_in ≈ 0;
 state frequency shows State 0 = 100 %, State 1 = 0 %.
 
-![](ex09/out/mc_result.png)
+![](ex10/out/mc_result.png)
 
 ### Percentile summary
 
@@ -339,7 +375,7 @@ state frequency shows State 0 = 100 %, State 1 = 0 %.
 
 ---
 
-## Case 10 — Batch deterministic: 20 hydrographs, single opening
+## Case 11 — Batch deterministic: 20 hydrographs, single opening
 
 **Setup:** same building as Case 01 (50 m² ground floor, `door_gap` at
 sill = 0 m, area = 0.05 m², C_d = 0.6).  The same orifice model is
@@ -358,7 +394,7 @@ the 50 m² floor.
 **Qualitative check:** monotonically rising scatter; ratio h\_in/h\_ext
 ≈ constant near 1; no scatter around the response curve (deterministic).
 
-![](ex10/out/batch_result.png)
+![](ex11/out/batch_result.png)
 
 ### First 5 rows of batch\_results.csv
 
@@ -396,15 +432,15 @@ _…and 15 more rows_
 
 ---
 
-## Case 11 — Batch + fragility MC: 20 hydrographs × 50 replicates, membrane
+## Case 12 — Batch + fragility MC: 20 hydrographs × 50 replicates, membrane
 
-**Setup:** same membrane-protected building as Case 08 —
+**Setup:** same membrane-protected building as Case 09 —
 * `airbrick`: sill = 0.1 m, area = 0.006 m², behind membrane group 1
 * `door_gap`: sill = 0.0 m, area = 0.002 m², behind membrane group 1
 * Membrane: sill = 0 m, base leakage ≈ 0; lognormal capacity
   **η = 0.5 m, β = 0.1** (tight near-deterministic threshold)
 
-The same 20 hydrographs as Case 10 are used.  For each hydrograph,
+The same 20 hydrographs as Case 11 are used.  For each hydrograph,
 **50 Monte Carlo replicates** are drawn (seed = 42), giving
 **1 000 total simulations**.  The seed is reset identically for each
 hydrograph, making the per-hydrograph MC independent.
@@ -421,8 +457,8 @@ The left panel shows the replicate cloud with P10 / P50 / P90 bands.
 The right panel shows the fragility curve — the fraction of replicates
 with significant ingress as a function of peak exterior depth.
 
-**Comparison with Case 08:** the h\_ext = 0.5 m slice of Case 11 is
-statistically equivalent to Case 08 (same building, same hydrograph,
+**Comparison with Case 09:** the h\_ext = 0.5 m slice of Case 12 is
+statistically equivalent to Case 09 (same building, same hydrograph,
 same seed, n = 50 replicates).
 
-![](ex11/out/batch_mc_result.png)
+![](ex12/out/batch_mc_result.png)

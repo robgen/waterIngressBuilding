@@ -505,7 +505,9 @@ if run_button:
 
             # ── Simulate ──────────────────────────────────────────────────────
             _prog.progress(5, 'Running simulation…')
-            sim = Simulation(bld, ing_list, times_s, _levels,
+            _sim_ing = ing_list + ([bld.basement_ingress]
+                                   if bld.basement_ingress is not None else [])
+            sim = Simulation(bld, _sim_ing, times_s, _levels,
                              dt=dt_s,
                              external_vel_times=v_times_s,
                              external_velocities=v_vals,
@@ -764,6 +766,21 @@ if run_button:
                                     pipe_loss_coeff=_plc2, pump_availability=_pa2)
                         return _b
 
+                    # Static basement pathways: the engine reads only the ingress
+                    # list, not Building.basement_ingress.
+                    _static = []
+                    if _eb and _bia2 > 0:
+                        _static.append(IngressPathway(
+                            height=_bih2, area=_bia2, coeff=_bic2,
+                            name='ext-basement-perimeter',
+                            source='outside', target='basement'))
+                    if _eb and float(bsmt_conn_area) > 0:
+                        _static.append(IngressPathway(
+                            height=float(bsmt_conn_height),
+                            area=float(bsmt_conn_area),
+                            coeff=float(bsmt_conn_coeff), name='ground-basement-conn',
+                            source='ground', target='basement'))
+
                     _seed = int(frag_seed) if frag_seed > 0 else None
                     _mc_res = _frag.run_fragility_montecarlo(
                         building_factory=_bfactory,
@@ -774,6 +791,7 @@ if run_button:
                         external_vel_times=v_times_s, external_velocities=v_vals,
                         seed=_seed,
                         progress_callback=_mc_cb,
+                        static_pathways=_static,
                         velocity_mode=_vel_mode_key,
                         vel_a=float(vel_pl_a),
                         vel_b=float(vel_pl_b),

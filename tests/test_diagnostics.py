@@ -19,14 +19,6 @@ def _make_sump_building():
     building.basement_area = 50.0
     building.z_basement = -2.5
     building.basement_ceiling_elevation = 0.0
-    building.basement_ingress = IngressPathway(
-        height=0.0,
-        area=0.0035,
-        coeff=0.5,
-        name='ext-basement-perimeter',
-        source='outside',
-        target='basement',
-    )
     building.sump_pump = SumpPump(
         sump_area=8.0,
         overflow_level=0.8,
@@ -46,6 +38,14 @@ def _make_sump_building():
 def _make_runtime_ingress():
     return [
         IngressPathway(0.0, 0.01, 0.6, name='wall_crack'),
+        IngressPathway(
+            height=0.0,
+            area=0.0035,
+            coeff=0.5,
+            name='ext-basement-perimeter',
+            source='outside',
+            target='basement',
+        ),
         IngressPathway(
             height=0.0,
             area=0.001,

@@ -37,8 +37,12 @@ from fragility import (
 HYDRO_T = [t * 60 for t in [0.0, 30.0, 60.0, 360.0]]
 HYDRO_H = [0.00, 0.50, 0.00, 0.00]
 
+# Ex 05 long-duration hydrograph: 1.0 m peak held 30–240 min
+HYDRO05_T = [t * 60 for t in [0.0, 30.0, 240.0, 270.0, 360.0]]
+HYDRO05_H = [0.00, 1.00, 1.00, 0.00, 0.00]
+
 DT_6S  = 0.1 * 60   # 6 s  — used for ex01/ex02
-DT_60S = 1.0 * 60   # 60 s — used for ex03-ex09
+DT_60S = 1.0 * 60   # 60 s — used for ex03-ex10
 
 
 def _ref(name):
@@ -94,22 +98,48 @@ def test_ex04_basement():
     b = _building()
     b.basement_area = 30.0
     b.z_basement = -2.5
-    b.basement_ingress = IngressPathway(
+    bsmt = IngressPathway(
         height=0.0, area=0.005, coeff=0.5, name='ext_basement',
         source='outside', target='basement',
     )
-    ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached')]
+    ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached'), bsmt]
     _, h_in, h_basement = Simulation(b, ingress, HYDRO_T, HYDRO_H, dt=DT_60S).run()
     ref = _ref('ex04')
     assert max(h_in) == _approx_depth(ref['peak_h_in'])
     assert max(h_basement) == _approx_depth(ref['peak_h_basement'])
 
 
-def test_ex05_basement_pump_keeps_up():
+def _run_ex05():
     b = _building()
     b.basement_area = 30.0
     b.z_basement = -2.5
-    b.basement_ingress = IngressPathway(
+    bsmt = IngressPathway(
+        height=0.0, area=0.005, coeff=0.5, name='ext_basement',
+        source='outside', target='basement',
+    )
+    ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached'), bsmt]
+    return Simulation(b, ingress, HYDRO05_T, HYDRO05_H, dt=DT_60S).run()
+
+
+def test_ex05_basement_fills():
+    _, _, h_basement = _run_ex05()
+    ref = _ref('ex05')
+    assert max(h_basement) == _approx_depth(ref['peak_h_basement'])
+    assert max(h_basement) == pytest.approx(2.5)   # basement full to ceiling
+
+
+@pytest.mark.xfail(strict=True, reason='known defect: full basement keeps '
+                   'pumping exterior inflow into the ground floor')
+def test_ex05_indoor_level_bounded_by_exterior():
+    _, h_in, _ = _run_ex05()
+    assert max(h_in) <= max(HYDRO05_H) + 1e-3
+
+
+def test_ex06_basement_pump_keeps_up():
+    b = _building()
+    b.basement_area = 30.0
+    b.z_basement = -2.5
+    bsmt = IngressPathway(
         height=0.0, area=0.005, coeff=0.5, name='ext_basement',
         source='outside', target='basement',
     )
@@ -120,19 +150,19 @@ def test_ex05_basement_pump_keeps_up():
         pump_shutoff_head=5.0, pump_curve_coeff=1000,
         pipe_loss_coeff=0.0, pump_availability=1.0,
     )
-    ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached')]
+    ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached'), bsmt]
     _, h_in, h_basement, h_sump = Simulation(b, ingress, HYDRO_T, HYDRO_H, dt=DT_60S).run()
-    ref = _ref('ex05')
+    ref = _ref('ex06')
     assert max(h_in) == _approx_depth(ref['peak_h_in'])
     assert max(h_basement) == _approx_depth(ref['peak_h_basement'])
     assert max(h_sump) == _approx_depth(ref['peak_h_sump'])
 
 
-def test_ex06_basement_pump_overwhelmed():
+def test_ex07_basement_pump_overwhelmed():
     b = _building()
     b.basement_area = 30.0
     b.z_basement = -2.5
-    b.basement_ingress = IngressPathway(
+    bsmt = IngressPathway(
         height=0.0, area=0.005, coeff=0.5, name='ext_basement',
         source='outside', target='basement',
     )
@@ -143,9 +173,9 @@ def test_ex06_basement_pump_overwhelmed():
         pump_shutoff_head=5.0, pump_curve_coeff=100000,
         pipe_loss_coeff=0.0, pump_availability=1.0,
     )
-    ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached')]
+    ingress = [IngressPathway(height=10.0, area=0.001, coeff=0.6, name='never_reached'), bsmt]
     _, h_in, h_basement, h_sump = Simulation(b, ingress, HYDRO_T, HYDRO_H, dt=DT_60S).run()
-    ref = _ref('ex06')
+    ref = _ref('ex07')
     assert max(h_in) == _approx_depth(ref['peak_h_in'])
     assert max(h_basement) == _approx_depth(ref['peak_h_basement'])
     assert max(h_sump) == _approx_depth(ref['peak_h_sump'])
@@ -153,7 +183,7 @@ def test_ex06_basement_pump_overwhelmed():
 
 # ── fragility / Monte Carlo cases ─────────────────────────────────────────────
 
-def test_ex07_fragility_single_path():
+def test_ex08_fragility_single_path():
     paths = [
         FragilePath(
             name='seal_door', height_m=0.0, area_m2=1e-7, Cd=0.6, group_id=0,
@@ -175,7 +205,7 @@ def test_ex07_fragility_single_path():
         dt=DT_60S,
         seed=42,
     )
-    ref = _ref('ex07')
+    ref = _ref('ex08')
     pct = result.percentiles
     assert pct['peak_h_in']['P10'] == _approx_depth(ref['p10_peak_h_in'])
     assert pct['peak_h_in']['P50'] == _approx_depth(ref['p50_peak_h_in'])
@@ -183,7 +213,7 @@ def test_ex07_fragility_single_path():
     assert pct['total_volume_in']['P50'] == _approx_volume(ref['p50_total_volume_in'])
 
 
-def test_ex08_fragility_membrane_group():
+def test_ex09_fragility_membrane_group():
     paths = [
         FragilePath(name='airbrick', height_m=0.1, area_m2=6e-3, Cd=0.6, group_id=1),
         FragilePath(name='door_gap', height_m=0.0, area_m2=2e-3, Cd=0.6, group_id=1),
@@ -209,7 +239,7 @@ def test_ex08_fragility_membrane_group():
         dt=DT_60S,
         seed=42,
     )
-    ref = _ref('ex08')
+    ref = _ref('ex09')
     pct = result.percentiles
     assert pct['peak_h_in']['P10'] == _approx_depth(ref['p10_peak_h_in'])
     assert pct['peak_h_in']['P50'] == _approx_depth(ref['p50_peak_h_in'])
@@ -220,7 +250,7 @@ def test_ex08_fragility_membrane_group():
 BATCH_PEAKS = [round(0.10 + i * 0.05, 2) for i in range(20)]
 
 
-def test_ex09_deterministic_membrane_no_failure():
+def test_ex10_deterministic_membrane_no_failure():
     paths = [
         FragilePath(name='airbrick', height_m=0.1, area_m2=6e-3, Cd=0.6, group_id=1),
         FragilePath(name='door_gap', height_m=0.0, area_m2=2e-3, Cd=0.6, group_id=1),
@@ -246,7 +276,7 @@ def test_ex09_deterministic_membrane_no_failure():
         dt=DT_60S,
         seed=42,
     )
-    ref = _ref('ex09')
+    ref = _ref('ex10')
     pct = result.percentiles
     assert pct['peak_h_in']['P10'] == _approx_depth(ref['p10_peak_h_in'])
     assert pct['peak_h_in']['P50'] == _approx_depth(ref['p50_peak_h_in'])
@@ -256,7 +286,7 @@ def test_ex09_deterministic_membrane_no_failure():
 
 # ── batch cases ───────────────────────────────────────────────────────────────
 
-def test_ex10_batch_deterministic():
+def test_ex11_batch_deterministic():
     """20 hydrographs, deterministic: count, monotonic, known value at h_ext=0.5."""
     ingress = [IngressPathway(height=0.0, area=0.05, coeff=0.6, name='door_gap')]
     peak_h_ints = []
@@ -267,7 +297,7 @@ def test_ex10_batch_deterministic():
         _, h_in = Simulation(b, ingress, t, h, dt=DT_60S).run()
         peak_h_ints.append(max(h_in))
 
-    ref = _ref('ex10')
+    ref = _ref('ex11')
     assert len(peak_h_ints) == ref['n_results']
     assert all(peak_h_ints[i] <= peak_h_ints[i + 1]
                for i in range(len(peak_h_ints) - 1)), 'peak_h_int not monotonic'
@@ -275,7 +305,7 @@ def test_ex10_batch_deterministic():
     assert peak_h_ints[idx_05] == _approx_depth(ref['peak_h_int_at_h05'])
 
 
-def test_ex11_batch_mc_membrane():
+def test_ex12_batch_mc_membrane():
     """20 hydrographs × 50 replicates with membrane: count, P50 at two h_ext levels."""
     paths = [
         FragilePath(name='airbrick', height_m=0.1, area_m2=6e-3, Cd=0.6, group_id=1),
@@ -316,7 +346,7 @@ def test_ex11_batch_mc_membrane():
         if abs(peak - 1.00) < 1e-9:
             p50_at_h10 = p50
 
-    ref = _ref('ex11')
+    ref = _ref('ex12')
     assert total_reps == ref['n_results']
     assert p50_at_h05 == _approx_depth(ref['p50_peak_h_int_at_h05'])
     assert p50_at_h10 == _approx_depth(ref['p50_peak_h_int_at_h10'])
