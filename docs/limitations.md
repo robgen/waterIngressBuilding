@@ -76,16 +76,6 @@ Hydrostatic and drag forces are computed for the ground-floor façade. Basement 
 
 ---
 
-### H. Bypass connection coefficient hardcoded
-
-`engine.py` — ground↔basement bypass
-
-The discharge coefficient for the ground-floor ↔ basement connection is hardcoded to 1.0. There is no CLI flag to override it.
-
-**Possible fix:** expose `--basement-connection-coeff` as a CLI argument.
-
----
-
 ### I. Lumped single perimeter opening and bypass
 
 All simulation modules
@@ -128,3 +118,4 @@ The following issues were identified in earlier code reviews and are resolved in
 | Q | Legacy `always_open` ingress flag | Resolved — removed |
 | R | `VulnerabilityCurve` frozen but held mutable lists | Resolved — converted to tuples |
 | S | Batch file matching by digit concatenation was fragile | Resolved — uses trailing-digit regex |
+| T | Bypass connection Cd hardcoded (0.6 in `cli.py`, 1.0 in `batch.py`/`app.py`) | Resolved — `--basement-bypass-coeff` (default 0.6) wired through CLI, batch and dashboard |

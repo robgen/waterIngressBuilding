@@ -148,6 +148,7 @@ def _run_case(depth_path, ingress_list, floor_area,
               basement_ceiling_elev=0.0,
               basement_ingress=None,
               basement_conn_height=None, basement_conn_area=0.0,
+              basement_conn_coeff=0.6,
               sump_pump=None, floor_datum=0.0):
     """
     Run one simulation and return
@@ -194,7 +195,7 @@ def _run_case(depth_path, ingress_list, floor_area,
         ing.append(IngressPathway(
             height=float(basement_conn_height),
             area=float(basement_conn_area),
-            coeff=1.0,
+            coeff=float(basement_conn_coeff),
             name='ground-basement-conn',
             source='ground',
             target='basement',
@@ -354,6 +355,7 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
               basement_ceiling_elev=0.0,
               basement_ingress=None,
               basement_conn_height=None, basement_conn_area=0.0,
+              basement_conn_coeff=0.6,
               sump_pump=None,
               frag_paths=None, membranes=None,
               n_replicates=1, random_seed=None,
@@ -389,6 +391,7 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
     basement_ceiling_elev : basement ceiling elevation on same datum (m)
     basement_conn_height : sill height of ground↔basement connection (m)
     basement_conn_area   : area of ground↔basement connection (m²)
+    basement_conn_coeff  : discharge coefficient Cd of ground↔basement connection (–)
     outdir          : directory for output CSVs
     verbose         : print progress to stdout
 
@@ -478,7 +481,7 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
                     static_paths.append(IngressPathway(
                         height=float(basement_conn_height),
                         area=float(basement_conn_area),
-                        coeff=1.0, name='ground-basement-conn',
+                        coeff=float(basement_conn_coeff), name='ground-basement-conn',
                         source='ground', target='basement',
                     ))
 
@@ -560,6 +563,7 @@ def run_batch(depth_dir=None, ingress_list=None, floor_area=50.0,
                     basement_ingress=basement_ingress,
                     basement_conn_height=basement_conn_height,
                     basement_conn_area=basement_conn_area,
+                    basement_conn_coeff=basement_conn_coeff,
                     sump_pump=sump_pump,
                     floor_datum=floor_datum,
                 )
@@ -809,6 +813,8 @@ def _parse_args(argv=None):
                    help='Sill height of ground↔basement connection (m).')
     p.add_argument('--basement-bypass-area', type=float, default=0.0,
                    help='Area of ground↔basement connection (m²).')
+    p.add_argument('--basement-bypass-coeff', type=float, default=0.6,
+                   help='Discharge coefficient Cd of ground↔basement connection (–). Default: 0.6.')
     # Sump + pump (unified --sumppump-* prefix, matching cli.py)
     p.add_argument('--sumppump-area', type=float, default=0.0,
                    help='Sump chamber area (m²). If >0 a sump+pump zone is created.')
@@ -936,6 +942,7 @@ def main(argv=None):
         basement_ingress               = basement_ingress,
         basement_conn_height           = args.basement_bypass_height,
         basement_conn_area             = args.basement_bypass_area,
+        basement_conn_coeff            = args.basement_bypass_coeff,
         sump_pump                      = sump_pump,
         floor_datum                    = args.floor_datum,
         outdir                         = args.outdir,
@@ -998,6 +1005,7 @@ def run(config, hydro_dir: str, pathways: list, *,
         basement_ingress=basement_pathway,
         basement_conn_height=config.basement_connection_height,
         basement_conn_area=config.basement_connection_area,
+        basement_conn_coeff=config.basement_connection_coeff,
         sump_pump=sump_pump,
         floor_datum=config.floor_datum,
         outdir=outdir,

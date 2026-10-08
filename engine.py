@@ -417,6 +417,7 @@ class SimConfig:
     basement_ceiling_elevation: Optional[float] = None
     basement_connection_height: Optional[float] = None
     basement_connection_area: float = 0.0
+    basement_connection_coeff: float = 0.6
     sumppump: Optional[SumpPump] = None
     n_replicates: int = 1
     random_seed: Optional[int] = None
@@ -502,7 +503,7 @@ def run(config: SimConfig, hydro: Hydrograph, pathways: list, *,
         ing.append(IngressPathway(
             height=config.basement_connection_height,
             area=config.basement_connection_area,
-            coeff=0.6, name='ground-basement-conn',
+            coeff=config.basement_connection_coeff, name='ground-basement-conn',
             source='ground', target='basement',
         ))
 

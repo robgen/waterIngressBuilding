@@ -74,3 +74,10 @@ All notable changes to this project are documented in this file.
 
 - At the time of making the repo public, license changed from **CC0 1.0 Universal** (public-domain dedication) to the **PolyForm Noncommercial License 1.0.0**. The software is now free for non-commercial use (research, teaching, and use by universities, public research bodies, and government institutions); commercial use requires a separate license. `LICENSE` replaced; a `Required Notice:` copyright line is included and must be preserved by anyone redistributing the code.
 - `README.md`: added a `## License` section summarising the non-commercial terms and the contact for commercial licensing enquiries.
+
+## [2026-10-08]
+
+### Inputs
+
+- New `--basement-bypass-coeff` flag (`cli.py`, `batch.py`) and "Cd" input in the Streamlit dashboard set the discharge coefficient of the ground↔basement bypass. Default 0.6.
+- Previously hardcoded: 0.6 in `cli.py`, 1.0 in `batch.py` and `app.py`. Batch and dashboard runs with a bypass now use 0.6 by default; pass `--basement-bypass-coeff 1.0` to reproduce earlier results.

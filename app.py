@@ -189,13 +189,15 @@ with st.sidebar:
 
             st.markdown('<div class="section-label">Ground ↔ basement bypass</div>',
                         unsafe_allow_html=True)
-            bc1, bc2 = st.columns(2)
+            bc1, bc2, bc3 = st.columns(3)
             bsmt_conn_height = bc1.number_input('Sill (m)',  value=0.0, step=0.05, format='%.2f',  key='bch')
             bsmt_conn_area   = bc2.number_input('Area (m²)', value=0.0, step=0.001, format='%.4f', key='bca')
+            bsmt_conn_coeff  = bc3.number_input('Cd',        value=0.6, step=0.05,  format='%.2f',  key='bcc')
         else:
             basement_area = basement_floor_elev = basement_ceiling_elev = 0.0
             bsmt_ing_height = bsmt_ing_area = bsmt_ing_coeff = 0.0
             bsmt_conn_height = bsmt_conn_area = 0.0
+            bsmt_conn_coeff = 0.6
 
     # ── 4. Sump & pump ───────────────────────────────────────────────────────
     with st.expander('⚙️  Sump & pump', expanded=False):
@@ -484,7 +486,7 @@ if run_button:
                     ing_list.append(IngressPathway(
                         height=float(bsmt_conn_height),
                         area=float(bsmt_conn_area),
-                        coeff=1.0, name='ground-basement-conn',
+                        coeff=float(bsmt_conn_coeff), name='ground-basement-conn',
                         source='ground', target='basement'))
                 if enable_sump and sump_area > 0:
                     bld.sump_pump = SumpPump(

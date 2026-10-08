@@ -180,6 +180,7 @@ front_membrane, 0.0,      1.0e-6,  0.6, 1,        overtopped,   0.5,        0.1,
 | `--basement-ceiling-elevation FLOAT` | Optional ceiling elevation cap (m); water above this spills to ground floor |
 | `--basement-bypass-height FLOAT` | Sill of the ground-floor ↔ basement bypass connection (m) |
 | `--basement-bypass-area FLOAT` | Area of the ground-floor ↔ basement bypass (m²) |
+| `--basement-bypass-coeff FLOAT` | Discharge coefficient Cd of the ground-floor ↔ basement bypass (–); default 0.6 |
 
 **Sump and pump** (`--sumppump-*`, always used together)
 

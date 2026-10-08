@@ -65,6 +65,8 @@ def _build_argparser():
                    help='Sill of the ground↔basement bypass connection (m).')
     p.add_argument('--basement-bypass-area', type=float, default=0.0,
                    help='Area of the ground↔basement bypass (m²).')
+    p.add_argument('--basement-bypass-coeff', type=float, default=0.6,
+                   help='Discharge coefficient Cd of the ground↔basement bypass (–). Default: 0.6.')
 
     # ── sump + pump (always used together, --sumppump-* prefix) ──────────────
     p.add_argument('--sumppump-area', type=float, default=0.0,
@@ -145,6 +147,7 @@ def _build_config(args) -> engine.SimConfig:
         basement_ceiling_elevation=getattr(args, 'basement_ceiling_elevation', 0.0) or 0.0,
         basement_connection_height=getattr(args, 'basement_bypass_height', None),
         basement_connection_area=getattr(args, 'basement_bypass_area', 0.0) or 0.0,
+        basement_connection_coeff=getattr(args, 'basement_bypass_coeff', 0.6),
         sumppump=sumppump,
         n_replicates=args.n_replicates,
         random_seed=args.random_seed,
