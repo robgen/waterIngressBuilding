@@ -26,15 +26,12 @@ def _make_case():
         basement_connection_coeff=1.0,
         sumppump=SumpPump(
             sump_area=8.0,
-            overflow_level=0.8,
-            overflow_coeff=1.8,
-            overflow_exponent=1.5,
             pump_on_level=0.5,
             pump_off_level=0.2,
             pump_shutoff_head=3.5,
             pump_curve_coeff=800.0,
             pipe_loss_coeff=200.0,
-            sump_base_elevation=-2.5,
+            sump_base_elevation=-3.3,   # 0.8 m pit below the basement floor
             pump_availability=1.0,
         ),
         time_units='seconds',

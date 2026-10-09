@@ -241,7 +241,7 @@ def save_velocity_preview(times, velocities, outpath, time_unit=None,
 def save_simulation_result(sim_times, sim_levels, external_levels, outpath,
                            time_unit=None, basement_levels=None,
                            sump_levels=None,
-                           basement_max_depth=None, sump_overflow_level=None):
+                           basement_max_depth=None, sump_depth=None):
     """High-quality multi-panel simulation result figure."""
     t   = list(sim_times)
     h_e = list(external_levels)
@@ -341,7 +341,7 @@ def save_simulation_result(sim_times, sim_levels, external_levels, outpath,
                                 ls='-', zorder=6, label='Sump  $h_{sump}$')
             legend_handles.append(l_sp)
 
-        # ── reference lines: sump overflow level & basement ceiling ──────────
+        # ── reference lines: sump top & basement ceiling ──────────────────────
         # blended transform: x in axes fraction, y in data coords
         from matplotlib.transforms import blended_transform_factory as _btf
         _tr = _btf(ax_sub.transAxes, ax_sub.transData)
@@ -354,18 +354,18 @@ def save_simulation_result(sim_times, sim_levels, external_levels, outpath,
 
         ref_handles = []
 
-        if sump_overflow_level is not None and sump_overflow_level > 0:
-            ax_sub.axhline(sump_overflow_level, color=_C['sump'], lw=1.1,
+        if sump_depth is not None and sump_depth > 0:
+            ax_sub.axhline(sump_depth, color=_C['sump'], lw=1.1,
                            ls='--', alpha=0.60, zorder=3)
             # label on right edge (visible only when line is within current range)
-            if sump_overflow_level <= _y_top * 4:
-                ax_sub.text(1.01, sump_overflow_level,
-                            f'{sump_overflow_level:.3f} m',
+            if sump_depth <= _y_top * 4:
+                ax_sub.text(1.01, sump_depth,
+                            f'{sump_depth:.3f} m',
                             color=_C['sump'], fontsize=7, va='center',
                             transform=_tr, clip_on=False)
             ref_handles.append(Line2D([], [], color=_C['sump'], lw=1.1, ls='--',
                                       alpha=0.60,
-                                      label=f'Sump overflow level  {sump_overflow_level:.3f} m'))
+                                      label=f'Sump top (basement floor)  {sump_depth:.3f} m'))
 
         ax_sub.set_ylabel('Depth  (m)')
         ax_sub.set_xlabel(_xlabel(time_unit))
@@ -470,7 +470,7 @@ def save_forces_result(sim_times, forces_rows, outpath, time_unit=None):
 def generate_animation(sim_times, sim_levels, external_levels, pathways, outpath,
                        fps=10, max_frames=200, time_unit=None, basement_levels=None,
                        velocity_series=None, sump_levels=None,
-                       sump_overflow_level=None, Q_ext_series=None,
+                       sump_depth=None, Q_ext_series=None,
                        Q_perim_series=None, Q_bypass_series=None,
                        bypass_height=None):
     """Animated GIF of one run.
@@ -640,7 +640,7 @@ def generate_animation(sim_times, sim_levels, external_levels, pathways, outpath
         if ax_b is not None:
             _max_bs = max(basement_levels or [0.0])
             _max_sp = max(sump_levels or [0.0]) if sump_levels is not None else 0.0
-            _crest  = sump_overflow_level if sump_overflow_level is not None else 0.0
+            _crest  = sump_depth if sump_depth is not None else 0.0
             _y_max  = max(0.1, _max_bs * 1.3, _max_sp * 1.3, _crest * 1.3) + 0.06
             ax_b.set_xlim(0, _x_end)
             ax_b.set_ylim(0, _y_max)
@@ -668,12 +668,12 @@ def generate_animation(sim_times, sim_levels, external_levels, pathways, outpath
                     facecolor=_C['sump'], alpha=0.80,
                     zorder=3, label='Sump')
                 ax_b.add_patch(sump_bar_patch)
-                if sump_overflow_level is not None:
-                    ax_b.hlines(sump_overflow_level,
+                if sump_depth is not None:
+                    ax_b.hlines(sump_depth,
                                 _x_s - 0.06, _x_s + _bw + 0.06,
                                 colors='#c0392b', lw=1.5, ls='--', zorder=5)
-                    ax_b.text(_x_s + _bw + 0.08, sump_overflow_level,
-                              f'crest\n{sump_overflow_level:.2f} m',
+                    ax_b.text(_x_s + _bw + 0.08, sump_depth,
+                              f'top\n{sump_depth:.2f} m',
                               va='center', ha='left', fontsize=6.5,
                               color='#c0392b', zorder=6)
             else:
@@ -938,7 +938,7 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds',
         ax2.plot(t_disp, diag['Q_pump'], color=_C['pump'], lw=1.6, ls='-.',
                  label='Pump discharge', zorder=5)
         ax2.plot(t_disp, diag['Q_sump_overflow'], color=_C['overflow'],
-                 lw=1.4, ls=':', label='Sump → Basement overflow', zorder=4)
+                 lw=1.4, ls=':', label='Sump → basement spill', zorder=4)
     ax2.set_xlabel(xlabel); ax2.set_ylabel('Flow rate  (m³/s)')
     ax2.set_title('Instantaneous pathway flows')
     ax2.legend(fontsize=8, loc='upper right')
@@ -965,7 +965,7 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds',
                  label='Pump discharge', zorder=5)
         ax3.plot(t_disp, diag['vol_sump_overflow_cum'],
                  color=_C['overflow'], lw=1.4, ls=':',
-                 label='Sump overflow → Basement', zorder=4)
+                 label='Sump spill → basement', zorder=4)
     ax3.set_xlabel(xlabel); ax3.set_ylabel('Cumulative volume  (m³)')
     ax3.set_title('Cumulative pathway volumes')
     ax3.legend(fontsize=8, loc='upper left')
@@ -1010,7 +1010,7 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds',
                   ev.get('vol_b_bs_total', 0.0)]
     cols_bar   = [_C['external'], _C['perimeter'], _C['bypass']]
     if has_sump:
-        labels_bar += ['Pump discharge', 'Sump overflow']
+        labels_bar += ['Pump discharge', 'Sump spill']
         vals_bar   += [ev.get('vol_pump_total', 0.0),
                        ev.get('vol_sump_overflow_total', 0.0)]
         cols_bar   += [_C['pump'], _C['overflow']]
@@ -2160,7 +2160,8 @@ def save_run_result(outpath, config, hydro, result):
         basement_levels=result.h_basement or None,
         sump_levels=result.h_sump or None,
         basement_max_depth=_basement_max_depth(config),
-        sump_overflow_level=config.sumppump.overflow_level if config.sumppump else None,
+        sump_depth=(config.sumppump.depth(config.basement_floor_elevation)
+                    if config.sumppump else None),
     )
 
 
@@ -2176,7 +2177,8 @@ def save_run_animation(outpath, config, hydro, result, pathways):
         basement_levels=result.h_basement or None,
         velocity_series=v_ext,
         sump_levels=result.h_sump or None,
-        sump_overflow_level=config.sumppump.overflow_level if config.sumppump else None,
+        sump_depth=(config.sumppump.depth(config.basement_floor_elevation)
+                    if config.sumppump else None),
         Q_ext_series=tr.get('Q_ext_b'),
         Q_perim_series=tr.get('Q_ext_perimeter'),
         Q_bypass_series=tr.get('Q_b_bs'),

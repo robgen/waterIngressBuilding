@@ -41,3 +41,48 @@ def test_velocity_padding_in_simulation():
 
     # final indoor level with full velocity should be higher than padded-short velocity
     assert h_full[-1] >= h_short[-1]
+
+
+# ── velocity head only when the source water reaches the sill ────────────────
+# Regression: the velocity head v²/2g was added even when the exterior water
+# was below the sill, so a dry floor level with the sill (H_target == sill)
+# drew water in from velocity alone, and a flowing street below the sill
+# blocked or reversed drainage of indoor water above it.
+
+def test_no_inflow_from_velocity_when_water_below_sill():
+    ing = IngressPathway(height=0.10, area=0.01, coeff=0.6)
+    # street 9 cm below the sill, dry floor exactly at the sill
+    assert ing.compute_flow(0.01, 0.10, v_source=0.15) == 0.0
+    assert ing.compute_flow(0.01, 0.10, v_source=3.0) == 0.0
+
+
+def test_velocity_does_not_block_drainage_below_sill():
+    ing = IngressPathway(height=0.10, area=0.01, coeff=0.6)
+    # indoor water 5 cm above the sill, street below the sill: outflow,
+    # whatever the street velocity
+    q_still = ing.compute_flow(0.05, 0.15, v_source=0.0)
+    q_moving = ing.compute_flow(0.05, 0.15, v_source=1.0)
+    assert q_still < 0.0
+    assert q_moving == q_still
+
+
+def test_velocity_head_applies_once_water_reaches_sill():
+    ing = IngressPathway(height=0.10, area=0.01, coeff=0.6)
+    assert ing.compute_flow(0.11, 0.10, v_source=1.0) > ing.compute_flow(0.11, 0.10, v_source=0.0) > 0.0
+
+
+def test_event_below_sill_leaves_floor_dry():
+    """0.01 m flood (hydrographs/generated/0001.csv) against an opening at the
+    floor datum (0.10 m): no water enters with any velocity mode."""
+    import os
+    import engine
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, 'hydrographs', 'generated', '0001.csv')
+    for mode in ('zero', 'file', 'power_law'):
+        config = engine.SimConfig(floor_area=50.0, dt=60.0, floor_datum=0.10,
+                                  velocity_mode=mode)
+        hydro = engine.read_hydrograph(path, time_units='minutes', velocity_mode=mode)
+        result = engine.run(config, hydro, [IngressPathway(0.10, 0.01, 0.6, 'crack')])
+        assert result.peak_h_ext == 0.01
+        assert result.peak_h_in == 0.0, mode

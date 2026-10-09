@@ -28,12 +28,12 @@ Q_ext_b            : exterior→ground-floor flow (m³/s)
 Q_b_bs             : ground-floor→basement flow (positive = g→bs, m³/s)
 Q_ext_perimeter    : lumped exterior perimeter flow (to basement or sump, m³/s)
 Q_pump             : pump discharge from sump (m³/s, 0 if no sump)
-Q_sump_overflow    : sump→basement overflow (m³/s, 0 if no sump)
+Q_sump_overflow    : full sump pit spilling onto the basement floor (m³/s, 0 if no sump)
 vol_ext_b_cum      : cumulative exterior→building volume (m³)
 vol_b_bs_cum       : cumulative ground→basement volume (m³)
 vol_perimeter_cum  : cumulative perimeter inflow volume (m³)
 vol_pump_cum       : cumulative pump discharge volume (m³)
-vol_sump_overflow_cum : cumulative sump overflow volume (m³)
+vol_sump_overflow_cum : cumulative sump spill volume (m³)
 events             : dict of named event timings (keyed strings → time in seconds)
 """
 
@@ -200,9 +200,9 @@ def generate_narrative(diag):
 
     v_ov = ev.get('vol_sump_overflow_total', 0.0)
     if v_ov and v_ov > 0.001:
-        lines.append(f"Sump overflowed: {v_ov:.3f} m³ spilled into basement.")
+        lines.append(f"Sump pit filled: {v_ov:.3f} m³ spilled onto the basement floor.")
     elif has_sump:
-        lines.append("Sump did not overflow — perimeter inflow stayed below crest.")
+        lines.append("Sump pit never filled — no spill onto the basement floor.")
 
     t_on = ev.get('t_first_pump_on')
     if t_on is not None:

@@ -36,17 +36,7 @@ The operating point $Q^* = \sqrt{(H_{shut} - H_{lift})/(k_{pump} + k_{pipe})}$ i
 
 ---
 
-### D. Sump overflow is instantaneous
-
-`engine.py` — `Simulation._set_lower_volume`
-
-The sump and basement are treated as one stored volume: the sump fills first and any volume above the crest spreads over sump + basement in the same step. There is no rate limit on sump→basement overflow, so `--sumppump-overflow-coeff` / `--sumppump-overflow-exponent` currently have no effect and the `Q_sump_overflow` diagnostic is always zero.
-
-**Possible fix:** rate-limited weir overflow $Q_{s \to b} = C_{ov}(h_s - h_{ov})^{m_{ov}}$ (`pump.compute_sump_overflow`) with separate sump and basement balances.
-
----
-
-### E. No ground-floor depth cap
+### D. No ground-floor depth cap
 
 `engine.py` — `Building`
 
@@ -56,7 +46,7 @@ The basement has an explicit ceiling cap (`basement_ceiling_elevation`) but the 
 
 ---
 
-### F. Groundwater and soil pressure not modelled
+### E. Groundwater and soil pressure not modelled
 
 All simulation modules
 
@@ -66,7 +56,7 @@ Perimeter inflow is driven entirely by the surface water level $H_{ext}$. Satura
 
 ---
 
-### G. Forces computed for the ground-floor façade only
+### F. Forces computed for the ground-floor façade only
 
 `forces.py`
 
@@ -76,7 +66,7 @@ Hydrostatic and drag forces are computed for the ground-floor façade. Basement 
 
 ---
 
-### I. Single lumped ground↔basement connection
+### G. Single lumped ground↔basement connection
 
 `engine.py` — `_internal_pathways`
 
@@ -86,7 +76,7 @@ Exterior→basement inflow can be split over any number of pathways (`--basement
 
 ## Numerics
 
-### J. Explicit Euler accuracy and sump oscillation
+### H. Explicit Euler accuracy and sump oscillation
 
 `engine.py`
 
@@ -117,4 +107,5 @@ Issues found in earlier reviews and resolved in the current implementation (deta
 | R9 | Batch file matching by digit concatenation was fragile | Trailing-digit regex |
 | R10 | Bypass Cd hardcoded (0.6 in `cli.py`, 1.0 in `batch.py`/`app.py`) | `--basement-bypass-coeff` (default 0.6) |
 | R11 | Basement inflow dropped in Monte Carlo and dashboard runs | Single model assembly in `engine.run` for every mode |
-| R12 | Full basement kept driving inflow against its ceiling level (indoor level above the flood) | Merged-compartment rule (docs/model.md, *Full basement*) |
+| R12 | Full basement kept driving inflow against its ceiling level (indoor level above the flood) | Merging rule (docs/model.md, *Full compartments*) |
+| R13 | Sump and basement lumped into one volume; crest measured from the sump base but basement water from the basement floor; weir overflow parameters unused | Sump is a third compartment: a pit whose top is the basement floor, with drainage through its opening and spill when full |

@@ -45,12 +45,17 @@ def add_model_args(p):
                    help='Discharge coefficient Cd of the ground↔basement bypass (–). Default: 0.6.')
 
     # ── sump + pump (always used together, --sumppump-* prefix) ──────────────
+    # The sump is a pit whose top is at the basement floor.
     p.add_argument('--sumppump-area', type=float, default=0.0,
-                   help='Sump plan area (m²). >0 activates the sump+pump module.')
-    p.add_argument('--sumppump-base-elevation', type=float, default=None)
-    p.add_argument('--sumppump-overflow-level', type=float, default=None)
-    p.add_argument('--sumppump-overflow-coeff', type=float, default=1.8)
-    p.add_argument('--sumppump-overflow-exponent', type=float, default=1.5)
+                   help='Sump pit plan area (m²). >0 activates the sump+pump module.')
+    p.add_argument('--sumppump-base-elevation', type=float, default=None,
+                   help='Sump pit base elevation (m); must be below '
+                        '--basement-floor-elevation (pit depth = floor − base).')
+    p.add_argument('--sumppump-opening-area', type=float, default=None,
+                   help='Area of the pit opening at the basement floor through which '
+                        'basement water drains into the sump (m²). Default: --sumppump-area.')
+    p.add_argument('--sumppump-opening-coeff', type=float, default=0.6,
+                   help='Discharge coefficient of the pit opening (–). Default: 0.6.')
     p.add_argument('--sumppump-on-level', type=float, default=None)
     p.add_argument('--sumppump-off-level', type=float, default=None)
     p.add_argument('--sumppump-shutoff-head', type=float, default=None)
@@ -86,7 +91,7 @@ def add_model_args(p):
 def _sumppump_from_args(args):
     if not args.sumppump_area or args.sumppump_area <= 0.0:
         return None
-    required = ['sumppump_base_elevation', 'sumppump_overflow_level',
+    required = ['sumppump_base_elevation',
                 'sumppump_on_level', 'sumppump_off_level',
                 'sumppump_shutoff_head', 'sumppump_curve_coeff']
     missing = [k for k in required if getattr(args, k) is None]
@@ -97,9 +102,8 @@ def _sumppump_from_args(args):
     return SumpPump(
         sump_area=args.sumppump_area,
         sump_base_elevation=args.sumppump_base_elevation,
-        overflow_level=args.sumppump_overflow_level,
-        overflow_coeff=args.sumppump_overflow_coeff,
-        overflow_exponent=args.sumppump_overflow_exponent,
+        opening_area=args.sumppump_opening_area,
+        opening_coeff=args.sumppump_opening_coeff,
         pump_on_level=args.sumppump_on_level,
         pump_off_level=args.sumppump_off_level,
         pump_shutoff_head=args.sumppump_shutoff_head,

@@ -60,8 +60,7 @@ def _fill_and_drain_case(sumppump=None, bypass=False):
 
 def _weak_pump():
     return SumpPump(
-        sump_area=0.5, sump_base_elevation=-2.5,
-        overflow_level=0.8, overflow_coeff=1.8, overflow_exponent=1.5,
+        sump_area=0.5, sump_base_elevation=-3.3,   # 0.8 m pit below the floor
         pump_on_level=0.10, pump_off_level=0.02,
         pump_shutoff_head=5.0, pump_curve_coeff=100000,
         pipe_loss_coeff=0.0, pump_availability=1.0,
@@ -69,13 +68,12 @@ def _weak_pump():
 
 
 def _stored(config, result, k):
-    """Water stored indoors after step k: ground floor + basement + sump."""
-    v = result.h_in[k] * config.floor_area
-    sp = config.sumppump
-    if sp is None:
-        return v + result.h_basement[k] * config.basement_area
-    return (v + sp.sump_area * min(result.h_sump[k], sp.overflow_level)
-            + (sp.sump_area + config.basement_area) * result.h_basement[k])
+    """Water stored indoors after step k: ground floor + basement + sump pit."""
+    v = (result.h_in[k] * config.floor_area
+         + result.h_basement[k] * config.basement_area)
+    if config.sumppump is not None:
+        v += result.h_sump[k] * config.sumppump.sump_area
+    return v
 
 
 def _merged_steps(result):

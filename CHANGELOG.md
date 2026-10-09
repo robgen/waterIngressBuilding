@@ -133,3 +133,38 @@ All notable changes to this project are documented in this file.
 - `docs/limitations.md`, `docs/model.md`, `docs/fragility.md`, `README.md`: references to removed code, flags and paths corrected; the sump overflow weir is documented as not applied (limitation D).
 - CI: the smoke test called `main.py` and an `example_run/` folder that no longer exist (and YAML read Python `3.10` as `3.1`); it now runs `cli.py` and `batch.py` on the example inputs. Removed `tests/run_tests.py` (ran one test file; pytest is a requirement).
 - `plot.save_simulation_result`: removed the `velocity_series` argument, which was accepted but never drawn. Removed unused locals and imports.
+
+## [2026-10-08] — sump as a third compartment
+
+### Physics
+
+- The sump is a pit below the basement floor with its **top at the basement floor**: depth = `basement_floor_elevation − sump_base_elevation` (must be > 0). It is a compartment of its own (level `h_sump` ≤ depth):
+  - exterior→basement pathways discharge into the pit (as before);
+  - basement water drains into the pit through its opening (orifice at the basement floor; area `opening_area`, default the whole pit, coefficient `opening_coeff`), capped each step at the room in the pit and the water above it;
+  - a full pit spills onto the basement floor in the same step;
+  - the pump draws from the pit only, never more than it holds.
+- The merging rule now covers the whole chain pit → basement → ground floor: a full compartment with water above it shares that compartment's surface, and a deficit is taken from the members below (basement first, then the pit).
+- Previously sump and basement were one lumped volume with the sump crest measured from the sump base but basement water from the basement floor (0.8 m apart in Cases 06–07), and the weir overflow parameters had no effect. Runs without a sump are bit-identical.
+
+### Inputs
+
+- `SumpPump`: removed `overflow_level`, `overflow_coeff`, `overflow_exponent`; added `opening_area` (default `sump_area`) and `opening_coeff` (default 0.6). Removed `pump.compute_sump_overflow`.
+- CLI: removed `--sumppump-overflow-level`, `--sumppump-overflow-coeff`, `--sumppump-overflow-exponent`; added `--sumppump-opening-area`, `--sumppump-opening-coeff`. `--sumppump-base-elevation` must be below `--basement-floor-elevation`.
+- App: the sump section takes the pit base (default 0.8 m below the basement floor), opening area (0 = whole pit) and Cd instead of the overflow crest, coefficient and exponent.
+
+### Outputs
+
+- Trace: `Q_sump_overflow` is the pit spilling onto the basement floor (it was always zero); new `Q_b_sump` is basement water draining into the pit. Diagnostics and the dashboard label them "sump spill".
+- Plots: the sump reference line is the pit top (basement floor); `sump_overflow_level` arguments renamed `sump_depth`.
+
+### Examples
+
+- Cases 06–07: pit base moved from −2.5 m to −3.3 m (0.8 m pit below the −2.5 m basement floor); lift head at peak flood 3.8 m instead of 3.0 m. Case 06: peak sump 0.80 m, basement 0.002 m (60 s timestep artefact, unchanged in size). Case 07: the pit fills at 12 min and the basement peaks at 0.21 m (was 0.12 m); after the flood the pump drains the basement back through the pit and empties both (the basement water previously stayed). References, report text and the timestep-sensitivity figure updated (dt_crit 1.4 s).
+
+## [2026-10-09] — velocity head only at a wetted opening
+
+- `IngressPathway.compute_flow` added the velocity head v²/2g even when the exterior water was below the sill. Two consequences, on `main` and `refactor`, with and without a pump, whenever the velocity is nonzero (`file` or `power_law`):
+  - an opening whose sill equals the floor datum let water in from velocity alone when the floor was dry (target level exactly at the sill): in the 0.01 m-peak events the ground floor gained ≈ v²/2g ≈ 1.3 mm;
+  - interior water above a sill could not drain, or was pushed further in, while a flowing street stayed below the sill.
+- The velocity head is now added only when the source water is above the sill. Zero-velocity runs (all validation examples) are unchanged.
+- Tests in `tests/test_velocity.py`: no inflow from velocity alone, unobstructed drainage below the sill, velocity head still applied once the sill is reached, and a dry floor for `hydrographs/generated/0001.csv` against an opening at the floor datum in every velocity mode.

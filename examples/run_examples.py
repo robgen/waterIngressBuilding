@@ -60,8 +60,8 @@ CASE_DURATION = {
     'ex03': 360,   # slow crack drainage must reach zero
     'ex04': 120,   # basement permanently trapped; level flat after t = 60 min
     'ex05': 360,   # long 1.0 m flood; basement full at ~123 min
-    'ex06': 90,    # strong pump keeps sump dry throughout
-    'ex07': 150,   # sump overflows and basement fills; level flat after ~80 min
+    'ex06': 90,    # strong pump keeps the pit nearly dry throughout
+    'ex07': 150,   # pit fills and spills; the pump then drains basement and pit
     'ex08': 120,   # fragility MC; fill/drain settles by ~100 min
     'ex09': 120,
     'ex10': 90,    # membrane intact, near-zero interior; nothing to show past 90 min
@@ -254,9 +254,10 @@ run('ex05', [
     hydro_path=os.path.join(ex05, 'hydro.csv'))
 
 # ── Ex 06: basement + sump/pump that keeps up ────────────────────────────────
-# Same inflow as Ex 04.  Strong pump: Q_pump ≈ 0.045 m³/s >> Q_in_max ≈ 0.008 m³/s.
-# Q_pump = sqrt((H_shut − H_lift) / k_pump) = sqrt((5.0 − 3.0) / 1000) ≈ 0.045 m³/s
-# H_lift = |h_ext − z_sump| = |0.5 − (−2.5)| = 3.0 m at peak flood.
+# Same inflow as Ex 04 into a 0.5 m² pit, 0.8 m deep below the basement floor.
+# Strong pump: Q_pump ≈ 0.035 m³/s >> Q_in_max ≈ 0.008 m³/s.
+# Q_pump = sqrt((H_shut − H_lift) / k_pump) = sqrt((5.0 − 3.8) / 1000) ≈ 0.035 m³/s
+# H_lift = h_ext − z_sump = 0.5 − (−3.3) = 3.8 m at peak flood.
 print('\nEx 06 – basement + sump/pump (keeps up)')
 ex06 = mkdir(os.path.join(HERE, 'ex06'))
 write_csv_rows(os.path.join(ex06, 'hydro.csv'), make_hydro(CASE_DURATION['ex06']))
@@ -266,10 +267,7 @@ run('ex06', [
     '--basement-area',               '30',
     '--basement-floor-elevation',    '-2.5',
     '--sumppump-area',               '0.5',
-    '--sumppump-base-elevation',     '-2.5',
-    '--sumppump-overflow-level',     '0.8',
-    '--sumppump-overflow-coeff',     '1.8',
-    '--sumppump-overflow-exponent',  '1.5',
+    '--sumppump-base-elevation',     '-3.3',   # 0.8 m pit below the basement floor
     '--sumppump-on-level',           '0.10',
     '--sumppump-off-level',          '0.02',
     '--sumppump-shutoff-head',       '5.0',
@@ -287,8 +285,9 @@ subprocess.run([PY, os.path.join(HERE, 'plot_dt_sensitivity_sump.py')],
 print('  OK  ex06 dt-sensitivity')
 
 # ── Ex 07: basement + sump/pump overwhelmed ───────────────────────────────────
-# Same inflow as Ex 04/06 but 100× weaker pump → sump overflows → basement fills.
-# Q_pump = sqrt((5.0 − 3.0) / 100000) ≈ 0.0045 m³/s  <  Q_in_max ≈ 0.008 m³/s
+# Same inflow and pit as Ex 06 but 100× weaker pump → pit fills and spills onto
+# the basement floor.
+# Q_pump = sqrt((5.0 − 3.8) / 100000) ≈ 0.0035 m³/s  <  Q_in_max ≈ 0.008 m³/s
 print('\nEx 07 – basement + sump/pump (overwhelmed)')
 ex07 = mkdir(os.path.join(HERE, 'ex07'))
 write_csv_rows(os.path.join(ex07, 'hydro.csv'), make_hydro(CASE_DURATION['ex07']))
@@ -298,10 +297,7 @@ run('ex07', [
     '--basement-area',               '30',
     '--basement-floor-elevation',    '-2.5',
     '--sumppump-area',               '0.5',
-    '--sumppump-base-elevation',     '-2.5',
-    '--sumppump-overflow-level',     '0.8',
-    '--sumppump-overflow-coeff',     '1.8',
-    '--sumppump-overflow-exponent',  '1.5',
+    '--sumppump-base-elevation',     '-3.3',   # 0.8 m pit below the basement floor
     '--sumppump-on-level',           '0.10',
     '--sumppump-off-level',          '0.02',
     '--sumppump-shutoff-head',       '5.0',
@@ -669,21 +665,24 @@ above the 1.0 m flood.
 
 ## Case 06 — Basement + sump/pump (pump keeps up)
 
-**Setup:** identical inflow to Case 04 (30 m² basement, z = −2.5 m).
-Added sump (area = 0.5 m², base at −2.5 m, overflow crest at 0.8 m
-above base).  Strong pump: k\\_pump = 1 000.
+**Setup:** identical inflow to Case 04 (30 m² basement, floor at −2.5 m).
+Added sump: a 0.5 m² pit whose top is at the basement floor and base at
+−3.3 m (0.8 m deep).  The perimeter inflow discharges into the pit; a full
+pit spills onto the basement floor, and basement water drains back into the
+pit through its opening.  Strong pump: k\\_pump = 1 000.
 
 Q\\_pump = √((H\\_shut − H\\_lift) / k\\_pump).
-At peak flood (H\\_lift = |0.5 − (−2.5)| = 3.0 m):
-Q\\_pump = √((5.0 − 3.0) / 1 000) ≈ **0.045 m³/s** >> Q\\_in\\_max ≈ 0.008 m³/s.
+At peak flood (H\\_lift = 0.5 − (−3.3) = 3.8 m):
+Q\\_pump = √((5.0 − 3.8) / 1 000) ≈ **0.035 m³/s** >> Q\\_in\\_max ≈ 0.008 m³/s.
 
-**Expected behaviour:** the sump activates almost immediately and pumps
-out all inflow.  Sump level stays below the on-level (0.10 m); no
-overflow; no basement flooding; no ground-floor flooding.  After the
-flood the pump drains any residual sump water.
+**Expected behaviour:** the pump switches on almost immediately and removes
+all inflow.  The pit level cycles between the off- and on-levels
+(0.02–0.10 m); no spill, no basement or ground-floor flooding.  After the
+flood the pump drains any residual water.
 
-**Qualitative check:** sump trace stays near zero (≤ 0.10 m); basement
-and ground-floor traces remain at zero throughout.
+**Qualitative check:** sump trace stays low; basement and ground-floor
+traces remain at zero.  At the default 60 s step the pit level is
+distorted by the pump overshooting (next section).
 
 ![]({sim06})
 
@@ -693,22 +692,22 @@ and ground-floor traces remain at zero throughout.
 
 With the explicit-Euler update, the pump discharges **ΔV = Q_pump × Δt**
 per step.  If ΔV exceeds the active sump volume **A_sump × h_on**, the
-sump drains past zero in one step and refills to h\\_on the next — a pure
-numerical artefact that can push h\\_sump past the overflow crest and
-cause spurious basement flooding.
+sump drains past zero in one step and refills past h\\_on the next — a pure
+numerical artefact that can fill the pit and spill water onto the basement
+floor.
 
 **Stability criterion:**
 
 > Δt  ≤  dt\\_crit  =  A\\_sump × h\\_on / Q\\_pump
 
-For Case 06 (A\\_sump = 0.5 m², h\\_on = 0.10 m, Q\\_pump ≈ 0.045 m³/s):
+For Case 06 (A\\_sump = 0.5 m², h\\_on = 0.10 m, Q\\_pump ≈ 0.035 m³/s):
 
-> dt\\_crit ≈ 1.1 s  →  recommended Δt ≤ **1 s** (50 % margin)
+> dt\\_crit ≈ 1.4 s  →  recommended Δt ≤ **1 s**
 
 The figure below shows sump depth time-series for Δt = 60 s down to 0.5 s
-(reference).  At Δt = 60 s the sump oscillates to the overflow crest,
-producing a spurious 2 mm basement depth.  At Δt ≤ 2 s the level is
-smooth and the basement remains dry throughout.
+(reference).  At Δt = 60 s the pit fills to the basement floor and spills,
+producing a spurious 2 mm basement depth.  At Δt ≤ 30 s the basement stays
+dry, and the peak pit level converges towards ≈ 0.11 m as Δt → 0.5 s.
 
 ![]({dt_sens06})
 
@@ -716,19 +715,20 @@ smooth and the basement remains dry throughout.
 
 ## Case 07 — Basement + sump/pump (pump overwhelmed)
 
-**Setup:** same as Case 06 but 100× weaker pump: k\\_pump = 100 000.
-At peak flood:
-Q\\_pump = √((5.0 − 3.0) / 100 000) ≈ **0.0045 m³/s** < Q\\_in\\_max ≈ 0.008 m³/s.
+**Setup:** same building, pit and inflow as Case 06 but a 100× weaker pump:
+k\\_pump = 100 000.  At peak flood:
+Q\\_pump = √((5.0 − 3.8) / 100 000) ≈ **0.0035 m³/s** < Q\\_in\\_max ≈ 0.008 m³/s.
 
-**Expected behaviour:** pump activates but cannot match inflow; sump
-level rises quickly (excess rate ≈ 0.003 m³/s over 0.5 m² ≈ 7 mm/s)
-and reaches the overflow crest (0.8 m) within ≈ 2 min.  Excess water
-spills into the basement, which then fills.  Contrast directly with
-Case 06 where the sump never overflows.
+**Expected behaviour:** the pump runs but cannot match the inflow.  The pit
+(0.4 m³) fills to the basement floor at t ≈ 12 min and spills; from then on
+pit and basement share one water surface, and the basement fills to
+≈ 0.21 m.  Once the flood recedes the pump keeps running, drawing the
+basement water back down through the pit, and empties both by the end of
+the run.  Contrast with Case 06, where the pit never fills.
 
-**Qualitative check:** sump trace rises to the overflow crest and
-saturates there; basement trace becomes positive soon after; sump
-overflow crest visible as a horizontal asymptote.
+**Qualitative check:** sump trace rises to 0.8 m (pit full) and stays there
+while the basement holds water; basement trace rises after t ≈ 12 min, peaks
+near the end of the flood and then falls to zero; the sump empties last.
 
 ![]({sim07})
 

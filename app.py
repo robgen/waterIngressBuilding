@@ -209,13 +209,20 @@ with st.sidebar:
         enable_sump = st.checkbox('Enable sump & pump', value=False,
                                   disabled=not enable_basement)
         if enable_sump and enable_basement:
+            st.caption('The sump is a pit whose top is at the basement floor; '
+                       'it spills onto the floor when full.')
             sc1, sc2 = st.columns(2)
-            sump_area       = sc1.number_input('Sump area (m²)',    value=0.5,   min_value=0.01, step=0.1)
-            sump_base_elev  = sc2.number_input('Sump base (m)',     value=float(basement_floor_elev), step=0.1)
+            sump_area       = sc1.number_input('Sump area (m²)', value=0.5, min_value=0.01, step=0.1)
+            sump_base_elev  = sc2.number_input('Sump base (m)', value=float(basement_floor_elev) - 0.8,
+                                               max_value=float(basement_floor_elev) - 0.01, step=0.1,
+                                               help='Must be below the basement floor; '
+                                                    'pit depth = floor − base.')
             oc1, oc2 = st.columns(2)
-            sump_ov_level   = oc1.number_input('Overflow crest (m above base)', value=0.8, step=0.05)
-            sump_ov_coeff   = oc2.number_input('Overflow coeff',    value=1.8, step=0.1, format='%.2f')
-            sump_ov_exp     = st.number_input('Overflow exp (1.5 = weir)',       value=1.5, step=0.1, format='%.1f')
+            sump_open_area  = oc1.number_input('Opening area (m², 0 = whole pit)', value=0.0,
+                                               min_value=0.0, step=0.01, format='%.3f',
+                                               help='Opening at the basement floor through which '
+                                                    'basement water drains into the pit.')
+            sump_open_cd    = oc2.number_input('Opening Cd', value=0.6, step=0.05, format='%.2f')
             st.markdown('<div class="section-label">Pump curve</div>', unsafe_allow_html=True)
             pp1, pp2 = st.columns(2)
             pump_on   = pp1.number_input('ON level (m)',  value=0.10, step=0.02, format='%.2f')
@@ -229,7 +236,8 @@ with st.sidebar:
                                           min_value=0.0, max_value=1.0, step=0.05, format='%.2f')
         else:
             enable_sump = False
-            sump_area = sump_base_elev = sump_ov_level = sump_ov_coeff = sump_ov_exp = 0.0
+            sump_area = sump_base_elev = sump_open_area = 0.0
+            sump_open_cd = 0.6
             pump_on = pump_off = pump_hsh = pump_k = pipe_k = pump_avail = 0.0
 
     # ── 5. Loss estimation ───────────────────────────────────────────────────
@@ -263,9 +271,8 @@ def _model_config(n_replicates=1, random_seed=None) -> SimConfig:
         sump = SumpPump(
             sump_area=float(sump_area),
             sump_base_elevation=float(sump_base_elev),
-            overflow_level=float(sump_ov_level),
-            overflow_coeff=float(sump_ov_coeff),
-            overflow_exponent=float(sump_ov_exp),
+            opening_area=float(sump_open_area) if sump_open_area > 0 else None,
+            opening_coeff=float(sump_open_cd),
             pump_on_level=float(pump_on),
             pump_off_level=float(pump_off),
             pump_shutoff_head=float(pump_hsh),
@@ -568,13 +575,13 @@ if run_button:
                     'First ground-floor inundation': _t_fmt('t_first_gf_inundation'),
                     'First basement inundation':     _t_fmt('t_first_basement_inundation'),
                     'First pump activation':         _t_fmt('t_first_pump_on'),
-                    'First sump overflow':           _t_fmt('t_first_sump_overflow'),
+                    'First sump spill':              _t_fmt('t_first_sump_overflow'),
                     'Pump interception ratio':       (
                         _fmt_pct(ev['pump_interception_ratio'])
                         if ev.get('pump_interception_ratio') is not None else '—'),
                     'Perimeter inflow (m³)':         f'{ev.get("vol_perimeter_total", 0):.4f}',
                     'Pump discharge (m³)':           f'{ev.get("vol_pump_total", 0):.4f}',
-                    'Sump overflow (m³)':            f'{ev.get("vol_sump_overflow_total", 0):.4f}',
+                    'Sump spill (m³)':               f'{ev.get("vol_sump_overflow_total", 0):.4f}',
                 }
                 _buf = io.StringIO()
                 _w   = csv.writer(_buf)

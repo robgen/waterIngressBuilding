@@ -16,17 +16,23 @@ Design principles
   described in spec section 16.5 and should remain isolatable for later
   improvement.
 
-Routing convention
-------------------
-Exterior→basement pathways (target='basement', from the --basement-ingress
-file) carry the perimeter inflow (Q_ext_s or Q_ext_b).  When a sump is
-configured, Simulation.run() routes them to the sump; otherwise they feed the
-basement directly.
+Geometry and routing
+--------------------
+The sump is a pit below the basement floor: its top is at the basement floor
+elevation z_b and its base at sump_base_elevation, so its depth is
+z_b - sump_base_elevation.  It is a compartment of its own (level h_sump):
+  - exterior→basement pathways (target='basement', from --basement-ingress)
+    discharge into the sump when one is configured;
+  - basement water drains into the pit through its opening (an orifice at the
+    basement floor, area opening_area, default the full sump area);
+  - a full sump spills onto the basement floor;
+  - the pump draws from the sump only.
 """
 
 import math
 import warnings
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -35,10 +41,7 @@ class SumpPump:
 
     Parameters (immutable intent)
     -----------------------------
-    sump_area          : A_s (m²) — plan area of sump chamber
-    overflow_level     : z_ov (m above sump base) — overflow crest elevation
-    overflow_coeff     : C_ov — weir/overflow discharge coefficient
-    overflow_exponent  : m_ov — exponent (1.5 = weir, 0.5 = orifice)
+    sump_area          : A_s (m²) — plan area of the sump pit
     pump_on_level      : h_on (m) — sump depth at which pump activates
     pump_off_level     : h_off (m) — sump depth at which pump deactivates
     pump_shutoff_head  : H_shut (m) — pump shut-off head
@@ -49,6 +52,10 @@ class SumpPump:
                          H_lift(t) = max(0, H_out(t) - z_sump_base)
     pump_availability  : eta_p — availability factor (1.0 = always available).
                          Placeholder for future fragility/Monte Carlo.
+    opening_area       : area (m²) of the pit opening at the basement floor
+                         through which basement water drains into the sump;
+                         None = the full sump area (open pit)
+    opening_coeff      : discharge coefficient of the pit opening
 
     Mutable state (reset between cases in batch runs via copy.deepcopy)
     -------------------------------------------------------------------
@@ -56,9 +63,6 @@ class SumpPump:
     pump_state: current on/off state  u(t) ∈ {0, 1}
     """
     sump_area: float
-    overflow_level: float
-    overflow_coeff: float
-    overflow_exponent: float
     pump_on_level: float
     pump_off_level: float
     pump_shutoff_head: float
@@ -66,6 +70,8 @@ class SumpPump:
     pipe_loss_coeff: float
     sump_base_elevation: float
     pump_availability: float = 1.0
+    opening_area: Optional[float] = None
+    opening_coeff: float = 0.6
     # mutable state — deepcopy these between batch cases
     h_sump: float = 0.0
     pump_state: int = 0
@@ -78,33 +84,34 @@ class SumpPump:
             raise ValueError(
                 f"SumpPump.pump_off_level ({self.pump_off_level}) must be "
                 f"< pump_on_level ({self.pump_on_level}): hysteresis band is inverted")
-        if self.overflow_level < 0.0:
+        if self.opening_area is not None and self.opening_area <= 0.0:
             raise ValueError(
-                f"SumpPump.overflow_level must be >= 0, got {self.overflow_level}")
+                f"SumpPump.opening_area must be > 0, got {self.opening_area}")
         if self.pump_shutoff_head <= 0.0:
             warnings.warn(
                 f"SumpPump.pump_shutoff_head is {self.pump_shutoff_head} ≤ 0; "
                 "pump will always return zero flow.", stacklevel=2)
-        if self.pump_on_level > self.overflow_level:
+
+    def depth(self, basement_floor_elevation):
+        """Pit depth: from the sump base up to the basement floor."""
+        return float(basement_floor_elevation) - float(self.sump_base_elevation)
+
+    def check_geometry(self, basement_floor_elevation):
+        """Raise if the pit has no depth; warn if the pump never switches on."""
+        depth = self.depth(basement_floor_elevation)
+        if depth <= 0.0:
+            raise ValueError(
+                f"SumpPump.sump_base_elevation ({self.sump_base_elevation}) must be "
+                f"below the basement floor ({basement_floor_elevation}): the sump "
+                "is a pit whose top is at the basement floor.")
+        if self.pump_on_level > depth:
             warnings.warn(
-                f"SumpPump.pump_on_level ({self.pump_on_level}) > overflow_level "
-                f"({self.overflow_level}): pump only activates after the sump "
-                "overflows — sump will spill before the pump engages.", stacklevel=2)
+                f"SumpPump.pump_on_level ({self.pump_on_level}) > sump depth "
+                f"({depth}): the pump only switches on once the sump has spilled "
+                "into the basement.", stacklevel=2)
 
 
 # ── pure helper functions ─────────────────────────────────────────────────────
-
-def compute_sump_overflow(h_sump, overflow_level, overflow_coeff, overflow_exponent):
-    """Q_s→bs: weir/orifice overflow from sump into basement (m³/s).
-
-    Returns 0 when h_sump ≤ overflow_level.
-    Spec eq: Q_s→bs = C_ov * (h_s - z_ov)^m_ov  if h_s > z_ov else 0
-    """
-    excess = float(h_sump) - float(overflow_level)
-    if excess <= 0.0:
-        return 0.0
-    return float(overflow_coeff) * (excess ** float(overflow_exponent))
-
 
 def compute_pump_switch_state(h_sump, pump_on_level, pump_off_level, previous_state):
     """Hysteretic on/off control: u(t) ∈ {0, 1}.

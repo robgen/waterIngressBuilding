@@ -200,13 +200,12 @@ or listed under **Batch only** (definitions in `inputs.py`).
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--sumppump-area FLOAT` | — | Sump plan area (m²); enables the module when > 0 |
-| `--sumppump-base-elevation FLOAT` | — | Sump base / pump datum elevation (m) |
-| `--sumppump-overflow-level FLOAT` | — | Overflow crest height above sump base (m) |
-| `--sumppump-overflow-coeff FLOAT` | — | Overflow coefficient $C_{ov}$ |
-| `--sumppump-overflow-exponent FLOAT` | 1.5 | Overflow exponent $m_{ov}$ |
-| `--sumppump-on-level FLOAT` | — | Sump depth above base at which pump switches on (m) |
-| `--sumppump-off-level FLOAT` | — | Sump depth above base at which pump switches off (m) |
+| `--sumppump-area FLOAT` | — | Sump pit plan area (m²); enables the module when > 0 |
+| `--sumppump-base-elevation FLOAT` | — | Pit base elevation (m), below `--basement-floor-elevation`; the pit top is at the basement floor, so its depth is floor − base |
+| `--sumppump-opening-area FLOAT` | `--sumppump-area` | Area of the pit opening through which basement water drains into the pit (m²) |
+| `--sumppump-opening-coeff FLOAT` | 0.6 | Discharge coefficient of the pit opening |
+| `--sumppump-on-level FLOAT` | — | Pit depth above its base at which the pump switches on (m) |
+| `--sumppump-off-level FLOAT` | — | Pit depth above its base at which the pump switches off (m) |
 | `--sumppump-shutoff-head FLOAT` | — | Pump shut-off head $H_{shut}$ (m) |
 | `--sumppump-curve-coeff FLOAT` | — | Pump-curve coefficient $k_{pump}$ |
 | `--sumppump-pipe-loss-coeff FLOAT` | 0 | Pipe-loss coefficient $k_{pipe}$ |

@@ -36,10 +36,8 @@ BASEMENT_INGRESS_H   = 0.0
 BASEMENT_INGRESS_A   = 0.005
 BASEMENT_INGRESS_CD  = 0.5
 SUMP_AREA            = 0.5
-SUMP_BASE_ELEV       = -2.5
-SUMP_OVERFLOW_LEVEL  = 0.8
-SUMP_OVERFLOW_COEFF  = 1.8
-SUMP_OVERFLOW_EXP    = 1.5
+SUMP_BASE_ELEV       = -3.3                     # pit 0.8 m below the basement floor
+SUMP_DEPTH           = BASEMENT_FLOOR_ELEV - SUMP_BASE_ELEV
 PUMP_ON_LEVEL        = 0.10
 PUMP_OFF_LEVEL       = 0.02
 PUMP_SHUTOFF_HEAD    = 5.0
@@ -69,9 +67,6 @@ def _build_sump() -> SumpPump:
     return SumpPump(
         sump_area           = SUMP_AREA,
         sump_base_elevation = SUMP_BASE_ELEV,
-        overflow_level      = SUMP_OVERFLOW_LEVEL,
-        overflow_coeff      = SUMP_OVERFLOW_COEFF,
-        overflow_exponent   = SUMP_OVERFLOW_EXP,
         pump_on_level       = PUMP_ON_LEVEL,
         pump_off_level      = PUMP_OFF_LEVEL,
         pump_shutoff_head   = PUMP_SHUTOFF_HEAD,
@@ -103,7 +98,7 @@ def _dt_crit(q_pump_peak: float) -> float:
 
 def _q_pump_peak() -> float:
     """Peak pump flow during the flood (at peak flood head, pump ON)."""
-    H_lift = abs(0.5 - SUMP_BASE_ELEV)   # external peak 0.5 m above datum
+    H_lift = 0.5 - SUMP_BASE_ELEV   # external peak 0.5 m above datum
     dH = PUMP_SHUTOFF_HEAD - H_lift
     if dH <= 0:
         return 0.0
@@ -155,9 +150,9 @@ def main():
                color='#7f8c8d', lw=1.4, ls='--', zorder=4,
                label='External  $h_{ext}$')
 
-    # sump overflow crest
-    ax_ts.axhline(SUMP_OVERFLOW_LEVEL, color='#8e44ad', lw=0.9, ls=':',
-                  alpha=0.55, zorder=2, label=f'Sump overflow crest  {SUMP_OVERFLOW_LEVEL} m')
+    # sump top (basement floor)
+    ax_ts.axhline(SUMP_DEPTH, color='#8e44ad', lw=0.9, ls=':',
+                  alpha=0.55, zorder=2, label=f'Sump top (basement floor)  {SUMP_DEPTH:.1f} m')
 
     for r in runs:
         ax_ts.plot(r['t_min'], r['h_sp'],
@@ -211,7 +206,7 @@ def main():
         'If  ΔV > A_sump × h_on,  the sump is emptied\n'
         'in one step, causing the level to oscillate\n'
         'between h_on and 0 at every other timestep.\n'
-        'This can trigger a spurious sump overflow.\n\n'
+        'This can make the pit spill spuriously.\n\n'
         'Stability criterion:\n\n'
         '   dt  ≤  dt_crit  =  A_sump × h_on / Q_pump\n\n'
         f'Case 06 values:\n'

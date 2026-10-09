@@ -18,30 +18,35 @@ import math
 import sys
 import os
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from pump import (SumpPump, compute_sump_overflow, compute_pump_switch_state,
+from pump import (SumpPump, compute_pump_switch_state,
                   compute_pump_flow, compute_lift_head)
 from engine import Building, IngressPathway, Simulation
 
 
-# ── unit tests: compute_sump_overflow ────────────────────────────────────────
+# ── unit tests: pit geometry ─────────────────────────────────────────────────
 
-def test_sump_overflow_zero_below_crest():
-    assert compute_sump_overflow(0.5, 0.8, 1.8, 1.5) == 0.0
-    assert compute_sump_overflow(0.8, 0.8, 1.8, 1.5) == 0.0
-
-
-def test_sump_overflow_positive_above_crest():
-    Q = compute_sump_overflow(1.0, 0.8, 1.8, 1.5)
-    expected = 1.8 * (0.2 ** 1.5)
-    assert abs(Q - expected) < 1e-10
+def _pit(base=-3.0, on=0.2, off=0.05):
+    return SumpPump(sump_area=1.0, sump_base_elevation=base, pump_on_level=on,
+                    pump_off_level=off, pump_shutoff_head=5.0, pump_curve_coeff=10.0,
+                    pipe_loss_coeff=0.0)
 
 
-def test_sump_overflow_exponent_0_5():
-    Q = compute_sump_overflow(1.0, 0.5, 2.0, 0.5)
-    expected = 2.0 * math.sqrt(0.5)
-    assert abs(Q - expected) < 1e-10
+def test_sump_depth_is_basement_floor_minus_base():
+    assert _pit(base=-3.0).depth(-2.5) == pytest.approx(0.5)
+
+
+def test_sump_base_must_be_below_basement_floor():
+    with pytest.raises(ValueError, match="below the basement floor"):
+        _pit(base=-2.5).check_geometry(-2.5)
+
+
+def test_pump_on_level_above_pit_top_warns():
+    with pytest.warns(UserWarning, match="spilled"):
+        _pit(base=-2.6, on=0.2).check_geometry(-2.5)
 
 
 # ── unit tests: compute_pump_switch_state ────────────────────────────────────
@@ -100,11 +105,12 @@ def test_pump_flow_no_negative_sqrt():
     assert Q == 0.0
 
 
-# ── integration: sump fills and overflows to basement (no pump) ───────────────
+# ── integration: pit fills and spills onto the basement floor (no pump) ──────
 
 def test_sump_fills_and_overflows_to_basement():
     """Sump receives exterior perimeter inflow from an outside→basement pathway.
-    Once depth exceeds overflow crest, water spills to basement.  Pump is
+    Once the pit is full (top at the basement floor), water spills onto the
+    basement floor.  Pump is
     effectively disabled (pump_on_level very high).  Ground floor stays dry.
     """
     building = Building(floor_area=50.0)
@@ -120,10 +126,7 @@ def test_sump_fills_and_overflows_to_basement():
 
     building.sump_pump = SumpPump(
         sump_area          = 2.0,
-        sump_base_elevation= -2.5,   # sump at basement level
-        overflow_level     = 0.5,    # overflow crest at 0.5 m above sump base
-        overflow_coeff     = 1.8,
-        overflow_exponent  = 1.5,
+        sump_base_elevation= -3.0,   # pit 0.5 m deep below the floor
         pump_on_level      = 999.0,  # effectively disabled
         pump_off_level     = 998.0,
         pump_shutoff_head  = 5.0,
@@ -144,15 +147,16 @@ def test_sump_fills_and_overflows_to_basement():
     _, sim_levels, sim_basement, sim_sump = result
 
     assert max(sim_sump) > 0.0, "Sump should have received water"
-    assert max(sim_basement) > 0.0, "Basement should have received overflow from sump"
+    assert max(sim_sump) == pytest.approx(0.5), "Pit should fill to the basement floor"
+    assert max(sim_basement) > 0.0, "Basement should have received the spill"
     # Note: ground floor may receive water if basement fills to ceiling and overflows —
     # that is physically correct and not the focus of this test.
 
 
-# ── integration: pump keeps sump below overflow level ────────────────────────
+# ── integration: pump keeps the pit from filling ─────────────────────────────
 
 def test_pump_controls_sump_level():
-    """With a capable pump, sump should stay below overflow crest."""
+    """With a capable pump, the pit should never fill to the basement floor."""
     building = Building(floor_area=50.0)
     building.basement_area = 50.0
     building.z_basement = -2.5
@@ -164,10 +168,7 @@ def test_pump_controls_sump_level():
 
     building.sump_pump = SumpPump(
         sump_area          = 4.0,
-        sump_base_elevation= -2.5,
-        overflow_level     = 0.5,
-        overflow_coeff     = 1.8,
-        overflow_exponent  = 1.5,
+        sump_base_elevation= -3.0,   # pit 0.5 m deep below the floor
         pump_on_level      = 0.2,
         pump_off_level     = 0.05,
         pump_shutoff_head  = 10.0,   # large pump
@@ -182,8 +183,8 @@ def test_pump_controls_sump_level():
     _, _, sim_basement, sim_sump = sim.run()
 
     assert max(sim_sump) < 0.5, (
-        f"Sump exceeded overflow level: max={max(sim_sump):.3f}")
-    assert max(sim_basement) < 0.01, "Basement should receive little overflow"
+        f"Pit filled: max={max(sim_sump):.3f}")
+    assert max(sim_basement) < 0.01, "Basement should receive little spill"
 
 
 # ── integration: pump hysteresis (on/off cycling) ────────────────────────────
@@ -201,10 +202,7 @@ def test_pump_on_off_hysteresis():
 
     building.sump_pump = SumpPump(
         sump_area          = 2.0,
-        sump_base_elevation= -2.5,
-        overflow_level     = 1.0,
-        overflow_coeff     = 1.8,
-        overflow_exponent  = 1.5,
+        sump_base_elevation= -3.5,   # pit 1.0 m deep below the floor
         pump_on_level      = 0.4,
         pump_off_level     = 0.1,
         pump_shutoff_head  = 5.0,
@@ -278,11 +276,8 @@ def test_perimeter_inflow_redirected_to_sump_when_sump_enabled():
             source='outside', target='basement')
         if with_sump:
             building.sump_pump = SumpPump(
-                sump_area          = 5.0,
-                sump_base_elevation= -2.5,
-                overflow_level     = 10.0,  # unreachably high → no overflow
-                overflow_coeff     = 1.8,
-                overflow_exponent  = 1.5,
+                sump_area          = 10.0,   # 100 m³ pit: never fills here
+                sump_base_elevation= -12.5,   # pit 10.0 m deep below the floor
                 pump_on_level      = 999.0,  # pump off
                 pump_off_level     = 998.0,
                 pump_shutoff_head  = 5.0,
@@ -301,8 +296,34 @@ def test_perimeter_inflow_redirected_to_sump_when_sump_enabled():
     # Without sump: basement fills from perimeter opening
     assert max(basement_no_sump) > 0.0
 
-    # With sump (overflow crest effectively infinite, pump off):
+    # With sump (100 m³ pit, never fills; pump off):
     #   water accumulates in sump, not in basement
     assert max(sump_levels) > 0.0
-    # Basement should have no inflow (overflow blocked at high crest)
+    # Basement should have no inflow (the pit never spills)
     assert max(basement_with_sump) < 1e-9
+
+
+# ── integration: basement water drains back into the pit ─────────────────────
+
+def test_pump_drains_basement_through_pit():
+    """After the flood, basement water drains into the pit and is pumped out."""
+    building = Building(floor_area=50.0)
+    building.basement_area = 30.0
+    building.z_basement = -2.5
+    building.basement_ceiling_elevation = 0.0
+    bsmt = IngressPathway(height=0.0, area=0.005, coeff=0.5, name='ext-perimeter',
+                          source='outside', target='basement')
+    building.sump_pump = SumpPump(
+        sump_area=0.5, sump_base_elevation=-3.3,
+        pump_on_level=0.10, pump_off_level=0.02,
+        pump_shutoff_head=5.0, pump_curve_coeff=100000, pipe_loss_coeff=0.0)
+
+    sim = Simulation(building, [bsmt], [0.0, 1800.0, 3600.0, 9000.0],
+                     [0.0, 0.5, 0.0, 0.0], dt=60.0)
+    _, _, sim_basement, sim_sump = sim.run()
+    trace = sim._last_trace
+
+    assert max(sim_basement) > 0.1, "Weak pump: basement should flood"
+    assert sim_basement[-1] == 0.0, "Pump should drain the basement through the pit"
+    assert max(trace['Q_b_sump']) > 0.0, "Basement water should drain into the pit"
+

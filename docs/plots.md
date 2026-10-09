@@ -77,11 +77,11 @@ plot.save_run_schematic('out/schematic.png', pathways=paths,
 
 **Functions:**
 `save_run_result(outpath, config, hydro, result)` and the series-level
-`save_simulation_result(sim_times, sim_levels, external_levels, outpath, time_unit=None, basement_levels=None, sump_levels=None, basement_max_depth=None, sump_overflow_level=None)`
+`save_simulation_result(sim_times, sim_levels, external_levels, outpath, time_unit=None, basement_levels=None, sump_levels=None, basement_max_depth=None, sump_depth=None)`
 
 Water depth in each active compartment against the exterior hydrograph.  A
 second panel shows basement (and sump) depth when present, with the ceiling
-and sump overflow crest as reference lines.
+and the sump top (pit depth) as reference lines.
 
 ```python
 plot.save_run_result('out/simulation_result.png', config, hydro, result)
@@ -93,7 +93,7 @@ plot.save_run_result('out/simulation_result.png', config, hydro, result)
 
 **Functions:**
 `save_run_animation(outpath, config, hydro, result, pathways)` and the
-series-level `generate_animation(sim_times, sim_levels, external_levels, pathways, outpath, fps=10, max_frames=200, time_unit=None, basement_levels=None, velocity_series=None, sump_levels=None, sump_overflow_level=None, Q_ext_series=None, Q_perim_series=None, Q_bypass_series=None, bypass_height=None)`
+series-level `generate_animation(sim_times, sim_levels, external_levels, pathways, outpath, fps=10, max_frames=200, time_unit=None, basement_levels=None, velocity_series=None, sump_levels=None, sump_depth=None, Q_ext_series=None, Q_perim_series=None, Q_bypass_series=None, bypass_height=None)`
 
 Frame-by-frame cross-section of the building with the rising and falling
 water surfaces and a level chart.  Flow arrows come from the engine trace

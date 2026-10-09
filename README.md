@@ -26,7 +26,7 @@ Beyond deterministic simulation, the tool supports probabilistic analysis of flo
 |------|-------------|-------------|
 | Deterministic, single hydrograph | `cli.py` | One flood event; all pathway conductances fixed |
 | + basement | `cli.py` | Adds a basement compartment with its own water balance, fed by exterior→basement pathways (`--basement-ingress`); when full, it joins the ground floor as one compartment |
-| + sump/pump | `cli.py` | Adds a sump chamber and pump that intercept basement inflow; water above the sump crest spills into the basement |
+| + sump/pump | `cli.py` | Adds a sump pit below the basement floor with a pump; it intercepts basement inflow, spills onto the basement floor when full and drains basement water back down |
 | Fragility (Monte Carlo) | `cli.py` | Samples lognormal pathway capacities and runs N replicates; produces percentile distributions and state frequency tables |
 | Batch | `batch.py` | Runs any of the above for every hydrograph in a folder and aggregates results |
 
@@ -83,9 +83,7 @@ python3 cli.py \
   --basement-floor-elevation  -2.5 \
   --floor                     50 \
   --sumppump-area             0.5 \
-  --sumppump-base-elevation   -2.5 \
-  --sumppump-overflow-level   0.8 \
-  --sumppump-overflow-coeff   1.8 \
+  --sumppump-base-elevation   -3.3 \
   --sumppump-on-level         0.10 \
   --sumppump-off-level        0.02 \
   --sumppump-shutoff-head     5.0 \

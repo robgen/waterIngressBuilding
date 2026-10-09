@@ -11,11 +11,11 @@ The building is represented as a network of up to three well-mixed compartments.
 ```
 exterior
    │  ← exterior-to-ground ingress paths (--ingress)
-   │  ← exterior-to-basement perimeter opening (--basement-ingress)
+   │  ← exterior-to-basement pathways (--basement-ingress; into the sump if present)
    │
-ground floor ──── basement ──── sump
+ground floor ──── basement ──── sump pit (below the basement floor)
                ↑             ↑
-          connection     overflow
+          bypass         pit opening (drainage) / spill when full
           (optional)
                               ↓ pump discharge → exterior
 ```
@@ -24,7 +24,7 @@ ground floor ──── basement ──── sump
 
 **Basement** — optional. Plan area $S_b$ (m²), floor at elevation $z_b < 0$. Water depth $h_b(t)$ measured above $z_b$; absolute water-surface elevation $H_b = z_b + h_b$. A ceiling cap $z_{ceil}$ can be set; water exceeding the cap spills to the ground floor.
 
-**Sump** — optional add-on to the basement sub-system. Plan area $A_s$ (m²), base at elevation $z_s$. When active it intercepts the exterior-to-basement perimeter inflow before it reaches the basement. Excess flow spills over a crest at height $z_s + h_{ov}$ into the basement. A pump extracts water from the sump only.
+**Sump** — optional pit below the basement floor: plan area $A_s$ (m²), base at elevation $z_s < z_b$, top at the basement floor $z_b$, so its depth is $d_s = z_b - z_s$. Water depth $h_s(t) \le d_s$ above $z_s$. The exterior-to-basement pathways discharge into the pit; basement water drains into it through its opening at the floor; a full pit spills onto the basement floor. The pump draws from the pit only.
 
 ---
 
@@ -71,13 +71,13 @@ Positive $Q_i$ denotes flow from source to target. The formula handles both infl
 
 ### Velocity correction
 
-A dynamic-pressure head term is added to the external side of all exterior-facing openings:
+A dynamic-pressure head term is added to the external side of all exterior-facing openings, **only when the exterior water reaches the sill**.  With heads measured above the sill, $h = \max(0,\ H - z_i)$:
 
 $$
-\Delta H_{i,\mathrm{eff}} = H_{ext} + \frac{v_{ext}^2}{2g} - H_{tgt}
+\Delta H_{i,\mathrm{eff}} = h_{ext} + \frac{v_{ext}^2}{2g}\,\mathbf{1}[H_{ext} > z_i] - h_{tgt}
 $$
 
-The submerged test still uses the raw $H_{ext}$ (not the augmented value) because the opening must be physically wetted to pass flow.
+Velocity alone never drives flow: with the exterior water below the sill, a dry interior at the sill level receives nothing, and interior water above the sill drains out at the hydrostatic rate whatever the street velocity.  The submerged test also uses the raw $H_{ext}$ because the opening must be physically wetted to pass flow.
 
 Three velocity modes are available (`--velocity-mode`):
 
@@ -102,39 +102,49 @@ where $\mathcal{P}_{ext \to gf}$ is the set of exterior-to-ground-floor pathways
 ### Basement
 
 $$
-S_b\;\frac{dh_b}{dt} = Q_{ext \to b}(t) \;+\; Q_{s \to b}(t) \;-\; Q_{b \to gf}(t)
+S_b\;\frac{dh_b}{dt} = Q_{ext \to b}(t) \;+\; Q_{s \to b}(t) \;-\; Q_{b \to s}(t) \;-\; Q_{b \to gf}(t)
 $$
 
-where $Q_{ext \to b}$ is inflow through the exterior-to-basement perimeter opening and $Q_{s \to b}$ is sump overflow into the basement. When no sump is configured, $Q_{ext \to b}$ acts directly on the basement; when a sump is configured, $Q_{ext \to b}$ is intercepted by the sump.
+where $Q_{ext \to b}$ is inflow through the exterior-to-basement pathways (only when no sump is configured; otherwise it enters the sump), $Q_{s \to b}$ is the spill of a full pit onto the floor and $Q_{b \to s}$ is drainage into the pit.
 
-### Sump
+### Sump pit
 
 $$
-A_s\;\frac{dh_s}{dt} = Q_{ext \to b}(t) \;-\; Q_{pump}(t) \;-\; Q_{s \to b}(t)
+A_s\;\frac{dh_s}{dt} = Q_{ext \to b}(t) \;+\; Q_{b \to s}(t) \;-\; Q_{pump}(t) \;-\; Q_{s \to b}(t), \qquad 0 \le h_s \le d_s
 $$
 
-### Full basement (merged compartment)
+- **Drainage** $Q_{b \to s}$: orifice law through the pit opening (sill $z_b$, area `opening_area`, default $A_s$; coefficient `opening_coeff`), driven by the basement water above the floor.  Each step it is capped at the room left in the pit and the water held above it, so the explicit step cannot overshoot.
+- **Spill** $Q_{s \to b}$: volume pushed above $d_s$ in a step moves onto the basement floor in the same step.
+- The pump cannot remove more than the pit holds in a step.
 
-When the basement (and sump, if present) is full to the ceiling and there is
-water above the ground floor ($h_b = z_{ceil} - z_b$ and $h_{in} > 0$), the
-two compartments behave as one, with free surface at the ground-floor level
-$H_{in} = h_{in} + z_{floor}$:
+### Full compartments (merging)
 
-- every exterior→basement pathway discharges against $H_{in}$ instead of the
-  basement level, and its volume enters the ground-floor balance;
-- the ground↔basement bypass is internal and carries no flow;
-- the pump (if any) draws from the merged volume:
+The compartments form a chain, bottom to top: sump pit, basement, ground
+floor.  A compartment that is **full and has water in the compartment above**
+is part of that compartment and shares its free surface:
+
+- the pit merges with the basement when $h_s = d_s$ and $h_b > 0$;
+- the basement merges with the ground floor when $h_b = z_{ceil} - z_b$ and
+  $h_{in} > 0$ (a full pit then follows the basement into the merged group).
+
+Within a merged group:
+
+- pathways into a member discharge against the group surface (e.g. with a
+  full basement under a flooded ground floor, exterior→basement pathways see
+  $H_{in} = h_{in} + z_{floor}$);
+- links between members (bypass, pit opening) carry no flow;
+- the net inflow of all members, pump included, updates the top member:
 
 $$
 S_{gf}\;\frac{dh_{in}}{dt} = \sum_{i \in \mathcal{P}_{ext \to gf}} Q_i \;+\; \sum_{j \in \mathcal{P}_{ext \to b}} Q_j(H_{ext}, H_{in}) \;-\; Q_{pump}
+\qquad \text{(all three merged)}
 $$
 
-The lower compartment stays full while merged.  If a step's net outflow
-exceeds the water above the floor, the remainder is taken from the basement
-(and sump), which then continues as a separate compartment just below the
-ceiling.  Without this rule the full basement would keep driving perimeter
-inflow against the fixed ceiling level and push the ground floor above the
-exterior level.
+The lower members stay full.  If a step's net outflow exceeds the water in
+the top member, the remainder is taken from the members below (basement
+first, then the pit), which then continue as separate compartments.  Without
+this rule a full compartment would keep driving inflow against its fixed top
+level and push the compartment above higher than the exterior level.
 
 ---
 
@@ -150,19 +160,6 @@ $$
 
 where $H_{lift} = H_{ext} - z_s$ is the lift head (reduces pump capacity as the flood rises) and $H_{shut}$ is the pump shut-off head. The pump produces zero flow when $H_{lift} \geq H_{shut}$.
 
-### Sump overflow
-
-Overflow from sump to basement occurs when $h_s > h_{ov}$ (the overflow crest height above $z_s$). The overflow rate follows a weir-type formula:
-
-$$
-Q_{s \to b} = C_{ov}\;\bigl(h_s - h_{ov}\bigr)^{m_{ov}}
-$$
-
-with empirical coefficients $C_{ov}$ and $m_{ov}$ (default exponent 1.5).
-
-> **Not applied in the current engine.** The sump and basement share one
-> stored volume and the sump spills instantly above the crest; $C_{ov}$ and
-> $m_{ov}$ have no effect (see docs/limitations.md, item D).
 
 ---
 
@@ -173,9 +170,9 @@ The simulator uses a fixed-step explicit Euler scheme. For time step index $n$ (
 1. Interpolate external level $h_{ext}(t_n)$ and velocity $v_{ext}(t_n)$ to the simulation grid.
 2. Compute absolute surface elevations for all compartments.
 3. Evaluate $Q_i(t_n)$ for every opening using the orifice law above.
-4. Evaluate pump and overflow flows.
+4. Evaluate pump flow and pit drainage.
 5. Update compartment volumes: $V_{n+1} = V_n + Q_{net}\,\Delta t$.
-6. Convert volumes to depths: $h = V/S$; clip at zero.  The pump never removes more water than the sump and basement hold in that step.
+6. Convert volumes to depths: $h = V/S$; clip at zero; move volume above a compartment's capacity to the compartment above (pit → basement → ground floor).  The pump never removes more water than the pit holds in that step.
 
 ### Stability guidance
 
@@ -187,7 +184,7 @@ $$
 \Delta t \;\leq\; \Delta t_{crit} = \frac{A_s\,h_{on}}{Q_{pump}}
 $$
 
-Setting $\Delta t \leq 0.5\,\Delta t_{crit}$ (50 % safety margin) avoids spurious overflow events.
+Setting $\Delta t \leq 0.5\,\Delta t_{crit}$ (50 % safety margin) avoids spurious pit spills.
 
 ---
 

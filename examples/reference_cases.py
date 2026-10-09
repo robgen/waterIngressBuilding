@@ -45,9 +45,9 @@ def config(dt=DT_60S, **kw):
 
 
 def sump(curve_coeff):
+    """0.5 m² pit, 0.8 m deep below the basement floor (−2.5 m)."""
     return SumpPump(
-        sump_area=0.5, sump_base_elevation=-2.5,
-        overflow_level=0.8, overflow_coeff=1.8, overflow_exponent=1.5,
+        sump_area=0.5, sump_base_elevation=-3.3,
         pump_on_level=0.10, pump_off_level=0.02,
         pump_shutoff_head=5.0, pump_curve_coeff=curve_coeff,
         pipe_loss_coeff=0.0, pump_availability=1.0,

@@ -32,7 +32,6 @@ from pump import (
     compute_lift_head,
     compute_pump_flow,
     compute_pump_switch_state,
-    compute_sump_overflow,
 )
 
 
@@ -89,7 +88,10 @@ class IngressPathway:
             return 0.0
         g = 9.81
         sill = float(self.height)
-        h_src = max(0.0, float(H_source) - sill) + float(v_source) ** 2 / (2.0 * g)
+        h_src = max(0.0, float(H_source) - sill)
+        if h_src > 0.0:
+            # Velocity head acts only when the source water reaches the sill.
+            h_src += float(v_source) ** 2 / (2.0 * g)
         h_tgt = max(0.0, float(H_target) - sill)
         delta_H_eff = h_src - h_tgt
         if delta_H_eff == 0.0:
@@ -143,31 +145,17 @@ class Simulation:
             sp.pump_curve_coeff, sp.pipe_loss_coeff)
         return H_lift, sp.pump_state, Q_p
 
-    def _lower_volume(self):
-        """Water volume below the basement ceiling (sump + basement)."""
+    def _drain_below(self, volume, basement, sump):
+        """Take `volume` from the full compartments below a merged surface,
+        basement first, then the sump pit."""
+        if basement:
+            stored = self.building.basement_area * self.building.h_basement
+            self.building.h_basement = max(0.0, stored - volume) / self.building.basement_area
+            volume = max(0.0, volume - stored)
         sp = self.building.sump_pump
-        if sp is None:
-            return self.building.basement_area * self.building.h_basement
-        return (sp.sump_area * min(sp.h_sump, sp.overflow_level)
-                + (sp.sump_area + self.building.basement_area) * self.building.h_basement)
-
-    def _set_lower_volume(self, V_total):
-        """Distribute V_total over sump and basement (sump fills first)."""
-        sp = self.building.sump_pump
-        if sp is None:
-            self.building.h_basement = V_total / self.building.basement_area
-            return
-        V_sump_full = sp.sump_area * sp.overflow_level
-        if V_total <= V_sump_full:
-            sp.h_sump = V_total / sp.sump_area if sp.sump_area > 0 else 0.0
-            self.building.h_basement = 0.0
-        else:
-            h_above = (V_total - V_sump_full) / (sp.sump_area + self.building.basement_area)
-            sp.h_sump = sp.overflow_level + h_above
-            self.building.h_basement = h_above
-
-    def _remove_from_lower(self, volume):
-        self._set_lower_volume(max(0.0, self._lower_volume() - volume))
+        if sump and volume > 0.0:
+            stored = sp.sump_area * sp.h_sump
+            sp.h_sump = max(0.0, stored - volume) / sp.sump_area
 
     def run(self, progress_callback=None, verbose=False):
         self.building.h_in = self._initial_h_in
@@ -186,11 +174,21 @@ class Simulation:
         current_h_basement = self.building.h_basement
 
         sp = self.building.sump_pump
+        has_basement = self.building.basement_area > 0.0
+        max_bsmt = self._max_basement_depth()
+        if sp is not None:
+            sp.check_geometry(self.building.z_basement)
+            sump_depth = sp.depth(self.building.z_basement)
+            sump_opening = IngressPathway(
+                height=self.building.z_basement,
+                area=sp.opening_area if sp.opening_area is not None else sp.sump_area,
+                coeff=sp.opening_coeff, name='sump-opening',
+                source='basement', target='sump')
 
         _trace = {
             'times': [], 'H_out': [], 'h_in': [], 'h_basement': [], 'h_sump': [],
             'H_lift': [], 'pump_state': [], 'Q_ext_b': [], 'Q_b_bs': [],
-            'Q_ext_perimeter': [], 'Q_pump': [], 'Q_sump_overflow': [],
+            'Q_ext_perimeter': [], 'Q_pump': [], 'Q_sump_overflow': [], 'Q_b_sump': [],
             'sump_configured': sp is not None,
         }
 
@@ -215,9 +213,6 @@ class Simulation:
                 h_out = self.h_ext[-1] if self.h_ext else 0.0
 
             H_out = h_out
-            H_in_abs = current_h_in + self.floor_datum
-            H_basement = self.building.z_basement + current_h_basement
-            H_sump_abs = (sp.sump_base_elevation + sp.h_sump) if sp is not None else 0.0
 
             v_out = 0.0
             if self.velocity_mode == 'file' and self.v_t and self.v_vals:
@@ -234,13 +229,21 @@ class Simulation:
             elif self.velocity_mode == 'power_law':
                 v_out = self.vel_a * (max(0.0, h_out) ** self.vel_b)
 
-            # Basement (and sump) full to the ceiling with water above the
-            # ground floor: one compartment whose free surface is the
-            # ground-floor level.  Exterior→basement pathways then discharge
-            # against H_in_abs and the ground↔basement bypass is internal.
-            merged = (self.building.basement_area > 0.0
-                      and current_h_basement >= self._max_basement_depth()
-                      and current_h_in > 0.0)
+            # Compartments, bottom to top: sump pit (below the basement floor),
+            # basement, ground floor.  A compartment that is full and has
+            # water in the compartment above is part of that compartment: it
+            # shares its free surface, its pathways discharge against that
+            # surface and its links to that compartment carry no flow.
+            bsmt_merged = (has_basement
+                           and current_h_basement >= max_bsmt
+                           and current_h_in > 0.0)
+            sump_merged = (sp is not None
+                           and sp.h_sump >= sump_depth
+                           and (current_h_basement > 0.0 or bsmt_merged))
+            H_in_abs = current_h_in + self.floor_datum
+            H_basement = H_in_abs if bsmt_merged else self.building.z_basement + current_h_basement
+            H_sump_abs = H_basement if sump_merged else (
+                sp.sump_base_elevation + sp.h_sump if sp is not None else 0.0)
 
             flow_og = 0.0
             flow_gb = 0.0
@@ -255,7 +258,7 @@ class Simulation:
                 tgt = getattr(ingress, 'target', 'ground')
                 if src == 'outside' and tgt == 'ground':
                     flow_og += ingress.compute_flow(H_out, H_in_abs, v_source=v_out)
-                elif merged and src != 'outside':
+                elif bsmt_merged and src != 'outside':
                     continue
                 elif src == 'ground' and tgt == 'basement':
                     flow_gb += ingress.compute_flow(H_in_abs, H_basement)
@@ -263,53 +266,86 @@ class Simulation:
                     flow_gb -= ingress.compute_flow(H_basement, H_in_abs)
                 elif src == 'outside' and tgt == 'basement':
                     if sp is not None:
-                        H_tgt = H_in_abs if merged else H_sump_abs
-                        flow_os += ingress.compute_flow(H_out, H_tgt, v_source=v_out)
+                        flow_os += ingress.compute_flow(H_out, H_sump_abs, v_source=v_out)
                     else:
-                        H_tgt = H_in_abs if merged else H_basement
-                        flow_ob += ingress.compute_flow(H_out, H_tgt, v_source=v_out)
+                        flow_ob += ingress.compute_flow(H_out, H_basement, v_source=v_out)
 
             current_h_sump = 0.0
             Q_s_bs = 0.0
+            Q_b_s = 0.0
             H_lift = 0.0
             Q_p = 0.0
             pump_state_t = 0
             if sp is not None:
                 H_lift, pump_state_t, Q_p = self._pump_step(sp, H_out)
+                if not sump_merged:
+                    # Basement water drains into the pit, never more than the
+                    # pit can take or the basement side holds in one step.
+                    Q_b_s = sump_opening.compute_flow(H_basement, H_sump_abs)
+                    room = sp.sump_area * (sump_depth - sp.h_sump)
+                    held = self.building.basement_area * current_h_basement
+                    if bsmt_merged:
+                        held += self.building.floor_area * current_h_in
+                    Q_b_s = min(Q_b_s, max(0.0, min(room, held)) / self.dt)
 
-            if merged:
-                # Lower compartment stays full; all exchange goes through the
-                # ground-floor balance.  A net outflow larger than the water
-                # above the floor is taken from the lower compartment.
-                h_new = current_h_in + (flow_og + flow_ob + flow_os - Q_p) * self.dt / self.building.floor_area
+            # Net inflow (m³/s) of each compartment.
+            Q_ground = flow_og - flow_gb
+            Q_bsmt = flow_ob + flow_gb
+            if sp is not None:
+                Q_bsmt -= Q_b_s
+            Q_sump = flow_os + Q_b_s - Q_p
+            if sump_merged:
+                # A full pit passes its net inflow through its opening:
+                # recorded as spill (up) or drainage (down) for diagnostics.
+                Q_s_bs = max(0.0, Q_sump)
+                Q_b_s = max(0.0, -Q_sump)
+
+            if bsmt_merged:
+                # Ground floor + basement (+ full sump) share the ground-floor
+                # surface; a deficit is taken from the compartments below.
+                Q_group = Q_ground + Q_bsmt + (Q_sump if sump_merged else 0.0)
+                h_new = current_h_in + Q_group * self.dt / self.building.floor_area
                 if h_new >= 0.0:
                     self.building.h_in = h_new
                 else:
                     self.building.h_in = 0.0
-                    self._remove_from_lower(-h_new * self.building.floor_area)
+                    self._drain_below(-h_new * self.building.floor_area,
+                                      basement=True, sump=sump_merged)
             else:
-                vol_ground = (flow_og - flow_gb) * self.dt
-                self.building.update_water_level(vol_ground, zone='ground')
-
-                if sp is not None:
-                    V_new = self._lower_volume() + (flow_os + flow_gb - Q_p) * self.dt
-                    if V_new < 0.0:
-                        # The pump cannot remove more water than is stored.
-                        Q_p = max(0.0, Q_p + V_new / self.dt)
-                        V_new = 0.0
-                    self._set_lower_volume(V_new)
-                    max_bsmt = self._max_basement_depth()
-                    if self.building.h_basement > max_bsmt:
-                        excess = self.building.h_basement - max_bsmt
-                        overflow_vol = excess * (sp.sump_area + self.building.basement_area)
+                self.building.update_water_level(Q_ground * self.dt, zone='ground')
+                if sump_merged:
+                    # Basement + full sump share the basement surface.
+                    h_new = current_h_basement + (Q_bsmt + Q_sump) * self.dt / self.building.basement_area
+                    if h_new < 0.0:
+                        self.building.h_basement = 0.0
+                        self._drain_below(-h_new * self.building.basement_area,
+                                          basement=False, sump=True)
+                    elif h_new > max_bsmt:
                         self.building.h_basement = max_bsmt
-                        sp.h_sump = sp.overflow_level + max_bsmt
-                        self.building.update_water_level(overflow_vol, zone='ground')
-                else:
-                    vol_basement = (flow_ob + flow_gb) * self.dt
-                    overflow = self.building.update_water_level(vol_basement, zone='basement')
+                        self.building.update_water_level(
+                            (h_new - max_bsmt) * self.building.basement_area, zone='ground')
+                    else:
+                        self.building.h_basement = h_new
+                elif has_basement:
+                    overflow = self.building.update_water_level(Q_bsmt * self.dt, zone='basement')
                     if overflow and overflow > 0.0:
                         self.building.update_water_level(overflow, zone='ground')
+
+            if sp is not None and not sump_merged:
+                h_s = sp.h_sump + Q_sump * self.dt / sp.sump_area
+                if h_s < 0.0:
+                    # The pump cannot remove more water than the sump holds.
+                    Q_p = max(0.0, Q_p + h_s * sp.sump_area / self.dt)
+                    h_s = 0.0
+                if h_s > sump_depth:
+                    # A full pit spills onto the basement floor.
+                    spill = (h_s - sump_depth) * sp.sump_area
+                    Q_s_bs = spill / self.dt
+                    h_s = sump_depth
+                    overflow = self.building.update_water_level(spill, zone='basement')
+                    if overflow and overflow > 0.0:
+                        self.building.update_water_level(overflow, zone='ground')
+                sp.h_sump = h_s
 
             current_h_in = self.building.h_in
             current_h_basement = self.building.h_basement
@@ -334,6 +370,7 @@ class Simulation:
             _trace['Q_ext_perimeter'].append(_trace_perim)
             _trace['Q_pump'].append(Q_p)
             _trace['Q_sump_overflow'].append(Q_s_bs)
+            _trace['Q_b_sump'].append(Q_b_s)
 
             if progress_callback and total_steps > 0:
                 try:
