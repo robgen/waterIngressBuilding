@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """Pathway-resolved hydraulic diagnostics for the water ingress model.
 
-This module implements the interpretation layer described in
-docs/INTERPRETATION_DASHBOARD_TUTORIAL.md and spec section 17.2.
-
-Design principle (spec §17.2)
-------------------------------
+Design principle
+----------------
 Diagnostics are built from the per-step trace emitted by the engine
 (SimResult.trace).  There is no independent replay loop here —
 all hydraulic arithmetic lives in Simulation.run() and pump.py.

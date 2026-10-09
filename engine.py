@@ -157,7 +157,7 @@ class Simulation:
             stored = sp.sump_area * sp.h_sump
             sp.h_sump = max(0.0, stored - volume) / sp.sump_area
 
-    def run(self, progress_callback=None, verbose=False):
+    def run(self, progress_callback=None):
         self.building.h_in = self._initial_h_in
         self.building.h_basement = self._initial_h_basement
         if self.building.sump_pump is not None:
@@ -479,7 +479,7 @@ class SimConfig:
     velocity_mode: str = 'zero'                # 'zero' | 'power_law' | 'file'
     velocity_power_law_a: float = 1.5
     velocity_power_law_b: float = 0.5
-    time_units: str = 'minutes'               # for display only
+    time_units: str = 'minutes'               # units of hydrograph files and display
     compute_forces: bool = False
     building_width: float = 10.0
     drag_coeff: float = 1.0

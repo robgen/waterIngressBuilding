@@ -113,7 +113,7 @@ plot.save_run_animation('out/simulation_animation.gif', config, hydro, result, p
 Two panels: lateral forces (hydrostatic, drag, total, in N) and overturning
 moment (N·m) against time.  `forces_rows` are the rows written to
 `forces.csv` by `cli.py --compute-forces`:
-`(time, F_hydro, F_drag, F_total, M_overturn, H_net, H_wet, v, lever_hydro, lever_drag)`.
+`(time, F_hydro, F_drag, F_total, M_overturn, h_ext, h_in, v, lever_hydro, lever_drag)`.
 
 ```python
 import forces
@@ -121,10 +121,10 @@ import forces
 h_ext, v_ext = engine.exterior_series(config, hydro, result.times)
 rows = []
 for t, he, hi, v in zip(result.times, h_ext, result.h_in, v_ext):
-    H_net, H_wet = max(0.0, he - hi), max(0.0, he)
-    f = forces.compute_combined_forces(H_net, H_wet, v, building_width=10.0)
+    f = forces.compute_combined_forces(he, hi, v, building_width=10.0,
+                                       floor_datum=config.floor_datum)
     rows.append((t, f['F_hydro'], f['F_drag'], f['F_total'], f['M_overturn'],
-                 H_net, H_wet, v, f['lever_hydro'], f['lever_drag']))
+                 he, hi, v, f['lever_hydro'], f['lever_drag']))
 plot.save_forces_result([t / 60 for t in result.times], rows,
                         'out/forces_result.png', time_unit='minutes')
 ```

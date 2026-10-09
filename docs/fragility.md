@@ -25,7 +25,7 @@ $$
 h = \max(0,\; h_{ext} - z_{sill})
 $$
 
-where $z_{sill}$ is the element's sill elevation above the reference datum. This equals the static hydrostatic head on the element and maps directly to what BS 8511 tests measure (Designated Maximum Water Depth, DMWD).
+where $z_{sill}$ is the element's sill elevation above external ground (the level from which $h_{ext}$ is measured). This equals the static hydrostatic head on the element and maps directly to what BS 8511 tests measure (Designated Maximum Water Depth, DMWD).
 
 ---
 
@@ -130,6 +130,7 @@ A membrane is a perimeter protection element that shields multiple ingress pathw
 |---|---|---|
 | Intact (state 0) | $h < h^*_1$ | Representative path carries membrane $(A, C)$; all others suppressed ($10^{-9}$ m²) |
 | Overtopped (state 1) | $h \geq h^*_1$ | All protected pathways restored to their own ingress-file parameters |
+| State 2 (if the membrane defines a second state) | $h \geq h^*_2$ | As state 1, but the representative path carries the membrane's state-2 area and $C_d$ |
 
 The representative pathway is the first row sharing the membrane's `group_id`, taking `--ingress` rows before `--basement-ingress` rows.
 

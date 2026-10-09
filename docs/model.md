@@ -20,7 +20,9 @@ ground floor ──── basement ──── sump pit (below the basement flo
                               ↓ pump discharge → exterior
 ```
 
-**Ground floor** — the primary interior compartment. Plan area $S$ (m²), water depth $h_{in}(t)$ measured above the interior ground-floor datum (the reference elevation $z_{ref} = 0$).
+**Elevations** — all elevations (sills, floors, ceilings, sump base) are measured from **external ground level**, $z = 0$; the exterior depth $h_{ext}$ is measured from the same level, so $H_{ext} = h_{ext}$.
+
+**Ground floor** — the primary interior compartment. Plan area $S$ (m²), floor at $z_{floor}$ (`--floor-datum`, default 0), water depth $h_{in}(t)$ above the floor; absolute water-surface elevation $H_{in} = z_{floor} + h_{in}$.
 
 **Basement** — optional. Plan area $S_b$ (m²), floor at elevation $z_b < 0$. Water depth $h_b(t)$ measured above $z_b$; absolute water-surface elevation $H_b = z_b + h_b$. A ceiling cap $z_{ceil}$ can be set; water exceeding the cap spills to the ground floor.
 
@@ -40,7 +42,7 @@ ground floor ──── basement ──── sump pit (below the basement flo
 | $h_{ext}(t)$ | m | External flood depth (model input) |
 | $v_{ext}(t)$ | m/s | External flood velocity (optional input) |
 | $S$, $S_b$, $A_s$ | m² | Plan areas of ground floor, basement, sump |
-| $z_b$, $z_s$ | m | Floor/base elevations relative to datum |
+| $z_{floor}$, $z_b$, $z_s$ | m | Ground-floor, basement-floor and sump-base elevations above external ground |
 | $A_i$ | m² | Orifice area of opening $i$ |
 | $C_i$ | — | Discharge coefficient of opening $i$ |
 | $z_i$ | m | Sill elevation of opening $i$ |
@@ -190,30 +192,34 @@ Setting $\Delta t \leq 0.5\,\Delta t_{crit}$ (50 % safety margin) avoids spuriou
 
 ## Lateral forces
 
-When `--compute-forces` is enabled, the simulator computes per-step closed-form estimates of hydrostatic and hydrodynamic lateral forces on the flow-facing façade. Basement wall forces are not included.
+When `--compute-forces` is enabled, `cli.py` computes per-step closed-form estimates of the hydrostatic and hydrodynamic lateral forces on the flow-facing façade of width $W$ (`forces.py`).  Forces are positive inward; moments are taken about external ground level.  Basement wall forces are not included.
 
 ### Hydrostatic force
 
+Exterior water presses on the wall from external ground up to $h_{ext}$; interior water presses back from the floor ($z_{floor}$) up to $z_{floor} + h_{in}$.  Integrating both hydrostatic distributions:
+
 $$
-F_{hydro} = \tfrac{1}{2}\,\rho\,g\,H^2\,W
+F_{hydro} = \tfrac{1}{2}\,\rho\,g\,W\,\bigl(h_{ext}^2 - h_{in}^2\bigr)
+\qquad
+M_{hydro} = \tfrac{1}{2}\,\rho\,g\,W\,\Bigl[\frac{h_{ext}^3}{3} - h_{in}^2\Bigl(z_{floor} + \frac{h_{in}}{3}\Bigr)\Bigr]
 $$
 
-Acts at $H/3$ above the base, where $H = h_{ext}(t)$ is the external wetted height.
+$F_{hydro}$ is negative when the interior water pushes outward (e.g. after the flood recedes).  With a dry interior it reduces to $\tfrac{1}{2}\rho g W h_{ext}^2$ acting at $h_{ext}/3$.
 
 ### Hydrodynamic (drag) force
 
 $$
-F_{drag} = \tfrac{1}{2}\,\rho\,C_D\,v_{ext}^2\,W\,H
+F_{drag} = \tfrac{1}{2}\,\rho\,C_D\,v_{ext}^2\,W\,h_{ext}
 $$
 
-Acts at $H/2$ above the base.
+acting at $h_{ext}/2$.
 
 ### Combined force and overturning moment
 
 $$
 F_{total} = F_{hydro} + F_{drag}
 \qquad
-M_{overturn} = F_{hydro}\,\frac{H}{3} \;+\; F_{drag}\,\frac{H}{2}
+M_{overturn} = M_{hydro} \;+\; F_{drag}\,\frac{h_{ext}}{2}
 $$
 
 ---

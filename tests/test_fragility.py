@@ -29,7 +29,6 @@ from fragility import (
     fragile_path_to_membrane,
     validate_fragility_inputs,
     assign_representative_paths,
-    sample_thresholds,
     select_active_state,
     get_conductance,
     make_conductance_resolver,
@@ -102,12 +101,6 @@ def test_sample_thresholds_two_states_monotonic():
     for u in [0.1, 0.3, 0.5, 0.7, 0.9]:
         thr = frag.sample_thresholds(u)
         assert thr[0] < thr[1], f"Non-monotonic thresholds at u={u}: {thr}"
-
-
-def test_sample_thresholds_standalone_function():
-    """The module-level sample_thresholds function mirrors FragilityDefinition.sample_thresholds."""
-    frag = _make_one_state_frag(median=0.5, beta=0.2)
-    assert sample_thresholds(frag, 0.5) == frag.sample_thresholds(0.5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -236,7 +229,7 @@ def test_validate_rejects_non_monotonic():
     try:
         paths = parse_pathway_file(path)
         with pytest.raises(ValueError, match="Non-monotonic"):
-            validate_fragility_inputs(paths, [])
+            validate_fragility_inputs(paths)
     finally:
         os.remove(path)
 
@@ -265,7 +258,7 @@ def test_validate_rejects_grouped_ingress_with_fragility():
     try:
         paths = parse_pathway_file(path)
         with pytest.raises(ValueError, match="membrane-protected"):
-            validate_fragility_inputs(paths, [])
+            validate_fragility_inputs(paths)
     finally:
         os.remove(path)
 
@@ -308,7 +301,7 @@ def test_validate_rejects_grouped_path_with_fragility():
     frag = FragilityDefinition([FragilityState("s1", 0.5, 0.3, 1e-2, 0.6)])
     paths = [FragilePath("ab1", 0.1, 8e-3, 0.6, 1, frag, reversible=False)]
     with pytest.raises(ValueError, match="membrane-protected"):
-        validate_fragility_inputs(paths, [])
+        validate_fragility_inputs(paths)
 
 
 def test_validate_accepts_valid_inputs():
@@ -317,7 +310,7 @@ def test_validate_accepts_valid_inputs():
         FragilePath("door", 0.0, 4e-7, 0.6, 0, frag, reversible=False),
         FragilePath("ab1",  0.1, 8e-3, 0.6, 1, None),
     ]
-    validate_fragility_inputs(paths, [])  # must not raise
+    validate_fragility_inputs(paths)  # must not raise
 
 
 def test_validate_rejects_fragile_path_missing_reversible():
@@ -325,7 +318,7 @@ def test_validate_rejects_fragile_path_missing_reversible():
     frag = FragilityDefinition([FragilityState("s1", 0.5, 0.3, 1e-2, 0.6)])
     paths = [FragilePath("door", 0.0, 4e-7, 0.6, 0, frag)]  # no reversible
     with pytest.raises(ValueError, match="reversible"):
-        validate_fragility_inputs(paths, [])
+        validate_fragility_inputs(paths)
 
 
 def test_assign_representative_paths():

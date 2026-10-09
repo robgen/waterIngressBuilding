@@ -7,7 +7,7 @@ Data model:   FragilityState, FragilityDefinition, FragilePath, Membrane,
 Parsing:      parse_pathway_text, parse_pathway_file, fragile_path_to_membrane
 Assembly:     assemble_pathways, load_pathways
 Validation:   validate_fragility_inputs, assign_representative_paths
-Sampling:     sample_thresholds, sample_all_thresholds
+Sampling:     FragilityDefinition.sample_thresholds, sample_all_thresholds
 State logic:  select_active_state, get_conductance
 Resolver:     make_conductance_resolver
 Runner:       run_replicate, run, MonteCarloResult
@@ -187,10 +187,7 @@ def _parse_fragility_states_from_parts(
 # Validation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def validate_fragility_inputs(
-    paths: List[FragilePath],
-    membranes: List[Membrane],
-) -> None:
+def validate_fragility_inputs(paths: List[FragilePath]) -> None:
     """Raise ValueError on any specification error.
 
     Checks:
@@ -203,8 +200,8 @@ def validate_fragility_inputs(
         if p.group_id != 0 and p.fragility is not None:
             raise ValueError(
                 f"Path '{p.name}' has group_id={p.group_id} (membrane-protected) "
-                "but also defines fragility columns — this is not permitted "
-                "(spec §4 / §3.1 rule)"
+                "but also defines fragility columns — a membrane-protected path "
+                "takes its fragility from the membrane"
             )
         if p.fragility is not None:
             p.fragility.validate(p.name)
@@ -241,11 +238,6 @@ def assign_representative_paths(
 # ─────────────────────────────────────────────────────────────────────────────
 # Sampling
 # ─────────────────────────────────────────────────────────────────────────────
-
-def sample_thresholds(fragility_def: FragilityDefinition, u: float) -> List[float]:
-    """Module-level convenience wrapper around FragilityDefinition.sample_thresholds."""
-    return fragility_def.sample_thresholds(u)
-
 
 def sample_all_thresholds(
     paths: List[FragilePath],
@@ -371,7 +363,7 @@ def make_conductance_resolver(
                 else:
                     # Membrane overtopped: all group paths restored to own base params.
                     # Representative additionally carries second-state conductance
-                    # when state == 2 (spec §2.6).
+                    # when state == 2 (docs/fragility.md, membrane states).
                     if mem_state == 2 and i == rep_idx and len(m.fragility.states) >= 2:
                         s2 = m.fragility.states[1]
                         result.append(IngressPathway(
@@ -803,7 +795,7 @@ def assemble_pathways(
         paths.append(p)
     membranes = [fragile_path_to_membrane(fp) for fp in membrane_rows
                  if fp.group_id > 0 and fp.fragility is not None]
-    validate_fragility_inputs(paths, membranes)
+    validate_fragility_inputs(paths)
     assign_representative_paths(paths, membranes)
     return paths, membranes
 

@@ -4,14 +4,13 @@
 Interface contract being tested
 --------------------------------
 - pump.py: pure helper functions and SumpPump dataclass
-- Simulation.run(): routing of outside→basement pathways (spec §16.1, §16.3, §16.8)
+- Simulation.run(): routing of outside→basement pathways and the sump pit
 
-Key interface rule (spec §16.3)
----------------------------------
+Routing rule
+------------
 Exterior perimeter inflow is an IngressPathway with source='outside',
-target='basement' in the Simulation ingress list (Building.basement_ingress
-is metadata only and is not read by the engine).  When a SumpPump is
-attached, such pathways are redirected to the sump automatically.
+target='basement' in the Simulation ingress list.  When a SumpPump is
+attached, such pathways discharge into the sump pit instead of the basement.
 """
 
 import math
@@ -118,7 +117,7 @@ def test_sump_fills_and_overflows_to_basement():
     building.z_basement = -2.5
     building.basement_ceiling_elevation = 0.0
 
-    # Lumped exterior perimeter opening (spec §16.3)
+    # Lumped exterior perimeter opening
     # Area is small enough that the basement doesn't overflow to ground floor
     bsmt = IngressPathway(
         height=0.0, area=0.008, coeff=0.6, name='ext-perimeter',
@@ -242,10 +241,10 @@ def test_basement_no_sump_returns_three_tuple():
     assert len(result) == 3
 
 
-# ── integration: basement_ingress without sump feeds basement directly ─────────
+# ── integration: perimeter pathway without sump feeds basement directly ───────
 
-def test_basement_ingress_without_sump():
-    """basement_ingress feeds basement directly when no sump is configured."""
+def test_perimeter_pathway_without_sump_feeds_basement():
+    """An outside→basement pathway feeds the basement when no sump is configured."""
     building = Building(floor_area=50.0)
     building.basement_area = 50.0
     building.z_basement = -2.5
@@ -262,10 +261,10 @@ def test_basement_ingress_without_sump():
     assert max(sim_basement) > 0.0, "Basement should receive perimeter inflow"
 
 
-# ── integration: routing rule (spec §16.3) ────────────────────────────────────
+# ── integration: routing rule ─────────────────────────────────────────────────
 
 def test_perimeter_inflow_redirected_to_sump_when_sump_enabled():
-    """When sump is present, basement_ingress goes to sump, not basement directly."""
+    """When a sump is present, outside→basement pathways go to the sump pit."""
     def _run(with_sump):
         building = Building(floor_area=50.0)
         building.basement_area = 50.0

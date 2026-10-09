@@ -2,47 +2,6 @@
 
 All notable changes to this project are documented in this file.
 
-## [planned — major refactor]
-
-### Documentation reorganisation
-
-- `docs/` consolidated from eight files to five: `model.md`, `fragility.md`, `limitations.md`, `reference.md`, `datasets.md`.
-- `docs/model.md`: complete rewrite of `TECHNICAL.md`; absorbs `sump_pump_extension_spec.md` and the Streamlit dashboard section; adds code architecture and regression contract.
-- `docs/fragility.md`: clean rewrite of `fragility_ingress_spec.md`; retains physics and calibration sections; removes stale input format descriptions.
-- `docs/limitations.md`: cleaned up `KNOWN_LIMITATIONS.md`; resolved items condensed to a summary table.
-- `docs/reference.md`: replaces `README_INPUTS.md` and `INPUTOUTPUT.md`; covers all inputs, CLI flags, and output files in one place.
-- `docs/datasets.md`: replaces `hydrographs/HYDROGRAPH_GENERATION.md`.
-- Deleted: `NOTE_montecarlo.md`, `WISHLIST.md`, `INTERPRETATION_DASHBOARD_TUTORIAL.md`, `sump_pump_extension_spec.md`, `fragility_ingress_spec.md`, `README_INPUTS.md`, `INPUTOUTPUT.md`, `hydrographs/NOTE_combined_input_format.md`, `example_run/example_fragility_README.md`.
-- `README.md` rewritten: conceptual intro, documentation table, run-mode table, examples for all five modes, outputs summary, roadmap.
-- `.gitignore` updated: simulation outputs from `example_run/`, `parametric_run/` excluded.
-- Naming convention: all docs files lowercase; only `README.md`, `CHANGELOG.md`, `LICENSE` retain uppercase (conventional).
-
-### Architecture
-
-- New module `engine.py`: canonical single-simulation runner, extracted from `main.py`. Owns `Building`, `IngressPath`, `SimConfig`, `Hydrograph`, `SimResult`, and `engine.run(config, hydro) → SimResult`.
-- `fragility.py` refactored: now a Monte Carlo wrapper that calls `engine.run()` once per replicate. Exposes `fragility.run(config, hydro) → MonteCarloResult`.
-- `batch.py` (renamed from `batch_run.py`): now a thin iterator — discovers hydrograph files, calls `engine.run()` or `fragility.run()` per file, aggregates results. Exposes `batch.run(config, hydro_dir) → BatchResult`. No longer re-implements building configuration.
-- Batch + fragility now composable: `batch.run()` runs full Monte Carlo for each hydrograph when `config.montecarlo` is set.
-- `damage.py` → `loss.py`: more expressive name for vulnerability/loss curve logic.
-- `viz.py` → `plot.py`: more expressive name; methods renamed `plot.simulation()`, `plot.batch()`, `plot.montecarlo()`.
-- `diagnostics.py` → `report.py`: more expressive name; methods renamed `report.generate()`, `report.to_csv()`.
-- `streamlit_app.py` → `app.py`.
-- `main.py` → `cli.py`: now a thin shim only; all simulation logic moved to `engine`, `fragility`, `batch`.
-
-### Inputs
-
-- Unified pathway CSV format: a single header-based CSV format is used for all pathway inputs (ground-floor ingress, basement perimeter opening, membranes). One parser handles all three; routing is determined by CLI flag (`--ingress`, `--basement-ingress`, `--membrane`).
-- Fragility state columns are optional extensions to the base pathway columns; omitting them gives a deterministic pathway. No separate "fragility format" is needed.
-- Basement perimeter opening (`--basement-ingress`): previously configured via indexed CLI args (`--basement-ingress-*`, `--basement-state-name-1`, …). Now specified as a single-row CSV file using the same format as the ingress file.
-- Sump and pump flags unified under `--sumppump-*` prefix (previously split between `--sump-*` and `--pump-*`). The two components are always configured together; the prefix reflects this.
-- No backward compatibility with old ingress file formats. Existing input files must be updated to the header-based format.
-
-### Testing
-
-- `tests/test_regression.py`: new regression test suite that runs all nine validation case studies programmatically and compares peak metrics against reference values in `case_studies/reference/`.
-- Reference metric JSON files stored in `case_studies/reference/exNN.json` (generated once and committed). Tolerances: 1 % for peak depths, 5 % for volumes.
-- Three new case studies added: ex10 (basement + fragility), ex11 (batch deterministic), ex12 (batch + fragility).
-
 ## [2025-10-28]
 
 - Added Streamlit-based web UI: `streamlit_app.py` (replaces legacy Tk GUI).
@@ -68,6 +27,29 @@ All notable changes to this project are documented in this file.
 - Added unit tests for force formulas (`tests/test_forces.py`) and example runner that demonstrates force outputs.
 
 
+## [2026-04-22] — refactor and documentation reorganisation
+
+### Architecture
+
+- `main.py` split into `engine.py` (`Building`, `IngressPathway`, `Simulation`, `SimConfig`, `Hydrograph`, `SimResult`, `engine.run`) and a thin command-line entry point `cli.py`.
+- Renames: `batch_run.py` → `batch.py`, `damage.py` → `loss.py`, `viz.py` → `plot.py`, `diagnostics.py` → `report.py`, `streamlit_app.py` → `app.py`; `case_studies/` → `examples/`.
+- `fragility.py` exposes `fragility.run(config, hydro, …) → MonteCarloResult` for the Monte Carlo ensemble.
+
+### Inputs
+
+- Unified header-based pathway CSV for ground-floor ingress, basement openings and membranes (`--ingress`, `--basement-opening`, `--membrane`); fragility state columns are optional extensions. The positional ingress format is no longer accepted.
+- Basement opening defined as a CSV file (`--basement-opening`, later `--basement-ingress`) instead of indexed CLI flags.
+- Sump and pump flags unified under the `--sumppump-*` prefix.
+
+### Documentation
+
+- `docs/` consolidated into `model.md`, `fragility.md`, `limitations.md`, `reference.md`, `datasets.md` (replacing `TECHNICAL.md`, `KNOWN_LIMITATIONS.md`, `README_INPUTS.md`, `INPUTOUTPUT.md`, `fragility_ingress_spec.md`, `sump_pump_extension_spec.md`, `INTERPRETATION_DASHBOARD_TUTORIAL.md`, `NOTE_montecarlo.md`, `WISHLIST.md`, `hydrographs/HYDROGRAPH_GENERATION.md`).
+- `README.md` rewritten: introduction, documentation table, run modes with examples, outputs, roadmap.
+
+### Testing
+
+- `tests/test_regression.py` re-runs the validation cases and compares peak metrics with `examples/reference/exNN.json` (written by `examples/make_reference.py`); tolerances 1 % on peak depths, 5 % on volumes.
+
 ## [2026-09-04]
 
 ### Licensing
@@ -75,7 +57,7 @@ All notable changes to this project are documented in this file.
 - At the time of making the repo public, license changed from **CC0 1.0 Universal** (public-domain dedication) to the **PolyForm Noncommercial License 1.0.0**. The software is now free for non-commercial use (research, teaching, and use by universities, public research bodies, and government institutions); commercial use requires a separate license. `LICENSE` replaced; a `Required Notice:` copyright line is included and must be preserved by anyone redistributing the code.
 - `README.md`: added a `## License` section summarising the non-commercial terms and the contact for commercial licensing enquiries.
 
-## [2026-10-08]
+## [2026-10-08] — bypass Cd, Monte Carlo basement inflow, Case 05
 
 ### Inputs
 
@@ -168,3 +150,23 @@ All notable changes to this project are documented in this file.
   - interior water above a sill could not drain, or was pushed further in, while a flowing street stayed below the sill.
 - The velocity head is now added only when the source water is above the sill. Zero-velocity runs (all validation examples) are unchanged.
 - Tests in `tests/test_velocity.py`: no inflow from velocity alone, unobstructed drainage below the sill, velocity head still applied once the sill is reached, and a dry floor for `hydrographs/generated/0001.csv` against an opening at the floor datum in every velocity mode.
+
+## [2026-10-09] — lateral forces, documentation and cleanup
+
+### Physics
+
+- Hydrostatic façade force: with water on both sides the net pressure is constant below the interior surface, so the force is ½ρgW(h_ext² − h_in²), not ½ρgW(h_ext − h_in)² (which under-estimated it whenever the interior was wet, e.g. by 9× for 0.5 m outside / 0.4 m inside). The interior water now acts from the floor (`--floor-datum`) and the exterior from external ground, so the moment uses each side's own lever arm. The force is negative when the interior water pushes outward.
+- `forces.compute_hydrostatic_force(h_ext, h_in, width, floor_datum)` and `compute_drag_force(h_ext, v, width)` return (force, moment); `compute_combined_forces(h_ext, h_in, v, width, floor_datum=…)`. `forces.csv` columns `H_net_m`, `H_wet_m` replaced by `h_ext_m`, `h_in_m`.
+
+### Documentation
+
+- Elevations documented as they are used: measured from external ground (z = 0), with the ground floor at `--floor-datum` (`model.md`, `reference.md`, `fragility.md`; they described an interior-floor datum).
+- `model.md` lateral-force section, `reference.md` forces columns and the `plots.md` forces example match `forces.py`; `fragility.md` documents the membrane's second state.
+- Removed references to deleted specification documents from `pump.py`, `report.py`, `fragility.py` and the sump tests; `plot.py` and `SimConfig.time_units` descriptions corrected.
+- `examples/report.md`: Case 01 timestep table and Case 08–09 replicate figures are computed when the report is generated; Case 03, 08 and 09 explanations match the results; no comparisons with earlier model versions. The Case 01 timestep figure describes convergence (all steps are stable) instead of an instability zone.
+- CHANGELOG: the "planned" refactor section rewritten as the dated 2026-04-22 entry and put in order.
+
+### Removed
+
+- Unused code: `plot._despine`, `plot._format_m3s`, the dashboard's `_vline_event`, `Simulation.run(verbose)`, the `membranes` argument of `fragility.validate_fragility_inputs`, the `fragility.sample_thresholds` wrapper (use `FragilityDefinition.sample_thresholds`); `batch.py` uses `numpy.percentile` (same values).
+- Outdated example images: `ingress_preview.png`, `ingress_locations.png`, `ingress_paths.png` (no longer produced) and the `simulation_animation.gif` files (made with earlier model versions; regenerate with `python3 examples/run_examples.py --animate`).

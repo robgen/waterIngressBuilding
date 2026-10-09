@@ -38,6 +38,8 @@ import os
 import re
 import sys
 
+import numpy as np
+
 import engine
 import fragility
 import inputs
@@ -125,16 +127,6 @@ def _compute_durations(sim_levels, thresholds, dt_s, mul):
 
 # ── summary statistics ────────────────────────────────────────────────────────
 
-def _percentile(sorted_vals, p):
-    """Linear interpolation percentile on a pre-sorted list."""
-    if not sorted_vals:
-        return 0.0
-    n = len(sorted_vals)
-    idx = (p / 100.0) * (n - 1)
-    lo, hi = int(idx), min(int(idx) + 1, n - 1)
-    return sorted_vals[lo] + (idx - lo) * (sorted_vals[hi] - sorted_vals[lo])
-
-
 def _write_summary(results, time_units, outdir):
     """Write batch_summary.csv with percentile statistics for key columns."""
     tu = time_units[:3]
@@ -152,16 +144,16 @@ def _write_summary(results, time_units, outdir):
 
     rows = []
     for col in key_cols:
-        vals = sorted(r[col] for r in results)
+        vals = [r[col] for r in results]
         rows.append({
             'metric': col,
-            'min':    _summary_round(col, _percentile(vals, 0)),
-            'p10':    _summary_round(col, _percentile(vals, 10)),
-            'p25':    _summary_round(col, _percentile(vals, 25)),
-            'median': _summary_round(col, _percentile(vals, 50)),
-            'p75':    _summary_round(col, _percentile(vals, 75)),
-            'p90':    _summary_round(col, _percentile(vals, 90)),
-            'max':    _summary_round(col, _percentile(vals, 100)),
+            'min':    _summary_round(col, float(np.percentile(vals, 0))),
+            'p10':    _summary_round(col, float(np.percentile(vals, 10))),
+            'p25':    _summary_round(col, float(np.percentile(vals, 25))),
+            'median': _summary_round(col, float(np.percentile(vals, 50))),
+            'p75':    _summary_round(col, float(np.percentile(vals, 75))),
+            'p90':    _summary_round(col, float(np.percentile(vals, 90))),
+            'max':    _summary_round(col, float(np.percentile(vals, 100))),
         })
 
     summary_path = os.path.join(outdir, 'batch_summary.csv')
@@ -401,9 +393,7 @@ def run_batch(config, cases, paths, membranes=(), *, thresholds=None,
 def _print_summary_table(results):
     """Print a short summary table to stdout."""
     def _stats(vals):
-        s = sorted(vals)
-        med = _percentile(s, 50)
-        return min(s), med, max(s)
+        return min(vals), float(np.percentile(vals, 50)), max(vals)
 
     h_ext  = [r['h_peak_ext'] for r in results]
     h_int  = [r['h_peak_int'] for r in results]

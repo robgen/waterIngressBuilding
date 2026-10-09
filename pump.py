@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Sump chamber and head-dependent pump model.
-
-This module implements the sump-pump extension described in
-docs/sump_pump_extension_spec.md (sections 4–7, 12).
+"""Sump pit and head-dependent pump model (see docs/model.md, *Sump and pump*).
 
 Design principles
 -----------------
@@ -12,9 +9,8 @@ Design principles
   future Monte Carlo fragility pass can set it per realisation without
   rewriting any hydraulic equations.
 - Lift head H_lift(t) = H_out(t) - z_sump_base is computed each timestep
-  from the external flood level.  This is the first-order assumption
-  described in spec section 16.5 and should remain isolatable for later
-  improvement.
+  from the external flood level.  This first-order assumption is kept in
+  one function (compute_lift_head) so it can be refined later.
 
 Geometry and routing
 --------------------
@@ -135,7 +131,6 @@ def compute_lift_head(H_out, sump_base_elevation):
     First-order lift-head assumption: the pump discharges against the external
     flood level referenced to the sump datum.  This is conservative when the
     real outfall is better-protected than the exterior flood level implies.
-    See spec sections 7 and 16.5 for interpretation limits.
     """
     return max(0.0, float(H_out) - float(sump_base_elevation))
 

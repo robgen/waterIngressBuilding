@@ -25,7 +25,7 @@ All pathway inputs — ground-floor ingress, basement perimeter openings, and me
 | Column | Type | Required | Description |
 |--------|------|----------|-------------|
 | `name` | string | yes | Unique identifier |
-| `height_m` | float | yes | Sill elevation relative to the interior ground-floor datum (m) |
+| `height_m` | float | yes | Sill elevation above external ground (m); with `--floor-datum 0.10` an opening at floor level has `height_m = 0.10` |
 | `area_m2` | float | yes | Orifice area in the base (unloaded) state (m²) |
 | `Cd` | float | yes | Discharge coefficient in the base state |
 | `group_id` | int | no | Membrane group ID; `0` = ungrouped |
@@ -69,7 +69,7 @@ door_gap, 0.0,      2.0e-3,  0.6, 1
 
 ### External hydrograph (`--external`)
 
-Two- **or** three-column CSV. Times in simulation time units (default: minutes). Levels in metres above the reference datum. Linearly interpolated to the simulation grid.
+Two- **or** three-column CSV. Times in simulation time units (default: minutes). Levels in metres above external ground. Linearly interpolated to the simulation grid.
 
 | Columns | Description |
 |---------|-------------|
@@ -190,8 +190,8 @@ or listed under **Batch only** (definitions in `inputs.py`).
 | Flag | Description |
 |------|-------------|
 | `--basement-area FLOAT` | Basement plan area (m²) |
-| `--basement-floor-elevation FLOAT` | Basement floor elevation relative to datum (m, negative = below datum) |
-| `--basement-ceiling-elevation FLOAT` | Ceiling elevation (m), default `--floor-datum`; water above this spills to ground floor |
+| `--basement-floor-elevation FLOAT` | Basement floor elevation above external ground (m, negative = below ground) |
+| `--basement-ceiling-elevation FLOAT` | Ceiling elevation above external ground (m), default `--floor-datum`; water above this spills to ground floor |
 | `--basement-bypass-height FLOAT` | Sill of the ground-floor ↔ basement bypass connection (m) |
 | `--basement-bypass-area FLOAT` | Area of the ground-floor ↔ basement bypass (m²) |
 | `--basement-bypass-coeff FLOAT` | Discharge coefficient Cd of the ground-floor ↔ basement bypass (–); default 0.6 |
@@ -248,7 +248,8 @@ or listed under **Batch only** (definitions in `inputs.py`).
 - **Length / depth**: metres (m).
 - **Area**: m².
 - **Velocity**: m/s.
-- **Elevations**: metres relative to the interior ground-floor datum. Use negative values for below-datum elevations (e.g. basement floor at −2.5 m).
+- **Elevations**: metres above external ground level (z = 0), the level from which the exterior depth is measured. Sills, the ground floor (`--floor-datum`), the basement floor and ceiling, the bypass sill and the sump base all use this frame; below-ground elevations are negative (e.g. basement floor at −2.5 m).
+- **Interior depths**: `h_in` is measured above the ground floor, `h_basement` above the basement floor, `h_sump` above the sump base.
 - **Discharge coefficient**: dimensionless.
 
 ---
@@ -325,4 +326,4 @@ All outputs are written to `--outdir`. The files produced depend on the run mode
 | `forces.csv` | Time series of lateral forces and overturning moment |
 | `forces_result.png` | Force and moment time series |
 
-**`forces.csv` columns**: `time` (s), `F_hydro_N`, `F_drag_N`, `F_total_N`, `M_overturn_Nm`, `H_net_m`, `H_wet_m`, `v_m_per_s`, `lever_hydro_m`, `lever_drag_m`.
+**`forces.csv` columns**: `time` (s), `F_hydro_N`, `F_drag_N`, `F_total_N` (positive inward), `M_overturn_Nm` (about external ground), `h_ext_m`, `h_in_m`, `v_m_per_s`, `lever_hydro_m`, `lever_drag_m` (m above external ground; 0 when the force is 0). See docs/model.md, *Lateral forces*.

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Plotting and animation helpers for headless use (uses Agg backend).
 
-This module sets the Agg backend on import so it is safe to import only
-from CLI (not from GUI). Callers that need GUI-backed plotting should not
-import this module.
+This module sets the Agg backend on import; all figures are written to
+files (cli.py, batch.py, examples) or returned as images (app.py).
+Callers that need interactive GUI-backed plotting should not import it.
 """
 import os
 import tempfile
@@ -96,18 +96,6 @@ def _xlabel(time_unit):
     if time_unit:
         return f'Time  ({time_unit})'
     return 'Time'
-
-
-def _despine(ax, keep=('left', 'bottom')):
-    for sp in ('top', 'right', 'left', 'bottom'):
-        ax.spines[sp].set_visible(sp in keep)
-
-
-def _format_m3s(val, _):
-    """Compact m³/s formatter that switches to L/s for small values."""
-    if abs(val) < 1e-3:
-        return f'{val * 1000:.2f} L/s' if abs(val) > 1e-9 else '0'
-    return f'{val:.4f}'
 
 
 def _annotate_peak(ax, times, values, colour, label, x_range,
@@ -878,20 +866,6 @@ def save_interpretation_dashboard(diag, outpath, time_unit='seconds',
         if in_on:
             ax.axvspan(t_on, t_disp[-1], alpha=0.08,
                        color=_C['sump'], zorder=0)
-
-    def _vline_event(ax, key, colour, label):
-        t_ev = ev.get(key)
-        if t_ev is None:
-            return
-        if time_unit == 'minutes':
-            t_ev_d = t_ev / 60.0
-        elif time_unit == 'hours':
-            t_ev_d = t_ev / 3600.0
-        else:
-            t_ev_d = t_ev
-        ax.axvline(t_ev_d, color=colour, lw=1.0, ls=':', alpha=0.60, zorder=3)
-        ax.text(t_ev_d, ax.get_ylim()[1] * 0.96, label,
-                fontsize=6.5, color=colour, ha='center', va='top', rotation=90)
 
     # ── Panel 1: water-surface heads ─────────────────────────────────────────
     ax1 = axes[0]

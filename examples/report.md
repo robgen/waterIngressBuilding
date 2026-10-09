@@ -35,32 +35,26 @@ minutes.  Interior depth closely tracks external depth throughout the
 flood and drains back out rapidly after t = 60 min.
 
 **Qualitative check:** interior and exterior curves nearly coincide;
-drainage complete by ≈ t = 70 min.
+drainage complete by ≈ t = 61 min.
 
 ![](ex01/out/simulation_result.png)
 
-[Animation (GIF)](ex01/out/simulation_animation.gif)
+
 
 ### Timestep sensitivity — explicit-Euler accuracy
 
-With the corrected 50 m² floor the scheme is stable at dt = 60 s
-(Δt/τ = 0.23), but the explicit-Euler method still carries a systematic
-positive bias: each step slightly overshoots equilibrium.  The table
-below (computed with the 50 m² floor) shows how the peak depth error
-converges as Δt shrinks.
+The scheme is stable at every step tested (Δt/τ < 1), but the
+explicit-Euler update carries a systematic positive bias: each step
+slightly overshoots equilibrium.  The table shows how the peak depth
+converges as Δt shrinks; this case uses Δt = 6 s.
 
 | Δt | Δt / τ | Peak h\_in (m) | Error vs 1-s ref |
 |---|---|---|---|
-| 60 s (1 min) | 0.23 | 0.506 | +1.1 % |
-| 30 s | 0.11 | 0.500 | +0.3 % |
-| 15 s | 0.06 | 0.499 | < 0.1 % |
-| **6 s (fix)** | **0.023** | **0.494** | **< 0.3 %** |
-| 1 s (ref) | 0.004 | 0.494 | — |
-
-**Note:** with the original, unrealistically small 10 m² floor the
-same orifice gave Δt/τ = 0.57 and caused catastrophic oscillation
-(peak error +28 %).  Correcting the geometry eliminated the instability;
-the residual bias at Δt = 6 s is negligible (<0.3 %).
+| 60 s | 0.226 | 0.5057 | +2.5 % |
+| 30 s | 0.113 | 0.4974 | +0.8 % |
+| 15 s | 0.056 | 0.4953 | +0.4 % |
+| 6 s (this case) | 0.023 | 0.4939 | +0.1 % |
+| 1 s (ref) | 0.004 | 0.4934 | — |
 
 ![](ex01/out/dt_sensitivity.png)
 
@@ -85,7 +79,7 @@ to ≈ 0.30 m and remains constant for the rest of the simulation.
 
 ![](ex02/out/simulation_result.png)
 
-[Animation (GIF)](ex02/out/simulation_animation.gif)
+
 
 ---
 
@@ -102,7 +96,7 @@ is fully visible.
 
 **Expected behaviour:** slow linear rise while only Pathway A is
 active.  At t ≈ 18 min Pathway B opens and the fill rate jumps by
-~5×.  After the flood (t > 60 min) both pathways initially drain the
+~4×.  After the flood (t > 60 min) both pathways initially drain the
 interior; once h\_in drops below 0.3 m only the crack remains active
 and drainage slows dramatically.  Interior returns to zero by ≈ t = 360 min.
 
@@ -112,7 +106,7 @@ interior reaches zero by end of 6-hour window.
 
 ![](ex03/out/simulation_result.png)
 
-[Animation (GIF)](ex03/out/simulation_animation.gif)
+
 
 ---
 
@@ -141,7 +135,7 @@ monotonically during flood and plateaus after t = 60 min.
 
 ![](ex04/out/simulation_result.png)
 
-[Animation (GIF)](ex04/out/simulation_animation.gif)
+
 
 ---
 
@@ -166,10 +160,6 @@ ground-floor opening, the water stays trapped after the flood recedes.
 **Qualitative check:** basement trace rises to 2.5 m (ceiling) at
 t ≈ 123 min; ground-floor trace then rises with a decreasing slope and
 never crosses the exterior level.
-
-Before the merged-compartment rule the full basement kept driving inflow
-against its fixed ceiling level, and this case ended at ≈ 1.8 m indoors,
-above the 1.0 m flood.
 
 ![](ex05/out/simulation_result.png)
 
@@ -200,7 +190,7 @@ distorted by the pump overshooting (next section).
 
 ![](ex06/out/simulation_result.png)
 
-[Animation (GIF)](ex06/out/simulation_animation.gif)
+
 
 ### Timestep sensitivity — sump/pump oscillation
 
@@ -246,7 +236,7 @@ near the end of the flood and then falls to zero; the sump empties last.
 
 ![](ex07/out/simulation_result.png)
 
-[Animation (GIF)](ex07/out/simulation_animation.gif)
+
 
 ---
 
@@ -260,13 +250,17 @@ Lognormal capacity: median η = 0.5 m, β = 0.3.  Peak external depth
 = 0.5 m → P(seal fails) = P(h\* < 0.5 m) = **50 %** by construction.
 
 With a 50 m² floor the characteristic fill time when the seal fails is
-τ ≈ 44 min (slow relative to the 30-min rising limb), so the "failed"
-cluster reaches a peak interior depth of ≈ 0.25 m — well below the
-external peak of 0.5 m.
+τ ≈ 44 min (slow relative to the 30-min rising limb).  The seal is
+irreversible: once failed it stays open, so the interior fills until the
+exterior drops below the interior level.  How much water enters depends on
+how early on the rising limb the seal fails, so the failed replicates
+spread below the 0.5 m external peak.
 
 **Expected behaviour:** bimodal ensemble —
 * ≈50 % of replicates: seal intact → peak\_h\_in ≈ 0
-* ≈50 % of replicates: seal failed → peak\_h\_in ≈ 0.25 m
+* ≈50 % of replicates: seal failed → peak\_h\_in of a few decimetres
+
+**Observed (seed = 42, n = 500):** 251 replicates stay below 1 cm and 249 exceed it; their peak h\_in has mean 0.19 m and maximum 0.24 m.
 
 **Qualitative check:** histogram has two clearly separated clusters;
 sharp discontinuity between P50 (≈ 0) and P75 (> 0); P10–P90 range is
@@ -301,22 +295,22 @@ Membrane: sill = 0 m, base leakage ≈ 0.  Lognormal overtopping
 capacity: median = 0.5 m, β = 0.1 (tight, near-deterministic threshold).
 P(membrane overtopped) = **50 %**.
 
-When the membrane fails, total area = 0.008 m² → τ ≈ 28 min; the
-"failed" cluster peak interior depth ≈ 0.20 m.
+When the membrane is overtopped the two pathways open (total area
+0.008 m², τ ≈ 28 min).  The membrane is reversible: it is overtopped only
+while the exterior depth exceeds its sampled capacity, which with β = 0.1
+lies close to the 0.5 m peak.  Water therefore enters only for a short
+window around the peak.
 
 **Expected behaviour:**
-* ≈50 % of replicates: membrane intact → total ingress ≈ 0
-* ≈50 % of replicates: membrane overtopped → interior fills to ≈ 0.20 m
+* ≈50 % of replicates: membrane never overtopped → ingress ≈ 0
+* ≈50 % of replicates: membrane overtopped briefly → small interior depth
 
-The tight β = 0.1 means the two clusters are well-separated with
-little intermediate probability mass.
-
-**Observed (seed = 42, n = 500):** same 251/249 split as Case 08
+**Observed (seed = 42, n = 500):** 251 replicates stay below 1 cm and 249 exceed it; their peak h\_in has mean 0.07 m and maximum 0.19 m.  The split matches Case 08
 (same seed and uniform draws).
 
-**Qualitative check:** same bimodal pattern as Case 08; slightly lower
-"failed" cluster peak than Case 08 because the airbrick sill (0.1 m)
-delays part of the inflow.
+**Qualitative check:** same bimodal pattern as Case 08, with a lower
+overtopped cluster because inflow stops as soon as the exterior drops back
+below the membrane capacity.
 
 ![](ex09/out/mc_result.png)
 

@@ -126,20 +126,18 @@ def main(argv=None):
 def _save_forces(result, h_ext, v_ext, config, outdir):
     forces_out = []
     for i, t in enumerate(result.times):
-        H_net = max(0.0, h_ext[i] - result.h_in[i])
-        H_wet = max(0.0, h_ext[i])
         res = forces.compute_combined_forces(
-            H_net, H_wet, v_ext[i], config.building_width,
-            C_D=config.drag_coeff, rho=config.rho,
+            h_ext[i], result.h_in[i], v_ext[i], config.building_width,
+            floor_datum=config.floor_datum, C_D=config.drag_coeff, rho=config.rho,
         )
         forces_out.append((t, res['F_hydro'], res['F_drag'], res['F_total'],
-                           res['M_overturn'], H_net, H_wet, v_ext[i],
+                           res['M_overturn'], h_ext[i], result.h_in[i], v_ext[i],
                            res['lever_hydro'], res['lever_drag']))
     forces_csv = os.path.join(outdir, 'forces.csv')
     with open(forces_csv, 'w', newline='') as cf:
         w = csv.writer(cf)
         w.writerow(['time', 'F_hydro_N', 'F_drag_N', 'F_total_N', 'M_overturn_Nm',
-                    'H_net_m', 'H_wet_m', 'v_m_per_s', 'lever_hydro_m', 'lever_drag_m'])
+                    'h_ext_m', 'h_in_m', 'v_m_per_s', 'lever_hydro_m', 'lever_drag_m'])
         for row in forces_out:
             w.writerow(row)
     mul = engine.TIME_UNIT_SECONDS[config.time_units]

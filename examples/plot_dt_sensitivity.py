@@ -2,8 +2,8 @@
 """Timestep sensitivity analysis for Case 01.
 
 Runs the same single-orifice, ground-floor-only problem with a sweep of
-dt values and plots the time-series and peak-convergence, demonstrating
-the explicit-Euler instability at large dt.
+dt values and plots the time series and the convergence of the peak depth:
+all steps are stable (Δt/τ < 1) and the explicit-Euler bias shrinks with Δt.
 
 Produces:
   examples/ex01/out/dt_sensitivity.png
@@ -36,9 +36,9 @@ HYDRO = rc.hydro([(0, 0.0), (30, 0.5), (60, 0.0), (120, 0.0)])
 MODEL = rc.F.assemble_pathways([rc.path('door_gap', SILL_H, ORIFICE_A, ORIFICE_CD)])
 
 # ── dt sweep (seconds) ────────────────────────────────────────────────────────
-# From clearly unstable (60 s) down to well-converged reference (1 s)
+# From the default step (60 s, ≈ 1 % bias) down to the converged reference (1 s)
 DT_VALUES_S = [60.0, 30.0, 15.0, 6.0, 1.0]
-DT_LABELS   = ['60 s (1 min)', '30 s', '15 s', '6 s (Case 01 fix)', '1 s  (reference)']
+DT_LABELS   = ['60 s (1 min)', '30 s', '15 s', '6 s (Case 01)', '1 s  (reference)']
 DT_COLOURS  = ['#c0392b', '#e67e22', '#f1c40f', '#2980b9', '#27ae60']
 DT_LS       = ['-', '-', '-', '-', '--']
 DT_LW       = [2.2, 1.8, 1.8, 2.2, 1.4]
@@ -55,7 +55,7 @@ def run_case(dt_s: float):
     return times_min, r.h_in, h_ext
 
 
-def _analytical_response_time() -> float:
+def response_time() -> float:
     """Characteristic response time τ = A_floor / (Cd·A·√(2g·H_max)) in seconds."""
     Q_max = ORIFICE_CD * ORIFICE_A * math.sqrt(2 * G * 0.5)
     return FLOOR_AREA * 0.5 / Q_max   # s
@@ -65,7 +65,7 @@ def main():
     outdir = os.path.join(HERE, 'ex01', 'out')
     os.makedirs(outdir, exist_ok=True)
 
-    tau = _analytical_response_time()
+    tau = response_time()
     print(f'  Characteristic response time τ ≈ {tau:.1f} s  ({tau/60:.2f} min)')
 
     # ── collect results ───────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ def main():
     ax_ts.set_ylim(bottom=0)
     ax_ts.legend(fontsize=8, loc='upper right', ncol=2)
 
-    # stability annotation
+    # exterior peak reference
     ax_ts.axhline(0.5, color='#7f8c8d', lw=0.8, ls=':', zorder=2)
     ax_ts.text(61, 0.5, '$h_{ext}^{max}$ = 0.5 m',
                va='center', ha='left', fontsize=8, color='#7f8c8d',
@@ -134,12 +134,6 @@ def main():
                     label=f'Reference ({ref_peak:.4f} m)')
     ax_conv.axhline(0.5, color='#7f8c8d', lw=0.8, ls=':',
                     label='$h_{ext}^{max}$ = 0.5 m')
-
-    # shade instability zone
-    ax_conv.axvspan(60, 70, color='#c0392b', alpha=0.08, zorder=1)
-    ax_conv.text(60, ax_conv.get_ylim()[0] if ax_conv.get_ylim()[0] > 0 else 0.45,
-                 'unstable\nzone', ha='right', va='bottom',
-                 fontsize=7.5, color='#c0392b', style='italic')
 
     ax_conv.set_xlabel('Timestep  Δt  (s)')
     ax_conv.set_ylabel('Peak interior depth  (m)')
@@ -161,7 +155,7 @@ def main():
     ax_err.axvline(1.0, color='#c0392b', lw=1.2, ls='--', alpha=0.7,
                    label='Δt / τ = 1  (stability limit)')
     ax_err.axvline(0.1, color='#2980b9', lw=1.0, ls=':', alpha=0.7,
-                   label='Δt / τ = 0.1  (Case 01 fix)')
+                   label='Δt / τ = 0.1')
 
     ax_err.set_xlabel('Normalised timestep  Δt / τ')
     ax_err.set_ylabel('Error in peak depth  |Δ$h_{in}^{max}$|  (%)')
@@ -172,14 +166,15 @@ def main():
 
     # ── figure title ──────────────────────────────────────────────────────────
     fig.suptitle(
-        'Case 01 — Timestep sensitivity: explicit-Euler stability for large orifice',
+        'Case 01 — Timestep sensitivity: explicit-Euler convergence for a large orifice',
         fontsize=12, fontweight='bold', color='#1e2433', y=0.97)
 
-    # stability note
+    # convergence note
+    bias = {r['dt_s']: (r['peak'] - ref_peak) / ref_peak * 100 for r in runs}
     note = (f'τ = A_floor · h_max / Q_max ≈ {tau:.0f} s = {tau/60:.2f} min  '
-            f'(characteristic fill time at peak head, 50 m² floor)\n'
-            f'With corrected dimensions, Δt = 60 s is stable (Δt/τ = 0.23) but carries ~1 % bias.  '
-            f'Fix: Δt = 6 s (Δt/τ ≈ 0.02) reduces peak error to < 0.3 %.')
+            f'(characteristic fill time at peak head, {FLOOR_AREA:.0f} m² floor)\n'
+            f'Δt = 60 s is stable (Δt/τ = {60 / tau:.2f}) with a {bias[60.0]:+.1f} % peak bias; '
+            f'Δt = 6 s (Δt/τ = {6 / tau:.3f}) gives {bias[6.0]:+.1f} %.')
     fig.text(0.50, 0.945, note,
              ha='center', va='top', fontsize=8.5, color='#444',
              style='italic',
