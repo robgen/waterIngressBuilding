@@ -200,18 +200,22 @@ sump drains past zero in one step and refills past h\_on the next — a pure
 numerical artefact that can fill the pit and spill water onto the basement
 floor.
 
-**Stability criterion:**
+**Stability limit:** one step may drain at most half of the switch-on
+volume at the maximum pumping rate (pump curve at H\_lift = 0):
 
-> Δt  ≤  dt\_crit  =  A\_sump × h\_on / Q\_pump
+> Δt  ≤  0.5 × A\_sump × h\_on / Q\_p,max
 
-For Case 06 (A\_sump = 0.5 m², h\_on = 0.10 m, Q\_pump ≈ 0.035 m³/s):
+For Case 06 (A\_sump = 0.5 m², h\_on = 0.10 m,
+Q\_p,max = √(5.0 / 1 000) ≈ 0.071 m³/s):
 
-> dt\_crit ≈ 1.4 s  →  recommended Δt ≤ **1 s**
+> Δt ≤ **0.35 s**
 
-The figure below shows sump depth time-series for Δt = 60 s down to 0.5 s
-(reference).  At Δt = 60 s the pit fills to the basement floor and spills,
-producing a spurious 2 mm basement depth.  At Δt ≤ 30 s the basement stays
-dry, and the peak pit level converges towards ≈ 0.11 m as Δt → 0.5 s.
+This case runs at the default 60 s step to show the artefact, and the model
+warns that the step exceeds the limit.  The figure below shows sump depth
+time-series for Δt = 60 s down to 0.25 s (reference, below the limit).  At
+Δt = 60 s the pit fills to the basement floor and spills, producing a
+spurious 2 mm basement depth.  At Δt ≤ 30 s the basement stays dry, and the
+peak pit level converges towards ≈ 0.10 m as Δt decreases.
 
 ![](ex06/out/dt_sensitivity.png)
 
@@ -222,6 +226,8 @@ dry, and the peak pit level converges towards ≈ 0.11 m as Δt → 0.5 s.
 **Setup:** same building, pit and inflow as Case 06 but a 100× weaker pump:
 k\_pump = 100 000.  At peak flood:
 Q\_pump = √((5.0 − 3.8) / 100 000) ≈ **0.0035 m³/s** < Q\_in\_max ≈ 0.008 m³/s.
+The stability limit is Δt ≤ 0.5 × 0.5 × 0.10 / 0.0071 ≈ 3.5 s, so the model
+warns about the default 60 s step here too (see Case 06).
 
 **Expected behaviour:** the pump runs but cannot match the inflow.  The pit
 (0.4 m³) fills to the basement floor at t ≈ 12 min and spills; from then on

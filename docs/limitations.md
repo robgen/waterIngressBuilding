@@ -80,13 +80,9 @@ Exterior→basement inflow can be split over any number of pathways (`--basement
 
 `engine.py`
 
-The explicit Euler scheme accumulates integration error at coarse $\Delta t$. For sump-enabled runs, a pump that can drain more than the on-level sump volume in a single step causes spurious oscillations. The stability criterion is:
+The explicit Euler scheme accumulates integration error at coarse $\Delta t$. With a pump the scheme is only conditionally stable: the step must satisfy $\Delta t \le 0.5\,A_s h_{on} / Q_{p,max}$ (docs/model.md, *Stability guidance*).  The model warns when it does not but does not reduce the step, and a strong pump can require sub-second steps, which makes long events slow to run.  See the timestep sensitivity case studies (ex01, ex06).
 
-$$
-\Delta t \;\leq\; \frac{A_s\,h_{on}}{Q_{pump}}
-$$
-
-Setting $\Delta t \leq 0.5\,\Delta t_{crit}$ provides adequate margin. See the timestep sensitivity case studies (ex01, ex06) for quantitative guidance.
+**Possible fix:** semi-implicit sump/pump update, or automatic sub-stepping of the sump balance only.
 
 ---
 

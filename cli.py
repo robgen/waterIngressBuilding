@@ -46,6 +46,7 @@ def _build_argparser():
 
 def main(argv=None):
     args = _build_argparser().parse_args(argv)
+    inputs.plain_warnings()
 
     outdir = args.outdir
     temp_ctx = None

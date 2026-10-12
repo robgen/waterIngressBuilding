@@ -453,6 +453,7 @@ def _parse_args(argv=None):
 
 def main(argv=None):
     args = _parse_args(argv)
+    inputs.plain_warnings()
     config = inputs.config_from_args(args)
     paths, membranes = inputs.pathways_from_args(args)
 

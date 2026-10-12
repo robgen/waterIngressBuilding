@@ -180,13 +180,15 @@ The simulator uses a fixed-step explicit Euler scheme. For time step index $n$ (
 
 The explicit Euler scheme has no CFL condition tied to wave propagation, but small errors accumulate for coarse $\Delta t$.
 
-For sump-enabled runs, numerical oscillation occurs when the pump can drain more than the sump's on-level volume in a single step:
+When a sump and pump are included, the scheme is only conditionally stable: the pump can empty the pit faster than a coarse step can resolve, and the level then oscillates between the switch-on level and empty, which can make the pit spill spuriously.  The step must satisfy
 
 $$
-\Delta t \;\leq\; \Delta t_{crit} = \frac{A_s\,h_{on}}{Q_{pump}}
+\Delta t \;\leq\; \Delta t_{max} = \frac{0.5\,A_s\,h_{on}}{Q_{p,max}},
+\qquad
+Q_{p,max} = \eta_p\,\sqrt{\frac{H_{shut}}{k_{pump} + k_{pipe}}}
 $$
 
-Setting $\Delta t \leq 0.5\,\Delta t_{crit}$ (50 % safety margin) avoids spurious pit spills.
+so that a single step drains no more than half of the switch-on storage volume $A_s h_{on}$ at the maximum pumping rate ($Q_{p,max}$: the pump curve at $H_{lift} = 0$).  The model does not change the step: `engine.run` issues a `PumpStepWarning` stating $\Delta t_{max}$ when the configured step is larger (printed as a `WARNING:` line by `cli.py` and `batch.py`, shown in the Results tab of the app).
 
 ---
 

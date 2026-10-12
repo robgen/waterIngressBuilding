@@ -88,6 +88,22 @@ class SumpPump:
                 f"SumpPump.pump_shutoff_head is {self.pump_shutoff_head} ≤ 0; "
                 "pump will always return zero flow.", stacklevel=2)
 
+    def max_pump_flow(self):
+        """Q_p,max: pump-curve flow at zero lift head (the largest it can deliver)."""
+        return compute_pump_flow(1, self.pump_availability, self.pump_shutoff_head, 0.0,
+                                 self.pump_curve_coeff, self.pipe_loss_coeff)
+
+    def max_stable_dt(self):
+        """Largest stable explicit step (s): Δt ≤ 0.5 · A_sump · h_on / Q_p,max.
+
+        A single step then drains at most half of the switch-on storage volume
+        at the maximum pumping rate.  Infinite when the pump delivers no flow.
+        """
+        q_max = self.max_pump_flow()
+        if q_max <= 0.0:
+            return math.inf
+        return 0.5 * self.sump_area * self.pump_on_level / q_max
+
     def depth(self, basement_floor_elevation):
         """Pit depth: from the sump base up to the basement floor."""
         return float(basement_floor_elevation) - float(self.sump_base_elevation)

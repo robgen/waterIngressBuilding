@@ -14,6 +14,7 @@ import csv
 import io
 import os
 import tempfile
+import warnings
 
 import matplotlib
 matplotlib.use('Agg')
@@ -24,7 +25,7 @@ import streamlit as st
 
 import fragility as _frag
 from engine import (
-    SimConfig, TIME_UNIT_SECONDS,
+    PumpStepWarning, SimConfig, TIME_UNIT_SECONDS,
     hydrograph_from_columns,
     parse_combined_text,
 )
@@ -531,9 +532,13 @@ if run_button:
                 except Exception:
                     pass
 
-            result, _ = _frag.run_replicate(
-                config, hydro, paths, membranes, np.random.default_rng(config.random_seed),
-                progress_callback=_cb)
+            with warnings.catch_warnings(record=True) as _caught:
+                warnings.simplefilter('always', PumpStepWarning)
+                result, _ = _frag.run_replicate(
+                    config, hydro, paths, membranes, np.random.default_rng(config.random_seed),
+                    progress_callback=_cb)
+            run_warnings = sorted({str(w.message) for w in _caught
+                                   if issubclass(w.category, PumpStepWarning)})
 
             # ── Main plot ────────────────────────────────────────────────────
             _prog.progress(80, 'Generating plots…')
@@ -634,6 +639,7 @@ if run_button:
                 narrative=narrative or [], ev_rows=ev_rows,
                 bldg_loss=bldg_loss, bsmt_loss=bsmt_loss,
                 anim_bytes=anim_bytes,
+                warnings=run_warnings,
             )
             st.session_state.mc_result = None  # clear stale MC on new run
 
@@ -652,9 +658,12 @@ if run_button:
                         except Exception:
                             pass
 
-                    _mc_res = _frag.run(
-                        _model_config(n_replicates=int(n_reps), random_seed=_seed()),
-                        hydro, paths, membranes, progress_callback=_mc_cb)
+                    with warnings.catch_warnings():
+                        # same step as the single run, whose warning is shown
+                        warnings.simplefilter('ignore', PumpStepWarning)
+                        _mc_res = _frag.run(
+                            _model_config(n_replicates=int(n_reps), random_seed=_seed()),
+                            hydro, paths, membranes, progress_callback=_mc_cb)
 
                     # Percentile table
                     _pct_rows = []
@@ -728,6 +737,9 @@ with tab_results:
     if _r is None:
         st.info('Configure inputs in the sidebar and press **▶ Run simulation**.')
     else:
+        for _w in _r['warnings']:
+            st.warning(_w)
+
         # ── KPI cards ─────────────────────────────────────────────────────────
         k1, k2, k3, k4 = st.columns(4)
         k1.metric('Peak ground-floor depth', _fmt_m(_r['h_pk_gf']))

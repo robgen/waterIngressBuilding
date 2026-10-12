@@ -24,6 +24,7 @@ Low-level classes:
 import copy
 import math
 import os
+import warnings
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -586,6 +587,35 @@ def _internal_pathways(config: SimConfig) -> List[IngressPathway]:
     return []
 
 
+class PumpStepWarning(UserWarning):
+    """The integration step is too large for the sump pump to be stable."""
+
+
+def _check_pump_step(config: SimConfig) -> None:
+    """Warn when Δt exceeds 0.5 · A_sump · h_on / Q_p,max (pump at zero lift).
+
+    The explicit scheme is only conditionally stable with a pump: a coarse
+    step can empty the switch-on storage in one step.  The step is not
+    changed; the user is told the largest stable value.
+    """
+    sp = config.sumppump
+    if sp is None or config.basement_area <= 0.0:
+        return
+    dt_max = sp.max_stable_dt()
+    if config.dt <= dt_max:
+        return
+    unit = TIME_UNIT_SECONDS[config.time_units]
+    warnings.warn(
+        f"Integration step Δt = {config.dt:g} s is too large for the sump pump: "
+        f"the scheme is only conditionally stable and a single step can empty the "
+        f"pump's switch-on storage.  Use Δt ≤ 0.5·A_sump·h_on / Q_p,max = "
+        f"0.5 × {sp.sump_area:g} m² × {sp.pump_on_level:g} m / "
+        f"{sp.max_pump_flow():.4g} m³/s = {dt_max:.3g} s "
+        f"({dt_max / unit:.3g} {config.time_units}; Q_p,max at h_lift = 0).  "
+        f"Results with the current step may show spurious pump cycling and pit spills.",
+        PumpStepWarning, stacklevel=3)
+
+
 def run(config: SimConfig, hydro: Hydrograph, pathways=(), *,
         conductance_resolver=None, progress_callback=None) -> SimResult:
     """Run one simulation and return SimResult.
@@ -602,6 +632,7 @@ def run(config: SimConfig, hydro: Hydrograph, pathways=(), *,
                            (fragility.make_conductance_resolver)
     progress_callback    : optional callable(fraction) forwarded to Simulation.run
     """
+    _check_pump_step(config)
     sim = Simulation(
         _build_building(config), list(pathways) + _internal_pathways(config),
         hydro.times, hydro.levels,

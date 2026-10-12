@@ -2,17 +2,17 @@
 """Timestep sensitivity analysis for Case 06 (basement + sump/pump that keeps up).
 
 Demonstrates that the explicit-Euler sump/pump update oscillates when dt
-exceeds the pump drain time of the active sump volume.  Derives the
-practical dt guideline:
+is too coarse for the pump, and compares the sweep with the stability limit
+used by the engine's warning (SumpPump.max_stable_dt):
 
-    dt  ≤  dt_crit  =  A_sump × h_on / Q_pump_peak
+    dt  ≤  dt_max  =  0.5 × A_sump × h_on / Q_p,max      (Q_p,max at h_lift = 0)
 
 Produces:
   examples/ex06/out/dt_sensitivity.png
 """
-import math
 import os
 import sys
+import warnings
 
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -53,12 +53,12 @@ MODEL = rc.F.assemble_pathways(
     [rc.path('perimeter', BASEMENT_INGRESS_H, BASEMENT_INGRESS_A, BASEMENT_INGRESS_CD)])
 
 # ── dt sweep ──────────────────────────────────────────────────────────────────
-# Ranges from the default 60-s step (unstable) down to 0.5-s reference.
-DT_VALUES_S = [60.0, 30.0, 10.0, 5.0, 2.0, 1.0, 0.5]
-DT_LABELS   = ['60 s', '30 s', '10 s', '5 s', '2 s', '1 s  (recommended)', '0.5 s  (ref.)']
-DT_COLOURS  = ['#c0392b', '#e67e22', '#f39c12', '#d4ac0d', '#2980b9', '#27ae60', '#1abc9c']
-DT_LW       = [2.0,       1.8,       1.8,       1.8,       2.0,       2.2,       1.4]
-DT_LS       = ['-',       '-',       '-',       '-',       '-',       '-',       '--']
+# From the default 60-s step down to a reference below the stability limit.
+DT_VALUES_S = [60.0, 30.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.25]
+DT_LABELS   = ['60 s', '30 s', '10 s', '5 s', '2 s', '1 s', '0.5 s', '0.25 s  (ref., ≤ dt_max)']
+DT_COLOURS  = ['#c0392b', '#e67e22', '#f39c12', '#d4ac0d', '#2980b9', '#27ae60', '#16a085', '#1abc9c']
+DT_LW       = [2.0,       1.8,       1.8,       1.8,       2.0,       2.0,       2.0,       1.4]
+DT_LS       = ['-',       '-',       '-',       '-',       '-',       '-',       '-',       '--']
 
 G = 9.81
 
@@ -91,28 +91,17 @@ def run_case(dt_s: float):
     return times_min, r.h_sump, r.h_basement, h_ext
 
 
-def _dt_crit(q_pump_peak: float) -> float:
-    """Critical timestep: pump drain time for the active sump volume."""
-    return SUMP_AREA * PUMP_ON_LEVEL / q_pump_peak
-
-
-def _q_pump_peak() -> float:
-    """Peak pump flow during the flood (at peak flood head, pump ON)."""
-    H_lift = 0.5 - SUMP_BASE_ELEV   # external peak 0.5 m above datum
-    dH = PUMP_SHUTOFF_HEAD - H_lift
-    if dH <= 0:
-        return 0.0
-    return math.sqrt(dH / PUMP_CURVE_COEFF)
-
-
 def main():
     outdir = os.path.join(HERE, 'ex06', 'out')
     os.makedirs(outdir, exist_ok=True)
+    # The sweep runs steps above the limit on purpose.
+    warnings.simplefilter('ignore', engine.PumpStepWarning)
 
-    Q_peak   = _q_pump_peak()
-    dt_crit  = _dt_crit(Q_peak)
-    print(f'  Q_pump peak ≈ {Q_peak:.4f} m³/s')
-    print(f'  dt_crit = A_sump × h_on / Q_pump = {SUMP_AREA} × {PUMP_ON_LEVEL} / {Q_peak:.4f} ≈ {dt_crit:.2f} s')
+    sump = _build_sump()
+    Q_max   = sump.max_pump_flow()
+    dt_crit = sump.max_stable_dt()
+    print(f'  Q_p,max (h_lift = 0) = {Q_max:.4f} m³/s')
+    print(f'  dt_max = 0.5 × A_sump × h_on / Q_p,max = 0.5 × {SUMP_AREA} × {PUMP_ON_LEVEL} / {Q_max:.4f} ≈ {dt_crit:.3f} s')
 
     # ── collect results ───────────────────────────────────────────────────────
     runs = []
@@ -125,10 +114,10 @@ def main():
         runs.append(dict(dt_s=dt_s, label=label, col=col, lw=lw, ls=ls,
                          t_min=t_min, h_sp=h_sp, h_bs=h_bs, h_ext=h_ext,
                          peak_sp=peak_sp, peak_bs=peak_bs, ratio=ratio))
-        print(f'  dt={dt_s:5.1f} s  dt/dt_crit={ratio:.2f}  '
+        print(f'  dt={dt_s:5g} s  dt/dt_max={ratio:.2f}  '
               f'peak_h_sump={peak_sp:.4f} m  peak_h_bsmt={peak_bs:.4f} m')
 
-    ref = runs[-1]   # 0.5-s reference
+    ref = runs[-1]   # 0.25-s reference
 
     # ── figure ────────────────────────────────────────────────────────────────
     fig = plt.figure(figsize=(14, 9))
@@ -164,8 +153,8 @@ def main():
     ax_ts.set_title('Sump depth time-series — explicit Euler at varying Δt\n'
                     f'Case 06: A_sump = {SUMP_AREA} m²,  '
                     f'h_on = {PUMP_ON_LEVEL} m,  '
-                    f'Q_pump_peak ≈ {Q_peak:.3f} m³/s,  '
-                    f'dt_crit ≈ {dt_crit:.1f} s')
+                    f'Q_p,max ≈ {Q_max:.4f} m³/s,  '
+                    f'dt_max ≈ {dt_crit:.3f} s')
     ax_ts.set_xlim(0, 120)
     ax_ts.set_ylim(bottom=0)
     ax_ts.legend(fontsize=8, loc='upper right', ncol=2)
@@ -182,9 +171,9 @@ def main():
     ax_bsmt.plot(dt_arr, pb_arr * 1000,
                  color='#2c3140', lw=1.2, ls='-', zorder=3)
     ax_bsmt.axhline(ref['peak_bs'] * 1000, color='#1abc9c', lw=1.0, ls='--',
-                    label=f'Ref. 0.5 s  ({ref["peak_bs"]*1000:.1f} mm)')
+                    label=f'Ref. 0.25 s  ({ref["peak_bs"]*1000:.1f} mm)')
     ax_bsmt.axvline(dt_crit, color='#c0392b', lw=1.2, ls='--', alpha=0.7,
-                    label=f'dt_crit ≈ {dt_crit:.1f} s')
+                    label=f'dt_max ≈ {dt_crit:.3f} s')
 
     ax_bsmt.set_xlabel('Timestep  Δt  (s)')
     ax_bsmt.set_ylabel('Peak basement depth  (mm)')
@@ -207,15 +196,15 @@ def main():
         'in one step, causing the level to oscillate\n'
         'between h_on and 0 at every other timestep.\n'
         'This can make the pit spill spuriously.\n\n'
-        'Stability criterion:\n\n'
-        '   dt  ≤  dt_crit  =  A_sump × h_on / Q_pump\n\n'
+        'Stability limit (one step drains at most half\n'
+        'the switch-on volume at the maximum rate):\n\n'
+        '   dt  ≤  0.5 × A_sump × h_on / Q_p,max\n\n'
         f'Case 06 values:\n'
-        f'   A_sump = {SUMP_AREA} m²\n'
-        f'   h_on   = {PUMP_ON_LEVEL} m\n'
-        f'   Q_pump ≈ {Q_peak:.4f} m³/s  (at peak flood)\n\n'
-        f'   →  dt_crit ≈ {dt_crit:.1f} s\n\n'
-        'Recommended:  dt ≤ dt_crit / 2  for ≥ 50 %\n'
-        'margin.  For Case 06:  dt ≤ 1 s.\n\n'
+        f'   A_sump  = {SUMP_AREA} m²\n'
+        f'   h_on    = {PUMP_ON_LEVEL} m\n'
+        f'   Q_p,max ≈ {Q_max:.4f} m³/s  (h_lift = 0)\n\n'
+        f'   →  dt_max ≈ {dt_crit:.3f} s\n\n'
+        'The model warns when the step is larger.\n\n'
         'Note: where no sump is configured, the\n'
         'tighter basement fill timescale governs\n'
         '(τ_bsmt = A_bsmt × Δz / Q_in).'

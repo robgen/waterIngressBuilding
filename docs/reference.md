@@ -211,6 +211,8 @@ or listed under **Batch only** (definitions in `inputs.py`).
 | `--sumppump-pipe-loss-coeff FLOAT` | 0 | Pipe-loss coefficient $k_{pipe}$ |
 | `--sumppump-availability FLOAT` | 1.0 | Availability factor $\eta_p$ |
 
+With a pump, `--dt` must not exceed $0.5\,A_{sump}\,h_{on}/Q_{p,max}$ (maximum pump flow at zero lift head); otherwise a `WARNING:` line gives the largest stable step (docs/model.md, *Stability guidance*).
+
 **Monte Carlo**
 
 | Flag | Default | Description |

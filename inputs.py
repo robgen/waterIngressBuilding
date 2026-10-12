@@ -4,6 +4,8 @@ Defines the building/pathway/run-control flags once and converts parsed
 arguments into the model inputs: engine.SimConfig and (paths, membranes).
 """
 
+import warnings
+
 import engine
 import fragility
 from pump import SumpPump
@@ -144,3 +146,8 @@ def config_from_args(args, **extra) -> engine.SimConfig:
 def pathways_from_args(args):
     """Return (paths, membranes) from --ingress, --basement-ingress, --membrane."""
     return fragility.load_pathways(args.ingress, args.basement_ingress, args.membrane)
+
+
+def plain_warnings():
+    """Print model warnings as 'WARNING: message' lines on the command line."""
+    warnings.formatwarning = lambda message, category, *args, **kwargs: f'WARNING: {message}\n'

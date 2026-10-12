@@ -326,3 +326,47 @@ def test_pump_drains_basement_through_pit():
     assert sim_basement[-1] == 0.0, "Pump should drain the basement through the pit"
     assert max(trace['Q_b_sump']) > 0.0, "Basement water should drain into the pit"
 
+
+
+# ── integration step check for the pump ──────────────────────────────────────
+
+def _pump_config(dt, **sump_kw):
+    import engine
+    sp = dict(sump_area=0.5, sump_base_elevation=-3.3, pump_on_level=0.10,
+              pump_off_level=0.02, pump_shutoff_head=5.0, pump_curve_coeff=1000,
+              pipe_loss_coeff=0.0)
+    sp.update(sump_kw)
+    return engine.SimConfig(floor_area=50.0, dt=dt, basement_area=30.0,
+                            basement_floor_elevation=-2.5, sumppump=SumpPump(**sp))
+
+
+def _hydro():
+    import engine
+    return engine.hydrograph_from_columns([0, 10, 20], [0.0, 0.5, 0.0])
+
+
+def test_max_stable_dt_is_half_switch_on_volume_at_zero_lift():
+    sp = _pump_config(1.0).sumppump
+    q_max = math.sqrt(5.0 / 1000.0)            # η_p · √(H_shut / (k_pump + k_pipe))
+    assert sp.max_pump_flow() == pytest.approx(q_max)
+    assert sp.max_stable_dt() == pytest.approx(0.5 * 0.5 * 0.10 / q_max)
+
+
+def test_max_stable_dt_infinite_when_pump_delivers_nothing():
+    assert _pump_config(1.0, pump_availability=0.0).sumppump.max_stable_dt() == math.inf
+
+
+def test_warns_when_step_too_large_for_pump():
+    import engine
+    with pytest.warns(engine.PumpStepWarning, match=r"Use Δt ≤ .* = 0\.354 s"):
+        engine.run(_pump_config(60.0), _hydro())
+
+
+def test_no_warning_when_step_is_stable_or_no_pump():
+    import warnings
+    import engine
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', engine.PumpStepWarning)
+        engine.run(_pump_config(0.3), _hydro())
+        engine.run(engine.SimConfig(floor_area=50.0, dt=60.0, basement_area=30.0,
+                                    basement_floor_elevation=-2.5), _hydro())

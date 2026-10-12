@@ -170,3 +170,10 @@ All notable changes to this project are documented in this file.
 
 - Unused code: `plot._despine`, `plot._format_m3s`, the dashboard's `_vline_event`, `Simulation.run(verbose)`, the `membranes` argument of `fragility.validate_fragility_inputs`, the `fragility.sample_thresholds` wrapper (use `FragilityDefinition.sample_thresholds`); `batch.py` uses `numpy.percentile` (same values).
 - Outdated example images: `ingress_preview.png`, `ingress_locations.png`, `ingress_paths.png` (no longer produced) and the `simulation_animation.gif` files (made with earlier model versions; regenerate with `python3 examples/run_examples.py --animate`).
+
+## [2026-10-12] — integration-step warning for the sump pump
+
+- With a sump pump the explicit scheme is only conditionally stable. `engine.run` now issues a `PumpStepWarning` when `dt > 0.5·A_sump·h_on / Q_p,max`, so that a single step drains no more than half of the switch-on storage at the maximum pumping rate; `Q_p,max` is the pump-curve flow at zero lift head, `η_p·√(H_shut / (k_pump + k_pipe))` (`SumpPump.max_pump_flow`, `SumpPump.max_stable_dt`). The step is not changed; the message states the largest stable step in seconds and in the run's time units.
+- Shown once per run: as a `WARNING:` line in `cli.py` and `batch.py` (also once for a whole batch or Monte Carlo ensemble) and in the Results tab of the app.
+- Cases 06–07 run at 60 s on purpose and now warn (limits 0.35 s and 3.5 s). The Case 06 timestep-sensitivity figure and report text use the same limit, with a 0.25 s reference below it.
+- `docs/model.md` (stability guidance), `docs/limitations.md` (H) and `docs/reference.md` updated.
